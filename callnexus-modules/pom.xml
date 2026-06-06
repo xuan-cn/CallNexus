@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <artifactId>callnexus</artifactId>
+        <groupId>org.dromara</groupId>
+        <version>${revision}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <modules>
+        <module>callnexus-demo</module>
+        <module>callnexus-generator</module>
+        <module>callnexus-job</module>
+        <module>callnexus-system</module>
+        <module>callnexus-workflow</module>
+        <module>callnexus-resource</module>
+        <module>callnexus-agent</module>
+        <module>callnexus-call</module>
+        <module>callnexus-esl</module>
+        <module>callnexus-ivr</module>
+        <module>callnexus-customer</module>
+        <module>callnexus-outbound</module>
+    </modules>
+
+    <artifactId>callnexus-modules</artifactId>
+    <packaging>pom</packaging>
+
+    <description>
+        callnexus-modules 业务模块
+    </description>
+
+</project>

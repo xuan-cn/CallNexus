@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <artifactId>callnexus</artifactId>
+        <groupId>org.dromara</groupId>
+        <version>${revision}</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <modules>
+        <module>callnexus-common-bom</module>
+        <module>callnexus-common-social</module>
+        <module>callnexus-common-core</module>
+        <module>callnexus-common-doc</module>
+        <module>callnexus-common-excel</module>
+        <module>callnexus-common-idempotent</module>
+        <module>callnexus-common-job</module>
+        <module>callnexus-common-log</module>
+        <module>callnexus-common-mail</module>
+        <module>callnexus-common-mybatis</module>
+        <module>callnexus-common-oss</module>
+        <module>callnexus-common-ratelimiter</module>
+        <module>callnexus-common-redis</module>
+        <module>callnexus-common-satoken</module>
+        <module>callnexus-common-security</module>
+        <module>callnexus-common-sms</module>
+        <module>callnexus-common-web</module>
+        <module>callnexus-common-translation</module>
+        <module>callnexus-common-sensitive</module>
+        <module>callnexus-common-json</module>
+        <module>callnexus-common-encrypt</module>
+        <module>callnexus-common-tenant</module>
+        <module>callnexus-common-websocket</module>
+        <module>callnexus-common-sse</module>
+    </modules>
+
+    <artifactId>callnexus-common</artifactId>
+    <packaging>pom</packaging>
+
+    <description>
+        common 通用模块
+    </description>
+
+</project>
