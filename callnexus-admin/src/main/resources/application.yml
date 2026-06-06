@@ -51,6 +51,12 @@ user:
 spring:
   application:
     name: CallNexus
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+    validate-on-migrate: true
   threads:
     # 开启虚拟线程 仅jdk21可用
     virtual:
@@ -155,13 +161,13 @@ mybatis-plus:
 # 数据加密
 mybatis-encryptor:
   # 是否开启加密
-  enable: false
+  enable: true
   # 默认加密算法
-  algorithm: BASE64
+  algorithm: AES
   # 编码方式 BASE64/HEX。默认BASE64
   encode: BASE64
   # 安全秘钥 对称算法的秘钥 如：AES，SM4
-  password:
+  password: ${CALLNEXUS_DATA_ENCRYPT_KEY}
   # 公私钥 非对称算法的公私钥 如：SM2，RSA
   publicKey:
   privateKey:
