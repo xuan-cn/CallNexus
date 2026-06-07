@@ -119,6 +119,7 @@ security:
     - /**/*.js
     - /favicon.ico
     - /error
+    - /api/internal/freeswitch/**
     - /*/api-docs
     - /*/api-docs/**
     - /warm-flow-ui/config
@@ -254,6 +255,13 @@ websocket:
   path: /resource/websocket
   # 设置访问源地址
   allowedOrigins: '*'
+
+--- # FreeSWITCH dynamic directory for mod_xml_curl
+callnexus:
+  freeswitch:
+    directory:
+      secret: ${CALLNEXUS_FREESWITCH_DIRECTORY_SECRET:cnx_fs_dir_8f3d9c2b7a1e4f6a9c0d5b2e}
+      defaultTenantId: ${CALLNEXUS_FREESWITCH_DIRECTORY_TENANT_ID:000000}
 
 --- # warm-flow工作流配置
 warm-flow:

@@ -2,8 +2,10 @@ package org.dromara.esl.infrastructure;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.dromara.call.domain.TelephonyEvent;
-import org.dromara.call.service.TelephonyEventHandler;
+import org.dromara.call.constant.EslEventNames;
+import org.dromara.call.constant.EslHeaders;
+import org.dromara.esl.dispatcher.EslEventDispatcher;
+import org.dromara.esl.domain.FreeSwitchEslEvent;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionResponse;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.springframework.context.SmartLifecycle;
@@ -30,11 +32,10 @@ import java.util.concurrent.Future;
 public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
     private static final int CONNECT_TIMEOUT_MILLIS = 5000;
     private static final long RECONNECT_DELAY_MILLIS = 5000;
-    private static final String EVENT_COMMAND =
-        "event plain CHANNEL_CREATE CHANNEL_PROGRESS CHANNEL_PROGRESS_MEDIA CHANNEL_ANSWER CHANNEL_BRIDGE CHANNEL_HANGUP_COMPLETE";
+    private static final String EVENT_COMMAND = "event plain " + String.join(" ", EslEventNames.subscribedChannelEvents());
 
     private final FreeSwitchNodeQueryService nodeQueryService;
-    private final TelephonyEventHandler eventHandler;
+    private final EslEventDispatcher eventDispatcher;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final Map<Long, Future<?>> listeners = new ConcurrentHashMap<>();
     private final Map<Long, Socket> sockets = new ConcurrentHashMap<>();
@@ -116,22 +117,9 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
 
     private void handleEvent(Long nodeId, String body) {
         Map<String, String> headers = parseHeaders(body);
-        String eventName = headers.get("Event-Name");
+        String eventName = headers.get(EslHeaders.EVENT_NAME);
         if (eventName == null) return;
-        try {
-            eventHandler.onEvent(new TelephonyEvent(
-                nodeId,
-                eventName,
-                first(headers, "Unique-ID", "Channel-Call-UUID"),
-                first(headers, "Caller-Caller-ID-Number", "Caller-Username"),
-                first(headers, "Caller-Destination-Number", "variable_sip_to_user"),
-                headers.get("Hangup-Cause"),
-                headers
-            ));
-        } catch (Exception exception) {
-            log.error("Failed to process FreeSWITCH ESL event, nodeId={}, eventName={}, uuid={}",
-                nodeId, eventName, headers.get("Unique-ID"), exception);
-        }
+        eventDispatcher.dispatch(new FreeSwitchEslEvent(nodeId, eventName, headers));
     }
 
     private Map<String, String> parseHeaders(String body) {
@@ -144,14 +132,6 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
             }
         }
         return headers;
-    }
-
-    private String first(Map<String, String> headers, String... names) {
-        for (String name : names) {
-            String value = headers.get(name);
-            if (value != null && !value.isBlank()) return value;
-        }
-        return null;
     }
 
     private void requireContentType(EslFrame frame, String expected) throws IOException {

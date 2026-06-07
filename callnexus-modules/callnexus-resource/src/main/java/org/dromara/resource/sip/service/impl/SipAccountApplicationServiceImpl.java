@@ -17,6 +17,7 @@ import org.dromara.resource.sip.domain.request.UpdateSipAccountRequest;
 import org.dromara.resource.sip.domain.response.SipAccountResponse;
 import org.dromara.resource.sip.domain.response.SipRegistrationConfigResponse;
 import org.dromara.resource.sip.domain.response.SipAccountRealtimeResponse;
+import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
 import org.dromara.resource.sip.mapper.SipAccountMapper;
 import org.dromara.resource.sip.service.SipAccountApplicationService;
 import org.springframework.stereotype.Service;
@@ -114,6 +115,25 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
             response.setSipAccountId(account.getId());
             response.setTenantId(account.getTenantId());
             response.setExtension(account.getExtension());
+            return response;
+        });
+    }
+
+    @Override
+    public SipDirectoryAccountResponse findDirectoryAccount(String tenantId, String domain, String extension) {
+        return TenantHelper.dynamic(tenantId, () -> {
+            SipAccount account = mapper.selectOne(new LambdaQueryWrapper<SipAccount>()
+                .eq(SipAccount::getDomain, domain)
+                .eq(SipAccount::getExtension, extension)
+                .eq(SipAccount::getEnabled, true)
+                .last("LIMIT 1"));
+            if (account == null) return null;
+            SipDirectoryAccountResponse response = new SipDirectoryAccountResponse();
+            response.setId(account.getId());
+            response.setExtension(account.getExtension());
+            response.setDisplayName(account.getDisplayName());
+            response.setDomain(account.getDomain());
+            response.setAuthPassword(account.getAuthPassword());
             return response;
         });
     }

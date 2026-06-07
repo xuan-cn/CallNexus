@@ -6,6 +6,8 @@ import org.dromara.agent.domain.AgentPresence;
 import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
 import org.dromara.agent.service.AgentRealtimeQueryService;
+import org.dromara.call.constant.EslEventNames;
+import org.dromara.call.constant.EslHeaders;
 import org.dromara.call.domain.ActiveCall;
 import org.dromara.call.domain.TelephonyEvent;
 import org.dromara.call.domain.response.CallRealtimeMessage;
@@ -41,12 +43,12 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
 
     @Override
     public void onEvent(TelephonyEvent event) {
-        if (!"CHANNEL_HANGUP_COMPLETE".equals(event.eventName()) && isEndedCallEvent(event)) {
+        if (!EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName()) && isEndedCallEvent(event)) {
             return;
         }
         Map<Long, AgentRealtimeTargetResponse> targets = resolveTargets(event);
         mergeMappedTargets(event, targets);
-        if ("CHANNEL_HANGUP_COMPLETE".equals(event.eventName())) {
+        if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             log.info("Processing FreeSWITCH hangup event, uuid={}, relatedUuids={}, matchedAgents={}, cause={}",
                 event.uuid(), relatedUuids(event), targets.keySet(), event.hangupCause());
         }
@@ -57,7 +59,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             message.setMessage(JsonUtils.toJsonString(toMessage(event, target)));
             WebSocketUtils.publishMessage(message);
         }
-        if ("CHANNEL_HANGUP_COMPLETE".equals(event.eventName())) {
+        if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             markCallEnded(event);
             deleteUuidMappings(event);
         } else if (!targets.isEmpty()) {
@@ -66,7 +68,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     }
 
     private void updateTargetState(TelephonyEvent event, AgentRealtimeTargetResponse target) {
-        if ("CHANNEL_HANGUP_COMPLETE".equals(event.eventName())) {
+        if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             RedisUtils.deleteObject(activeCallKey(target));
             updatePresence(target, AgentPresenceStatus.AFTER_CALL);
         } else {
@@ -132,12 +134,12 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private Set<String> relatedUuids(TelephonyEvent event) {
         Set<String> uuids = new LinkedHashSet<>();
         addUuid(uuids, event.uuid());
-        addUuid(uuids, event.headers().get("Other-Leg-Unique-ID"));
-        addUuid(uuids, event.headers().get("Bridge-A-Unique-ID"));
-        addUuid(uuids, event.headers().get("Bridge-B-Unique-ID"));
-        addUuid(uuids, event.headers().get("Channel-Call-UUID"));
-        addUuid(uuids, event.headers().get("variable_origination_uuid"));
-        addUuid(uuids, event.headers().get("variable_bridge_uuid"));
+        addUuid(uuids, event.headers().get(EslHeaders.OTHER_LEG_UNIQUE_ID));
+        addUuid(uuids, event.headers().get(EslHeaders.BRIDGE_A_UNIQUE_ID));
+        addUuid(uuids, event.headers().get(EslHeaders.BRIDGE_B_UNIQUE_ID));
+        addUuid(uuids, event.headers().get(EslHeaders.CHANNEL_CALL_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_ORIGINATION_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_BRIDGE_UUID));
         return uuids;
     }
 
