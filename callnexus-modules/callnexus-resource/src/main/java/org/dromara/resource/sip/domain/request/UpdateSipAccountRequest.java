@@ -8,6 +8,8 @@ import lombok.Data;
 
 @Data
 public class UpdateSipAccountRequest {
+    @NotNull
+    private Long nodeId;
     @NotBlank
     @Pattern(regexp = "^[0-9]{2,16}$", message = "分机号必须为2到16位数字")
     private String extension;

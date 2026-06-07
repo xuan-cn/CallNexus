@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+
+    Licensed to the Apache Software Foundation (ASF) under one
+    or more contributor license agreements.  See the NOTICE file
+    distributed with this work for additional information
+    regarding copyright ownership.  The ASF licenses this file
+    to you under the Apache License, Version 2.0 (the
+    "License"); you may not use this file except in compliance
+    with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing,
+    software distributed under the License is distributed on an
+    "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+    KIND, either express or implied.  See the License for the
+    specific language governing permissions and limitations
+    under the License.
+
+-->
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xmlns="http://maven.apache.org/POM/4.0.0"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.apache</groupId>
+    <artifactId>apache</artifactId>
+    <version>29</version>
+  </parent>
+
+  <groupId>org.apache.fory</groupId>
+  <artifactId>fory-parent</artifactId>
+  <packaging>pom</packaging>
+  <version>0.13.1</version>
+  <name>Fory Project Parent POM</name>
+  <description>
+    Apache Fory™ is a blazingly fast multi-language serialization framework powered by jit and zero-copy.
+  </description>
+  <url>https://github.com/apache/fory</url>
+
+  <licenses>
+    <license>
+      <name>The Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+    </license>
+  </licenses>
+
+  <scm>
+    <url>https://github.com/apache/fory</url>
+    <connection>git@github.com:apache/fory.git</connection>
+    <developerConnection>scm:git:ssh://github.com:apache/fory.git</developerConnection>
+  </scm>
+  <developers>
+    <developer>
+      <organizationUrl>https://fory.apache.org</organizationUrl>
+    </developer>
+  </developers>
+
+  <modules>
+    <module>fory-core</module>
+    <module>fory-extensions</module>
+    <module>fory-test-core</module>
+  </modules>
+
+  <properties>
+    <maven.compiler.source>1.8</maven.compiler.source>
+    <maven.compiler.target>1.8</maven.compiler.target>
+    <guava.version>32.1.2-jre</guava.version>
+    <janino.version>3.1.12</janino.version>
+    <commons_codec.version>1.13</commons_codec.version>
+    <fory.java.rootdir>${basedir}</fory.java.rootdir>
+    <maven-spotless-plugin.version>2.41.1</maven-spotless-plugin.version>
+    <lombok.version>1.18.38</lombok.version>
+  </properties>
+
+  <profiles>
+    <profile>
+      <id>jdk11-and-higher</id>
+      <activation>
+        <jdk>[11,]</jdk>
+      </activation>
+      <modules>
+        <module>fory-format</module>
+        <module>fory-testsuite</module>
+      </modules>
+    </profile>
+    <profile>
+      <id>jdk17-and-higher</id>
+      <activation>
+        <jdk>[17,]</jdk>
+      </activation>
+      <modules>
+        <module>fory-simd</module>
+      </modules>
+    </profile>
+  </profiles>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>2.0.12</version>
+        <scope>provided</scope>
+        <optional>true</optional>
+      </dependency>
+      <dependency>
+        <groupId>com.google.guava</groupId>
+        <artifactId>guava</artifactId>
+        <version>${guava.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.codehaus.janino</groupId>
+        <artifactId>janino</artifactId>
+        <version>${janino.version}</version>
+      </dependency>
+      <!-- Cxeb68d52e-5509 -->
+      <dependency>
+        <groupId>commons-codec</groupId>
+        <artifactId>commons-codec</artifactId>
+        <version>${commons_codec.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.testng</groupId>
+        <artifactId>testng</artifactId>
+        <version>7.5.1</version>
+      </dependency>
+      <!-- CVE-2020-15250 -->
+      <dependency>
+        <groupId>junit</groupId>
+        <artifactId>junit</artifactId>
+        <version>4.13.1</version>
+      </dependency>
+      <!-- CVE-2021-36374 -->
+      <dependency>
+        <groupId>org.apache.ant</groupId>
+        <artifactId>ant</artifactId>
+        <version>1.10.12</version>
+      </dependency>
+      <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <version>${lombok.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.14.0</version>
+          <configuration>
+            <annotationProcessorPaths>
+              <path>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok</artifactId>
+                <version>${lombok.version}</version>
+              </path>
+            </annotationProcessorPaths>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-source-plugin</artifactId>
+          <version>3.0.1</version>
+          <executions>
+            <execution>
+              <id>attach-sources</id>
+              <goals>
+                <goal>jar</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <version>3.1.0</version>
+          <executions>
+            <execution>
+              <id>attach-javadocs</id>
+              <goals>
+                <goal>jar</goal>
+              </goals>
+            </execution>
+          </executions>
+          <configuration>
+            <doclint>none</doclint>
+            <bottom>
+              Copyright © 2023-2025, The Apache Software Foundation. Apache Fory™, Fory™, and Apache
+              are either registered trademarks or trademarks of the Apache Software Foundation.
+            </bottom>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>3.6.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-deploy-plugin</artifactId>
+          <version>2.7</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-gpg-plugin</artifactId>
+          <version>1.6</version>
+          <executions>
+            <execution>
+              <id>sign-artifacts</id>
+              <goals>
+                <goal>sign</goal>
+              </goals>
+            </execution>
+          </executions>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <source>${maven.compiler.source}</source>
+          <target>${maven.compiler.target}</target>
+        </configuration>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-checkstyle-plugin</artifactId>
+        <version>3.1.0</version>
+        <dependencies>
+          <dependency>
+            <groupId>com.puppycrawl.tools</groupId>
+            <artifactId>checkstyle</artifactId>
+            <version>8.29</version>
+          </dependency>
+        </dependencies>
+        <executions>
+          <execution>
+            <id>validate</id>
+            <phase>validate</phase>
+            <goals>
+              <!-- test in ci only or manually invoke the gaol -->
+              <!-- <goal>check</goal> -->
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <configLocation>${fory.java.rootdir}/checkstyle.xml</configLocation>
+          <suppressionsLocation>${fory.java.rootdir}/checkstyle-suppressions.xml</suppressionsLocation>
+          <encoding>UTF-8</encoding>
+          <consoleOutput>true</consoleOutput>
+          <failsOnError>true</failsOnError>
+          <failOnViolation>true</failOnViolation>
+          <violationSeverity>warning</violationSeverity>
+          <outputFile>${project.build.directory}/checkstyle-errors.xml</outputFile>
+          <linkXRef>false</linkXRef>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>com.diffplug.spotless</groupId>
+        <artifactId>spotless-maven-plugin</artifactId>
+        <version>${maven-spotless-plugin.version}</version>
+        <configuration>
+          <java>
+            <googleJavaFormat>
+              <!-- 1.19.1 support JDK21 -->
+              <version>1.19.1</version>
+              <style>GOOGLE</style>
+            </googleJavaFormat>
+          </java>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

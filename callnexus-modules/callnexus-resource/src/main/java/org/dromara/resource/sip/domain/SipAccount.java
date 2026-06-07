@@ -15,6 +15,7 @@ import org.dromara.common.tenant.core.TenantEntity;
 public class SipAccount extends TenantEntity {
     @TableId
     private Long id;
+    private Long nodeId;
     private String extension;
     private String displayName;
     private String domain;

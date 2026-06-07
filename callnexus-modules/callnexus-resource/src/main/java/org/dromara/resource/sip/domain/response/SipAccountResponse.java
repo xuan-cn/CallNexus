@@ -6,6 +6,8 @@ import lombok.Data;
 @Data
 public class SipAccountResponse {
     private Long id;
+    private Long nodeId;
+    private String nodeName;
     private String extension;
     private String displayName;
     private String domain;

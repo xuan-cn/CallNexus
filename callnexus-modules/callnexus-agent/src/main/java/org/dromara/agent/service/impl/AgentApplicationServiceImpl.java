@@ -17,6 +17,11 @@ import org.dromara.resource.sip.service.SipAccountQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 @Service
 @RequiredArgsConstructor
 public class AgentApplicationServiceImpl implements AgentApplicationService {
@@ -32,14 +37,16 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
             .eq(query.getEnabled() != null, Agent::getEnabled, query.getEnabled())
             .orderByAsc(Agent::getAgentCode);
         Page<Agent> page = agentMapper.selectPage(pageQuery.build(), wrapper);
-        return new TableDataInfo<>(page.getRecords().stream().map(this::toResponse).toList(), page.getTotal());
+        Map<Long, Long> extensionBindings = findExtensionBindings(page.getRecords().stream().map(Agent::getId).toList());
+        return new TableDataInfo<>(page.getRecords().stream().map(agent -> toResponse(agent, extensionBindings.get(agent.getId()))).toList(), page.getTotal());
     }
 
     @Override
     public AgentResponse get(Long id) {
         Agent agent = agentMapper.selectById(id);
         if (agent == null) throw new ServiceException("AGENT_NOT_FOUND");
-        return toResponse(agent);
+        AgentExtension binding = extensionMapper.selectOne(new LambdaQueryWrapper<AgentExtension>().eq(AgentExtension::getAgentId, id));
+        return toResponse(agent, binding == null ? null : binding.getSipAccountId());
     }
 
     @Override
@@ -112,12 +119,19 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         if (exists) throw new ServiceException("AGENT_USER_ALREADY_BOUND");
     }
 
-    private AgentResponse toResponse(Agent agent) {
+    private Map<Long, Long> findExtensionBindings(List<Long> agentIds) {
+        if (agentIds.isEmpty()) return Collections.emptyMap();
+        return extensionMapper.selectList(new LambdaQueryWrapper<AgentExtension>().in(AgentExtension::getAgentId, agentIds)).stream()
+            .collect(Collectors.toMap(AgentExtension::getAgentId, AgentExtension::getSipAccountId));
+    }
+
+    private AgentResponse toResponse(Agent agent, Long sipAccountId) {
         AgentResponse response = new AgentResponse();
         response.setId(agent.getId());
         response.setAgentCode(agent.getAgentCode());
         response.setAgentName(agent.getAgentName());
         response.setUserId(agent.getUserId());
+        response.setSipAccountId(sipAccountId);
         response.setEnabled(agent.getEnabled());
         response.setVersion(agent.getVersion());
         response.setCreateTime(agent.getCreateTime());

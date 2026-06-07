@@ -1,0 +1,40 @@
+CREATE TABLE cc_customer (
+    id              BIGINT          NOT NULL COMMENT 'Customer ID',
+    tenant_id       VARCHAR(20)     NOT NULL COMMENT 'Tenant ID',
+    primary_phone   VARCHAR(32)     NOT NULL COMMENT 'Primary phone',
+    customer_name   VARCHAR(64)     NULL COMMENT 'Optional customer name',
+    template_id     BIGINT          NULL COMMENT 'Form template ID',
+    source_call_id  VARCHAR(64)     NULL COMMENT 'Source call ID',
+    create_dept     BIGINT          NULL,
+    create_by       BIGINT          NULL,
+    create_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_by       BIGINT          NULL,
+    update_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    version         INT             NOT NULL DEFAULT 0 COMMENT 'Optimistic lock version',
+    deleted         TINYINT         NOT NULL DEFAULT 0 COMMENT 'Logical delete',
+    PRIMARY KEY (id),
+    KEY idx_cc_customer_phone (tenant_id, primary_phone),
+    KEY idx_cc_customer_name (tenant_id, customer_name)
+) ENGINE=InnoDB COMMENT='Customer';
+
+CREATE TABLE cc_ticket (
+    id              BIGINT          NOT NULL COMMENT 'Ticket ID',
+    tenant_id       VARCHAR(20)     NOT NULL COMMENT 'Tenant ID',
+    ticket_no       VARCHAR(32)     NOT NULL COMMENT 'Ticket number',
+    ticket_status   VARCHAR(16)     NOT NULL COMMENT 'Ticket status',
+    customer_id     BIGINT          NULL COMMENT 'Customer ID',
+    caller_number   VARCHAR(32)     NULL COMMENT 'Caller number',
+    source_call_id  VARCHAR(64)     NULL COMMENT 'Source call ID',
+    template_id     BIGINT          NULL COMMENT 'Form template ID',
+    create_dept     BIGINT          NULL,
+    create_by       BIGINT          NULL,
+    create_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_by       BIGINT          NULL,
+    update_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    version         INT             NOT NULL DEFAULT 0 COMMENT 'Optimistic lock version',
+    deleted         TINYINT         NOT NULL DEFAULT 0 COMMENT 'Logical delete',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_cc_ticket_tenant_no (tenant_id, ticket_no, deleted),
+    KEY idx_cc_ticket_customer (tenant_id, customer_id),
+    KEY idx_cc_ticket_call (tenant_id, source_call_id)
+) ENGINE=InnoDB COMMENT='Ticket';

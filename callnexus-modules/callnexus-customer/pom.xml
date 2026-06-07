@@ -27,5 +27,13 @@
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-common-excel</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.dromara</groupId>
+            <artifactId>callnexus-common-satoken</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.dromara</groupId>
+            <artifactId>callnexus-common-json</artifactId>
+        </dependency>
     </dependencies>
 </project>

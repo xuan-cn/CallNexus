@@ -9,6 +9,7 @@ public class AgentResponse {
     private String agentCode;
     private String agentName;
     private Long userId;
+    private Long sipAccountId;
     private Boolean enabled;
     private Integer version;
     private Date createTime;

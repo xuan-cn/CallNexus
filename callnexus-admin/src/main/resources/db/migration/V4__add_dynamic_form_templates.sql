@@ -1,0 +1,81 @@
+CREATE TABLE cc_form_template (
+    id              BIGINT          NOT NULL COMMENT 'Template ID',
+    tenant_id       VARCHAR(20)     NOT NULL COMMENT 'Tenant ID',
+    template_code   VARCHAR(32)     NOT NULL COMMENT 'Template code',
+    template_name   VARCHAR(64)     NOT NULL COMMENT 'Template name',
+    business_type   VARCHAR(16)     NOT NULL COMMENT 'CUSTOMER or TICKET',
+    enabled         TINYINT         NOT NULL DEFAULT 1 COMMENT 'Whether enabled',
+    create_dept     BIGINT          NULL,
+    create_by       BIGINT          NULL,
+    create_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_by       BIGINT          NULL,
+    update_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    version         INT             NOT NULL DEFAULT 0 COMMENT 'Optimistic lock version',
+    deleted         TINYINT         NOT NULL DEFAULT 0 COMMENT 'Logical delete',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_cc_form_template_tenant_code (tenant_id, template_code, deleted),
+    KEY idx_cc_form_template_business (tenant_id, business_type, enabled)
+) ENGINE=InnoDB COMMENT='Dynamic business form template';
+
+CREATE TABLE cc_form_field (
+    id               BIGINT          NOT NULL COMMENT 'Field ID',
+    tenant_id        VARCHAR(20)     NOT NULL COMMENT 'Tenant ID',
+    template_id      BIGINT          NOT NULL COMMENT 'Template ID',
+    field_code       VARCHAR(32)     NOT NULL COMMENT 'Field code',
+    field_name       VARCHAR(64)     NOT NULL COMMENT 'Field name',
+    field_type       VARCHAR(16)     NOT NULL COMMENT 'Field type',
+    required_flag    TINYINT         NOT NULL DEFAULT 0 COMMENT 'Whether required',
+    sort_order       INT             NOT NULL DEFAULT 0 COMMENT 'Sort order',
+    default_value    VARCHAR(500)    NULL COMMENT 'Default value',
+    placeholder_text VARCHAR(255)    NULL COMMENT 'Placeholder',
+    validation_rules VARCHAR(1000)   NULL COMMENT 'Validation rules JSON',
+    enabled          TINYINT         NOT NULL DEFAULT 1 COMMENT 'Whether enabled',
+    create_dept      BIGINT          NULL,
+    create_by        BIGINT          NULL,
+    create_time      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_by        BIGINT          NULL,
+    update_time      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    version          INT             NOT NULL DEFAULT 0 COMMENT 'Optimistic lock version',
+    deleted          TINYINT         NOT NULL DEFAULT 0 COMMENT 'Logical delete',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_cc_form_field_template_code (tenant_id, template_id, field_code, deleted),
+    KEY idx_cc_form_field_template (tenant_id, template_id, sort_order)
+) ENGINE=InnoDB COMMENT='Dynamic business form field';
+
+CREATE TABLE cc_form_field_option (
+    id             BIGINT          NOT NULL COMMENT 'Option ID',
+    tenant_id      VARCHAR(20)     NOT NULL COMMENT 'Tenant ID',
+    field_id       BIGINT          NOT NULL COMMENT 'Field ID',
+    option_label   VARCHAR(64)     NOT NULL COMMENT 'Option label',
+    option_value   VARCHAR(64)     NOT NULL COMMENT 'Option value',
+    sort_order     INT             NOT NULL DEFAULT 0 COMMENT 'Sort order',
+    enabled        TINYINT         NOT NULL DEFAULT 1 COMMENT 'Whether enabled',
+    create_dept    BIGINT          NULL,
+    create_by      BIGINT          NULL,
+    create_time    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_by      BIGINT          NULL,
+    update_time    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    version        INT             NOT NULL DEFAULT 0 COMMENT 'Optimistic lock version',
+    deleted        TINYINT         NOT NULL DEFAULT 0 COMMENT 'Logical delete',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_cc_form_option_field_value (tenant_id, field_id, option_value, deleted),
+    KEY idx_cc_form_option_field (tenant_id, field_id, sort_order)
+) ENGINE=InnoDB COMMENT='Dynamic business form field option';
+
+CREATE TABLE cc_form_submission (
+    id              BIGINT          NOT NULL COMMENT 'Submission ID',
+    tenant_id       VARCHAR(20)     NOT NULL COMMENT 'Tenant ID',
+    template_id     BIGINT          NOT NULL COMMENT 'Template ID',
+    business_type   VARCHAR(16)     NOT NULL COMMENT 'CUSTOMER or TICKET',
+    business_id     BIGINT          NOT NULL COMMENT 'Business record ID',
+    form_data       JSON            NOT NULL COMMENT 'Submitted dynamic values',
+    create_dept     BIGINT          NULL,
+    create_by       BIGINT          NULL,
+    create_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_by       BIGINT          NULL,
+    update_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    version         INT             NOT NULL DEFAULT 0 COMMENT 'Optimistic lock version',
+    deleted         TINYINT         NOT NULL DEFAULT 0 COMMENT 'Logical delete',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_cc_form_submission_business (tenant_id, business_type, business_id, deleted)
+) ENGINE=InnoDB COMMENT='Dynamic business form submission';

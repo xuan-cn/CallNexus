@@ -65,21 +65,14 @@
 
 ```text
 CallNexus/
-  RuoYi-Vue-Plus/   后端
-  plus-ui/          前端
+  CallNexus/   后端
+  CallNexus-UI/          前端
 ```
 
 必须保留并复用基座已有能力：
 
 ```text
-ruoyi-admin                    应用启动和配置装配
-ruoyi-modules/ruoyi-system     用户、角色、部门、菜单、字典
-ruoyi-modules/ruoyi-workflow   工作流
-ruoyi-common/ruoyi-common-tenant       多租户
-ruoyi-common/ruoyi-common-websocket    WebSocket
-ruoyi-common/ruoyi-common-oss          文件和对象存储
-ruoyi-common/ruoyi-common-job          任务调度客户端
-ruoyi-extend/ruoyi-snailjob-server     任务调度服务端
+
 ```
 
 不要重复创建认证、系统管理、工作流、多租户、WebSocket 和文件模块。
@@ -89,7 +82,7 @@ ruoyi-extend/ruoyi-snailjob-server     任务调度服务端
 第一阶段优先采用三个业务 Maven 模块，统一放入：
 
 ```text
-RuoYi-Vue-Plus/ruoyi-modules/
+CallNexus/callnexus-modules/
 ```
 
 模块名称：
@@ -133,7 +126,7 @@ org.dromara.callcenter.ivr
 必须遵守：
 
 ```text
-ruoyi-admin → ruoyi-modules 中的业务模块
+callnexus-admin → callnexus-modules 中的业务模块
 callnexus-outbound → callnexus-customer、callnexus-callcenter
 callnexus-customer → RuoYi公共能力
 callnexus-callcenter → RuoYi公共能力

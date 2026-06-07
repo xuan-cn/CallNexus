@@ -1,12 +1,15 @@
 package org.dromara.resource.sip.domain.request;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 @Data
 public class CreateSipAccountRequest {
+    @NotNull
+    private Long nodeId;
     @NotBlank
     @Pattern(regexp = "^[0-9]{2,16}$", message = "分机号必须为2到16位数字")
     private String extension;

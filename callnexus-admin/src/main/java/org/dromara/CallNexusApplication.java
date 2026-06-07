@@ -17,7 +17,7 @@ public class CallNexusApplication {
         SpringApplication application = new SpringApplication(CallNexusApplication.class);
         application.setApplicationStartup(new BufferingApplicationStartup(2048));
         application.run(args);
-        System.out.println("(♥◠‿◠)ﾉﾞ  CallNexus启动成功   ლ(´ڡ`ლ)ﾞ");
+        System.out.println("\u001B[32m" + "✅ CallNexus Server 启动成功" + "\u001B[0m");
     }
 
 }
