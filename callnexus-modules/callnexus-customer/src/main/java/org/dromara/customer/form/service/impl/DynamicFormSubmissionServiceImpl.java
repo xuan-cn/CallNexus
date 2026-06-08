@@ -82,7 +82,7 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
 
     private void validateField(FormField field, Object value) {
         if (Boolean.TRUE.equals(field.getRequiredFlag()) && isEmpty(value)) {
-            throw new ServiceException("FORM_REQUIRED_FIELD_MISSING:" + field.getFieldCode());
+            throw new ServiceException("错误，请检查必填字段是否填写:" + field.getFieldName());
         }
         if (isEmpty(value) || !OPTION_TYPES.contains(field.getFieldType())) return;
         Set<String> allowedValues = optionMapper.selectList(new LambdaQueryWrapper<FormFieldOption>()
@@ -91,7 +91,7 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
         Collection<?> submittedValues = MULTI_VALUE_TYPES.contains(field.getFieldType())
             ? requireCollection(value, field.getFieldCode()) : List.of(value);
         if (submittedValues.stream().map(String::valueOf).anyMatch(item -> !allowedValues.contains(item))) {
-            throw new ServiceException("FORM_FIELD_OPTION_INVALID:" + field.getFieldCode());
+            throw new ServiceException("FORM_FIELD_OPTION_INVALID:" + field.getFieldName());
         }
     }
 

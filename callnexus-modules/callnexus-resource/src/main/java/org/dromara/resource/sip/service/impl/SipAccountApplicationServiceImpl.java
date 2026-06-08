@@ -122,17 +122,25 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     @Override
     public SipDirectoryAccountResponse findDirectoryAccount(String tenantId, String domain, String extension) {
         return TenantHelper.dynamic(tenantId, () -> {
+            boolean requestedDomainMatched = true;
             SipAccount account = mapper.selectOne(new LambdaQueryWrapper<SipAccount>()
                 .eq(SipAccount::getDomain, domain)
                 .eq(SipAccount::getExtension, extension)
                 .eq(SipAccount::getEnabled, true)
                 .last("LIMIT 1"));
+            if (account == null) {
+                requestedDomainMatched = false;
+                account = mapper.selectOne(new LambdaQueryWrapper<SipAccount>()
+                    .eq(SipAccount::getExtension, extension)
+                    .eq(SipAccount::getEnabled, true)
+                    .last("LIMIT 1"));
+            }
             if (account == null) return null;
             SipDirectoryAccountResponse response = new SipDirectoryAccountResponse();
             response.setId(account.getId());
             response.setExtension(account.getExtension());
             response.setDisplayName(account.getDisplayName());
-            response.setDomain(account.getDomain());
+            response.setDomain(requestedDomainMatched ? account.getDomain() : domain);
             response.setAuthPassword(account.getAuthPassword());
             return response;
         });

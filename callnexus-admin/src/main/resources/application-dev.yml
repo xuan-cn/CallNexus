@@ -98,7 +98,7 @@ spring.data:
     # 地址
     host: 192.168.244.128
     # 端口，默认为6379
-    port: 6380
+    port: 6379
     # 数据库索引
     database: 0
     # redis 密码必须配置

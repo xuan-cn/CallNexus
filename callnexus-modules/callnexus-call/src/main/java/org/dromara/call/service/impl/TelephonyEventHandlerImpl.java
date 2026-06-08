@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -109,6 +110,9 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
                 mappedTargets.forEach(target -> targets.put(target.getAgentId(), target));
             }
         }
+        if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName()) && targets.isEmpty()) {
+            mergeActiveCallTargets(event, targets);
+        }
     }
 
     private void saveUuidMappings(TelephonyEvent event, java.util.Collection<AgentRealtimeTargetResponse> targets) {
@@ -161,6 +165,30 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
 
     private String endedUuidKey(String uuid) {
         return ENDED_CALL_UUID_KEY_PREFIX + uuid;
+    }
+
+    private void mergeActiveCallTargets(TelephonyEvent event, Map<Long, AgentRealtimeTargetResponse> targets) {
+        Collection<String> keys = RedisUtils.keys(ACTIVE_CALL_KEY_PREFIX + "*");
+        Set<String> relatedUuids = relatedUuids(event);
+        for (String key : keys) {
+            ActiveCall call = RedisUtils.getCacheObject(key);
+            if (call == null || !matchesEndedCall(event, relatedUuids, call)) continue;
+            AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(event.nodeId(), call.getAgentExtension());
+            if (target != null) targets.put(target.getAgentId(), target);
+        }
+    }
+
+    private boolean matchesEndedCall(TelephonyEvent event, Set<String> relatedUuids, ActiveCall call) {
+        if (call.getCallId() != null && relatedUuids.contains(call.getCallId())) return true;
+        return equalsAny(call.getAgentExtension(), event.callerNumber(), event.destinationNumber());
+    }
+
+    private boolean equalsAny(String source, String... values) {
+        if (source == null || source.isBlank()) return false;
+        for (String value : values) {
+            if (source.equals(value)) return true;
+        }
+        return false;
     }
 
     private void saveActiveCallIfAbsent(TelephonyEvent event, AgentRealtimeTargetResponse target) {

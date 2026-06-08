@@ -17,6 +17,8 @@ import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionRespons
 import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
 import org.dromara.resource.node.service.FreeSwitchNodeApplicationService;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.dromara.resource.gateway.domain.FreeSwitchGateway;
+import org.dromara.resource.gateway.mapper.FreeSwitchGatewayMapper;
 import org.dromara.resource.sip.domain.SipAccount;
 import org.dromara.resource.sip.mapper.SipAccountMapper;
 import org.springframework.stereotype.Service;
@@ -29,6 +31,7 @@ import java.util.List;
 public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeApplicationService, FreeSwitchNodeQueryService {
     private final FreeSwitchNodeMapper mapper;
     private final SipAccountMapper sipAccountMapper;
+    private final FreeSwitchGatewayMapper gatewayMapper;
 
     @Override
     public TableDataInfo<FreeSwitchNodeResponse> page(FreeSwitchNodePageQuery query, PageQuery pageQuery) {
@@ -100,6 +103,9 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
     @Override
     public void delete(Long id) {
         if (sipAccountMapper.exists(new LambdaQueryWrapper<SipAccount>().eq(SipAccount::getNodeId, id))) {
+            throw new ServiceException("FREESWITCH_NODE_IN_USE");
+        }
+        if (gatewayMapper.exists(new LambdaQueryWrapper<FreeSwitchGateway>().eq(FreeSwitchGateway::getNodeId, id))) {
             throw new ServiceException("FREESWITCH_NODE_IN_USE");
         }
         if (mapper.deleteById(id) != 1) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND");
