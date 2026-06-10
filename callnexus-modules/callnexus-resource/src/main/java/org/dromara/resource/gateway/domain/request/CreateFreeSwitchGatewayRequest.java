@@ -1,6 +1,8 @@
 package org.dromara.resource.gateway.domain.request;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -35,4 +37,7 @@ public class CreateFreeSwitchGatewayRequest {
     private String transport;
     @Size(max = 32)
     private String callerIdNumber;
+    @Min(0)
+    @Max(3600)
+    private Integer ping;
 }

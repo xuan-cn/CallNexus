@@ -27,6 +27,7 @@ public class FreeSwitchGateway extends TenantEntity {
     private Boolean registerEnabled;
     private String transport;
     private String callerIdNumber;
+    private Integer ping;
     private Boolean enabled;
     @Version
     private Integer version;

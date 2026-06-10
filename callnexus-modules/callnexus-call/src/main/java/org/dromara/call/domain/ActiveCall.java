@@ -10,4 +10,7 @@ public class ActiveCall implements Serializable {
     private Long agentId;
     private String agentExtension;
     private String destination;
+    private Boolean external;
+    private String gatewayCode;
+    private String callerIdNumber;
 }

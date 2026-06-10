@@ -13,6 +13,10 @@
     <dependencies>
         <dependency>
             <groupId>org.dromara</groupId>
+            <artifactId>callnexus-resource</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.dromara</groupId>
             <artifactId>callnexus-call</artifactId>
         </dependency>
     </dependencies>

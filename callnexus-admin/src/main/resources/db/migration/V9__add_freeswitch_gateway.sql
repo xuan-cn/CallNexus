@@ -12,6 +12,7 @@ CREATE TABLE cc_freeswitch_gateway (
     register_enabled    TINYINT         NOT NULL DEFAULT 0 COMMENT 'Whether FreeSWITCH should register to gateway',
     transport           VARCHAR(8)      NOT NULL DEFAULT 'UDP' COMMENT 'Transport: UDP/TCP/TLS',
     caller_id_number    VARCHAR(32)     NULL COMMENT 'Default caller ID number',
+    ping                INT             NOT NULL DEFAULT 0 COMMENT 'Gateway OPTIONS ping interval seconds, 0 means disabled',
     enabled             TINYINT         NOT NULL DEFAULT 1 COMMENT 'Whether enabled',
     create_dept         BIGINT          NULL,
     create_by           BIGINT          NULL,

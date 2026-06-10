@@ -6,6 +6,7 @@ import org.dromara.agent.domain.response.CurrentAgentResponse;
 import org.dromara.agent.service.CurrentAgentSessionService;
 import org.dromara.call.domain.ActiveCall;
 import org.dromara.call.domain.EslEndpoint;
+import org.dromara.call.domain.OutboundRoute;
 import org.dromara.call.domain.response.CallControlResponse;
 import org.dromara.call.service.CallControlApplicationService;
 import org.dromara.call.service.TelephonyCommandGateway;
@@ -14,6 +15,9 @@ import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionResponse;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
+import org.dromara.resource.phone.service.PhoneNumberQueryService;
+import org.dromara.resource.sip.service.SipAccountQueryService;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -28,6 +32,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     private final CurrentAgentSessionService agentSessionService;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final TelephonyCommandGateway telephonyCommandGateway;
+    private final SipAccountQueryService sipAccountQueryService;
+    private final PhoneNumberQueryService phoneNumberQueryService;
 
     @Override
     public CallControlResponse originate(String destination) {
@@ -42,13 +48,17 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         }
 
         String callId = UUID.randomUUID().toString();
-        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), destination);
+        OutboundRoute outboundRoute = resolveOutboundRoute(agent, destination);
+        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), destination, outboundRoute);
 
         ActiveCall activeCall = new ActiveCall();
         activeCall.setCallId(callId);
         activeCall.setAgentId(agent.getAgentId());
         activeCall.setAgentExtension(agent.getExtension());
         activeCall.setDestination(destination);
+        activeCall.setExternal(outboundRoute.isExternal());
+        activeCall.setGatewayCode(outboundRoute.getGatewayCode());
+        activeCall.setCallerIdNumber(outboundRoute.getCallerIdNumber());
         RedisUtils.setCacheObject(key, activeCall, ACTIVE_CALL_TTL);
         agentSessionService.changeStatus(AgentPresenceStatus.BUSY);
         return toResponse(activeCall);
@@ -90,11 +100,26 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         return ACTIVE_CALL_KEY_PREFIX + LoginHelper.getTenantId() + ":" + agentId;
     }
 
+    private OutboundRoute resolveOutboundRoute(CurrentAgentResponse agent, String destination) {
+        if (sipAccountQueryService.findEnabledByNodeAndExtension(agent.getNodeId(), destination) != null) {
+            return OutboundRoute.internal();
+        }
+        String tenantId = LoginHelper.getTenantId();
+        PhoneNumberOutboundRouteResponse route = phoneNumberQueryService.findDefaultOutboundRoute(tenantId, agent.getNodeId());
+        if (route == null) {
+            throw new ServiceException("PHONE_NUMBER_OUTBOUND_ROUTE_NOT_CONFIGURED");
+        }
+        return OutboundRoute.external(route.getGatewayCode(), route.getNumber());
+    }
+
     private CallControlResponse toResponse(ActiveCall call) {
         CallControlResponse response = new CallControlResponse();
         response.setCallId(call.getCallId());
         response.setAgentExtension(call.getAgentExtension());
         response.setDestination(call.getDestination());
+        response.setExternal(call.getExternal());
+        response.setGatewayCode(call.getGatewayCode());
+        response.setCallerIdNumber(call.getCallerIdNumber());
         response.setStatus("DIALING");
         return response;
     }

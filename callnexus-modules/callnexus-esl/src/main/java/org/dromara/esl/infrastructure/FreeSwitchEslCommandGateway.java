@@ -2,6 +2,7 @@ package org.dromara.esl.infrastructure;
 
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.call.domain.EslEndpoint;
+import org.dromara.call.domain.OutboundRoute;
 import org.dromara.call.service.TelephonyCommandGateway;
 import org.dromara.common.core.exception.ServiceException;
 import org.springframework.stereotype.Component;
@@ -23,18 +24,23 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     private static final int READ_TIMEOUT_MILLIS = 5000;
 
     @Override
-    public void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination) {
+    public void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination, OutboundRoute outboundRoute) {
         requireDialValue(agentExtension);
         requireDialValue(destination);
         requireDialValue(endpoint.sipDomain());
+        String callerIdNumber = outboundRoute != null && outboundRoute.isExternal() ? outboundRoute.getCallerIdNumber() : agentExtension;
+        requireDialValue(callerIdNumber);
         String variables = "{origination_uuid=" + callId
-            + ",origination_caller_id_number=" + agentExtension
+            + ",origination_caller_id_number=" + callerIdNumber
+            + ",origination_caller_id_name=" + callerIdNumber
             + ",hangup_after_bridge=true}";
+        String destinationDialString = destinationDialString(destination, endpoint.sipDomain(), outboundRoute);
         String command = "bgapi originate " + variables + userDialString(agentExtension, endpoint.sipDomain())
-            + " &bridge(" + userDialString(destination, endpoint.sipDomain()) + ")";
+            + " &bridge(" + destinationDialString + ")";
         sendCommand(endpoint, command);
-        log.info("FreeSWITCH originate command accepted, callId={}, agentExtension={}, destination={}",
-            callId, agentExtension, destination);
+        log.info("FreeSWITCH 发起呼叫命令已提交，callId={}，agentExtension={}，destination={}，external={}，gatewayCode={}，callerIdNumber={}",
+            callId, agentExtension, destination, outboundRoute != null && outboundRoute.isExternal(),
+            outboundRoute == null ? null : outboundRoute.getGatewayCode(), callerIdNumber);
     }
 
     @Override
@@ -51,11 +57,15 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         return "true".equalsIgnoreCase(response.body().trim());
     }
 
-    private void sendCommand(EslEndpoint endpoint, String command) {
-        requireSuccess(executeCommand(endpoint, command), "FREESWITCH_ESL_COMMAND_FAILED");
+    void executeApiCommand(EslEndpoint endpoint, String command) {
+        requireSuccess(executeCommand(endpoint, command), "FREESWITCH_ESL_COMMAND_FAILED", command);
     }
 
-    private EslFrame executeCommand(EslEndpoint endpoint, String command) {
+    private void sendCommand(EslEndpoint endpoint, String command) {
+        requireSuccess(executeCommand(endpoint, command), "FREESWITCH_ESL_COMMAND_FAILED", command);
+    }
+
+    EslFrame executeCommand(EslEndpoint endpoint, String command) {
         requireEndpoint(endpoint);
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(endpoint.host(), endpoint.port()), CONNECT_TIMEOUT_MILLIS);
@@ -67,7 +77,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
                     handleUnexpectedGreeting(endpoint, greeting);
                 }
                 write(output, "auth " + endpoint.password());
-                requireSuccess(readFrame(input), "FREESWITCH_ESL_AUTH_FAILED");
+                requireSuccess(readFrame(input), "FREESWITCH_ESL_AUTH_FAILED", "auth ******");
                 write(output, command);
                 return readFrame(input);
             }
@@ -113,20 +123,37 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         return "user/" + extension + "@" + domain;
     }
 
+    private String destinationDialString(String destination, String domain, OutboundRoute outboundRoute) {
+        if (outboundRoute == null || !outboundRoute.isExternal()) {
+            return userDialString(destination, domain);
+        }
+        requireDialValue(outboundRoute.getGatewayCode());
+        return "sofia/gateway/" + outboundRoute.getGatewayCode() + "/" + destination;
+    }
+
     private void write(BufferedOutputStream output, String command) throws IOException {
         output.write((command + "\n\n").getBytes(StandardCharsets.UTF_8));
         output.flush();
     }
 
-    private void requireSuccess(EslFrame frame, String errorCode) {
+    private void requireSuccess(EslFrame frame, String errorCode, String command) {
         String response = frame.header("Reply-Text");
         if (response == null || response.isBlank()) {
             response = frame.body();
         }
-        if (response == null || !response.trim().startsWith("+OK")) {
-            log.warn("FreeSWITCH ESL rejected command: {}", response);
+        if (!isSuccessResponse(response)) {
+            log.warn("FreeSWITCH ESL 命令执行失败，command={}，response={}", command, response);
             throw new ServiceException(errorCode);
         }
+        log.info("FreeSWITCH ESL 命令执行成功，command={}，response={}", command, response);
+    }
+
+    private boolean isSuccessResponse(String response) {
+        if (response == null) {
+            return false;
+        }
+        String trimmed = response.trim();
+        return trimmed.startsWith("+OK") || trimmed.contains("\n+OK") || trimmed.contains("[Success]");
     }
 
     private EslFrame readFrame(BufferedInputStream input) throws IOException {

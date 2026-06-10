@@ -2,24 +2,17 @@ package org.dromara.resource.gateway.domain.response;
 
 import lombok.Data;
 
-import java.util.Date;
-
 @Data
-public class FreeSwitchGatewayResponse {
+public class FreeSwitchGatewayDirectoryResponse {
     private Long id;
-    private Long nodeId;
-    private String nodeName;
+    private String domain;
     private String gatewayCode;
-    private String gatewayName;
-    private String direction;
     private String proxy;
     private String realm;
     private String username;
+    private String password;
     private Boolean registerEnabled;
     private String transport;
     private String callerIdNumber;
     private Integer ping;
-    private Boolean enabled;
-    private Integer version;
-    private Date createTime;
 }

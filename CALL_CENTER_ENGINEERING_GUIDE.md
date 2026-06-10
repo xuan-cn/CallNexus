@@ -689,14 +689,49 @@ log.info("call routed: callId={}, routeType={}, routeValue={}",
         callId, routeType, routeValue);
 ```
 
+关键运行节点必须补充中文日志，便于本地联调、生产排障和后续 AI 接手。关键运行节点包括：
+
+- 系统启动和核心模块初始化
+- FreeSWITCH XML Curl 请求、匹配、返回
+- ESL 连接、认证、订阅、断开、重连
+- 呼叫控制命令发送和返回
+- 呼入/呼出路由决策
+- 坐席签入、签出、示忙、示闲
+- 通话状态变化和 WebSocket 推送
+- 异步任务开始、完成、失败和重试
+- 数据同步、导入导出、外部系统调用
+
+中文日志必须包含可排查上下文，例如：
+
+```text
+tenantId
+nodeId
+callId
+channelId
+agentId
+section
+purpose
+domain
+result
+durationMs
+```
+
+日志应描述清楚“发生了什么”和“关键上下文是什么”，避免只写“开始执行”“执行完成”这类无上下文日志。
+
 禁止打印：
 
 - 密码
 - Sa-Token登录会话和访问令牌
 - SIP密码
+- ESL密码
+- FreeSWITCH directory token
 - 完整客户敏感资料
 - 未脱敏电话号码
 - 完整 ESL 原始事件到普通 INFO 日志
+- 完整 FreeSWITCH XML，尤其是包含网关账号、密码或号码资源的 XML
+- 完整通话转写、AI 对话和客户隐私内容
+
+涉及敏感响应时，只记录长度、数量、状态、脱敏号码或摘要信息。
 
 ### 11.2 指标
 

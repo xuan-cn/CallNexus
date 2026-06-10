@@ -30,9 +30,10 @@
 
 当前正在处理的问题：
 
-- 已完成网关管理第一版，包括后端 CRUD、前端页面、菜单权限和数据库迁移脚本。
-- 下一步需要开发号码管理，用于维护 DID、主叫号码、号码归属租户和启停状态。
-- 号码管理完成后，再开发动态 Dialplan 和呼入路由。
+- 已完成网关管理第一版，包括后端 CRUD、前端页面、菜单权限、数据库迁移脚本和动态 Gateway XML 后端输出。
+- 已完成号码管理第一版，用于维护 DID、默认主叫号码、号码归属节点、呼入路由和启停状态。
+- 已完成动态 Dialplan 第一版，支持 FreeSWITCH 通过独立 XML Curl 接口按号码获取呼入路由。
+- 当前阻塞在服务器侧 FreeSWITCH 联调：手动 curl CallNexus `/dialplan` 可以返回正确 XML，但真实呼入时 FreeSWITCH 最新临时 XML 仍返回 `not found`，需要继续确认 `xml_curl.conf.xml` 的真实请求 URL、`domain`、`tenantId`、`destination_number` 和 `Caller-Context` 是否与手动 curl 一致。
 
 ## 已完成内容
 
@@ -118,7 +119,30 @@ curl -X POST "http://后端地址/api/internal/freeswitch/directory?token=cnx_fs
 - 已新增 `cc_freeswitch_gateway` 数据表。
 - 已新增网关管理菜单和权限。
 - 已新增前端网关管理页面。
-- 当前网关管理只负责后台配置维护，尚未生成 FreeSWITCH Gateway XML。
+- 已新增 FreeSWITCH 动态 Gateway XML 后端输出，支持 `mod_xml_curl` 通过 `purpose=gateways` 获取启用网关。
+- 已将网关 XML 调整为 FreeSWITCH 期望的 user gateways 目录格式，`<gateway>` 位于 `<user><gateways>` 下。
+- 已新增网关 `ping` 配置字段，默认 `0`，用于兼容运营商不响应 SIP OPTIONS 导致网关进入 `FAIL_WAIT` 的场景。
+- 已实现网关新增、修改、删除后的 ESL 运行时同步能力，后续仍需在真实 FreeSWITCH 环境继续验证稳定性。
+
+### 号码管理和动态 Dialplan
+
+- 已新增号码管理数据表、后端 CRUD、前端页面、菜单和权限。
+- 已支持号码绑定 FreeSWITCH 节点、网关、号码类型、默认主叫、呼入路由类型和呼入路由目标。
+- 已实现独立动态 Dialplan XML 接口：
+
+```text
+POST /api/internal/freeswitch/dialplan
+```
+
+- 已保留原 `POST /api/internal/freeswitch/directory` 兼容能力，同时新增独立接口：
+
+```text
+POST /api/internal/freeswitch/directory/users
+POST /api/internal/freeswitch/directory/gateways
+```
+
+- 已实现号码呼入到固定 SIP 分机的第一版路由，例如 DID `5295357` 可返回桥接到 `user/1001@192.168.244.128` 的 Dialplan XML。
+- 已在 FreeSWITCH XML Curl 关键请求和返回位置补充中文日志，方便排查真实请求参数和路由命中情况。
 
 ### 文档
 
@@ -128,41 +152,43 @@ curl -X POST "http://后端地址/api/internal/freeswitch/directory?token=cnx_fs
 
 ## 阻塞事项
 
-当前暂无代码侧阻塞。
+当前代码侧暂无已知编译阻塞，主要阻塞在 FreeSWITCH 服务器侧联调：
 
-服务器侧后续仍需要配合的事项：
-
-1. 动态 Gateway XML 开发完成后，需要配置 FreeSWITCH 通过 CallNexus 获取网关 XML。
-2. 动态 Dialplan 开发完成后，需要配置 FreeSWITCH 通过 CallNexus 获取拨号计划 XML。
+1. CallNexus 手动 curl `/api/internal/freeswitch/dialplan` 时可以返回正确 Dialplan XML，示例路由为 `5295357 -> user/1001@192.168.244.128`。
+2. 真实外线呼入时，FreeSWITCH 生成的最新 `/tmp/*.tmp.xml` 仍可能是 `<result status="not found"/>`，说明真实 `mod_xml_curl` 请求的 URL 或参数仍与手动 curl 不一致。
+3. 服务器侧 `xml_curl.conf.xml` 的 dialplan binding 必须使用独立地址 `/api/internal/freeswitch/dialplan`，并固定带上 `tenantId=000000` 和 `domain=192.168.244.128`；XML 中 URL 参数连接符必须写成 `&amp;`。
+4. FreeSWITCH 配置里建议使用 `<param name="bindings" value="dialplan"/>`，directory/gateway binding 也统一使用 `bindings`。
+5. 当前在部分 shell/container 中执行 `fs_cli -x ...` 报 `Error Connecting []`，说明未连到 FreeSWITCH Event Socket，暂时阻塞命令方式模拟呼入测试；需要进入真正运行 FreeSWITCH 的容器/主机，或使用正确的 `fs_cli -H 127.0.0.1 -P 8021 -p <password>` 参数。
+6. 如果手机真实呼入无法触发正确 Dialplan，需要抓包或查看 CallNexus 后端中文日志，确认真实请求中的 `section`、`destination_number`、`Caller-Context`、`domain`、`tenantId`。
 
 ## 下一步开发任务
 
-### 下一步 1：开发号码管理
+### 下一步 1：继续联调 FreeSWITCH 动态 Dialplan 真实呼入
 
-状态：待开始
+状态：进行中，服务器侧请求参数阻塞
 
 目标：
 
-- 维护 DID、主叫号码、号码归属租户、启停状态。
-- 为呼入路由和呼出路由提供基础数据。
+- 确认 FreeSWITCH 真实呼入时请求到 CallNexus 独立 `/dialplan` 接口。
+- 确认真实请求带上正确 `tenantId`、`domain`、`destination_number` 和 `Caller-Context`。
+- 确认真实呼入最新 `/tmp/*.tmp.xml` 返回 `section name="dialplan"`，而不是 `result not found`。
 
 建议范围：
 
-1. 后端号码表。
-2. 号码 CRUD 接口。
-3. 前端号码管理页面。
-4. 菜单和权限。
-5. 数据库迁移脚本。
+1. 检查服务器 `/etc/freeswitch/autoload_configs/xml_curl.conf.xml`。
+2. 重载 `reloadxml` 和 `reload mod_xml_curl`。
+3. 用 `curl`、`tcpdump`、FreeSWITCH 临时 XML 文件和 CallNexus 后端中文日志交叉确认真实请求参数。
+4. 修复 `fs_cli` 连接问题后，用 `xml_locate` 或 `originate loopback/5295357/public` 模拟呼入。
 
 本阶段暂不做：
 
-- 不做呼入路由。
-- 不做动态 Dialplan。
 - 不做 IVR。
+- 不扩展队列、技能组和复杂路由。
+- 不先开发 CDR，等呼入主链路打通后再做。
 
-### 下一步 2：开发动态 Dialplan 和呼入路由
+### 下一步 2：完善动态 Dialplan 和呼入路由
 
-状态：待开始
+状态：第一版已完成，待真实呼入联调通过后继续
 
 目标：
 
@@ -197,7 +223,17 @@ curl -X POST "http://后端地址/api/internal/freeswitch/directory?token=cnx_fs
 - 前端网关管理页面已完成。
 - 菜单和权限已完成。
 - 数据库迁移脚本已完成。
-- 暂未生成 FreeSWITCH Gateway XML。
+- 动态 Gateway XML 后端输出已完成，等待服务器侧 FreeSWITCH 配置联调。
+
+### 已完成：号码管理和动态 Dialplan 第一版
+
+完成结果：
+
+- 号码管理后端、前端、菜单权限和数据库迁移已完成。
+- 动态 XML Curl 接口已拆分为 users、gateways、dialplan 独立入口，并保留旧 directory 兼容入口。
+- 动态 Dialplan 已支持按 DID 查询呼入路由，并生成桥接到 SIP 分机的 XML。
+- 网关 XML 已支持 `ping=0` 配置，避免运营商不响应 OPTIONS 时频繁进入 `FAIL_WAIT`。
+- 当前等待服务器侧 FreeSWITCH 真实呼入请求参数修正和联调验证。
 
 ## 开发记录
 
@@ -224,6 +260,53 @@ curl -X POST "http://后端地址/api/internal/freeswitch/directory?token=cnx_fs
 - 新增 `cc_freeswitch_gateway` 表。
 - 新增网关管理前端页面。
 - 新增网关管理菜单和权限。
+
+下一步：
+
+- 开发号码管理。
+
+### 2026-06-10：完成号码管理、动态 Dialplan 第一版，并记录 FreeSWITCH 联调阻塞
+
+本次完成：
+
+- 完成号码管理第一版，包括后端表结构、CRUD、前端页面、菜单权限和租户数据隔离。
+- 完成动态 XML Curl 接口拆分，新增 `/api/internal/freeswitch/directory/users`、`/api/internal/freeswitch/directory/gateways`、`/api/internal/freeswitch/dialplan`，并保留旧 `/directory` 兼容入口。
+- 完成动态 Gateway XML 模板调整，按 FreeSWITCH 期望输出 `domain name="all"`、`user id=网关名`、`user/gateways/gateway` 结构。
+- 新增网关 `ping` 配置，默认 `0`，用于避免运营商线路不响应 OPTIONS 导致网关注册后进入 `FAIL_WAIT`。
+- 完成动态 Dialplan 第一版，手动 curl 能返回 `5295357 -> user/1001@192.168.244.128` 的呼入桥接 XML。
+- 补充 FreeSWITCH XML Curl 关键运行节点中文日志，后续排查真实请求时优先看后端日志中的 `section`、`purpose`、`domain`、`tenantId`、`destination_number` 和响应长度。
+
+当前阻塞：
+
+- CallNexus `/dialplan` 手动 curl 正常，但真实外线呼入时 FreeSWITCH 临时 XML 仍出现 `<result status="not found"/>`。
+- 主要怀疑服务器侧 `xml_curl.conf.xml` dialplan binding 缺少固定 `domain=192.168.244.128`，或真实请求未进入独立 `/api/internal/freeswitch/dialplan`。
+- 当前在某些容器/shell 中执行 `fs_cli -x ...` 报 `Error Connecting []`，无法直接用 `xml_locate` 或 `originate loopback` 模拟呼入，需要先修复 Event Socket 连接或进入正确 FreeSWITCH 容器。
+
+下一步：
+
+- 服务器侧修正并确认 `xml_curl.conf.xml`，dialplan binding 使用独立 `/dialplan` URL，并带 `token`、`tenantId=000000`、`domain=192.168.244.128`。
+- 重新执行 `reloadxml` 和 `reload mod_xml_curl` 后，真实呼入并检查最新 `/tmp/*.tmp.xml` 是否返回 `section name="dialplan"`。
+- 修复 `fs_cli` 连接后，使用 `xml_locate dialplan public 5295357` 或 `originate loopback/5295357/public` 做不依赖手机线路的命令测试。
+
+### 2026-06-09：补齐 FreeSWITCH 动态 Gateway XML 后端输出
+
+本次完成：
+
+- `POST /api/internal/freeswitch/directory` 已支持识别 `purpose=gateways`。
+- 新增网关内部查询服务，按租户和 FreeSWITCH 节点 SIP 域查询启用网关。
+- 新增 Gateway XML 渲染器，当前按 FreeSWITCH 动态网关要求输出 `domain name="all"`，并将 `<gateway>` 放入 `<user><gateways>` 节点中。
+- 动态 Gateway XML 使用内部 DTO 返回加密字段解密后的密码，仅用于 FreeSWITCH 内部 XML 接口，不暴露给后台管理详情接口。
+- 抽象 FreeSWITCH XML Curl 分发结构，新增 `FreeSwitchXmlCurlDispatcher`、`FreeSwitchXmlCurlHandler`、`FreeSwitchXmlCurlRequest`，后续 dialplan、acl 等请求类型通过新增 Handler 扩展。
+- 将普通 SIP Directory 用户 XML 和 Gateway XML 拆成不同 Renderer，避免不同 XML 模板混在同一个控制器中。
+- `FreeSwitchDirectoryController` 已补充中文运行日志，记录 XML Curl 请求 section、purpose、domain、tenantId 和响应长度，不打印完整 XML 或敏感信息。
+- 修复应用停止或重启阶段 ESL 监听线程池关闭后仍提交任务导致的 `RejectedExecutionException` 日志问题。
+- 更新 `AI_DEVELOPMENT_GUIDE.md` 和 `CALL_CENTER_ENGINEERING_GUIDE.md`，明确后续关键运行节点必须补充中文日志，并禁止打印密码、token、完整 XML 和客户隐私。
+- 已执行 `mvn -pl callnexus-admin -am -DskipTests compile`，后端编译通过。
+
+后续仍需：
+
+- 服务器侧配置 FreeSWITCH `mod_xml_curl` 和 external Sofia profile，验证是否能请求到 `purpose=gateways` 并完成网关注册。
+- 联调动态 Gateway XML 时，重点确认 FreeSWITCH 是否请求 `section=directory&purpose=gateways`，以及是否识别 `domain name="all"` 下的 user gateway 配置。
 
 下一步：
 

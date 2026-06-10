@@ -15,7 +15,7 @@
 
 - 阶段 1：呼叫中心基础底座已经基本完成，包括 FreeSWITCH 节点、SIP 账号、坐席、坐席工作台、ESL 控制、客户、工单、动态表单模板。
 - 阶段 2：FreeSWITCH 动态 Directory 已完成联调，后台新增 SIP 账号后，FreeSWITCH 可以通过 CallNexus 动态获取分机目录并完成注册。
-- 阶段 3：网关管理第一版已完成，下一步开发号码管理，再进入动态 Dialplan 和呼入路由。
+- 阶段 3：网关管理第一版和动态 Gateway XML 后端输出已完成，下一步开发号码管理，再进入动态 Dialplan 和呼入路由。
 
 当前最优先事项：
 
@@ -40,7 +40,7 @@
 | FreeSWITCH XML Directory | `[DONE]` | 后端接口和服务器侧 `mod_xml_curl` 联调已完成，后台新增 SIP 账号可以动态注册。 |
 | FreeSWITCH XML Dialplan | `[PLANNED]` | 尚未实现，后续用于动态呼入路由、IVR、外呼路由。 |
 | FreeSWITCH XML ACL | `[PLANNED]` | 尚未实现，后续用于集中维护可信 IP、网关来源等。 |
-| 网关管理 | `[PARTIAL]` | 已完成后台网关 CRUD、前端页面、菜单权限和数据表；尚未生成 FreeSWITCH Gateway XML。 |
+| 网关管理 | `[PARTIAL]` | 已完成后台网关 CRUD、前端页面、菜单权限、数据表和动态 Gateway XML 后端输出；仍需服务器侧 FreeSWITCH 配置联调。 |
 | 号码管理 | `[PLANNED]` | 后续管理 DID、主叫号码、号码归属租户、呼入绑定路由。 |
 | 客户管理 | `[PARTIAL]` | 已支持客户创建、号码重复时带出已有客户、详情展示、自定义字段展示。 |
 | 客户动态字段 | `[PARTIAL]` | 已支持输入框、文本框、日期、单选、多选、下拉等字段类型，以及标签和值分离。 |
@@ -120,7 +120,7 @@
 后续需要开发：
 
 - 动态 Dialplan XML。
-- 动态 Gateway XML。
+- 动态 Gateway XML 后端输出已完成，等待服务器侧 FreeSWITCH 配置联调。
 - 动态 ACL XML。
 - XML 请求日志和调试页面。
 
@@ -132,7 +132,7 @@
 
 开发内容：
 
-- 网关管理：SIP Trunk 地址、端口、认证、方向、状态。第一版已完成，尚未接入 Gateway XML。
+- 网关管理：SIP Trunk 地址、端口、认证、方向、状态。第一版和动态 Gateway XML 后端输出已完成，尚未完成服务器侧联调。
 - 号码管理：DID、主叫号码、归属租户、启停状态。
 - 呼入路由：号码绑定 IVR、队列、坐席、技能组。
 - 呼出路由：按租户、坐席、号码池选择出口网关。
@@ -256,7 +256,7 @@
 
 1. 开发号码管理。
 2. 开发动态 Dialplan 和呼入路由。
-3. 开发 FreeSWITCH Gateway XML 输出。
+3. 配置并联调 FreeSWITCH Gateway XML 输出。
 4. 开发 CDR 通话记录。
 
 完成以上内容后，再进入 IVR 和队列会更稳，因为 IVR、队列、外呼和 AI 都依赖稳定的号码、路由、通话记录和事件模型。

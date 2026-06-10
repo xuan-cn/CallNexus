@@ -1,12 +1,11 @@
 package org.dromara.resource.freeswitch.controller;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.resource.freeswitch.config.FreeSwitchDirectoryProperties;
 import org.dromara.resource.freeswitch.xml.FreeSwitchXmlRenderer;
-import org.dromara.resource.freeswitch.xml.directory.FreeSwitchDirectoryXmlRenderer;
-import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
-import org.dromara.resource.sip.service.SipAccountQueryService;
+import org.dromara.resource.freeswitch.xmlcurl.FreeSwitchXmlCurlDispatcher;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -24,32 +23,51 @@ import java.security.MessageDigest;
 @RestController
 @RequestMapping("/api/internal/freeswitch")
 @RequiredArgsConstructor
+@Slf4j
 public class FreeSwitchDirectoryController {
     private static final String TOKEN_HEADER = "X-CallNexus-FreeSWITCH-Token";
 
-    private final SipAccountQueryService sipAccountQueryService;
     private final FreeSwitchDirectoryProperties properties;
-    private final FreeSwitchDirectoryXmlRenderer directoryXmlRenderer;
+    private final FreeSwitchXmlCurlDispatcher dispatcher;
 
+    /**
+     * 兼容旧的 XML Curl Directory 入口。
+     * 后续新增类型优先使用更清晰的独立路径，不继续往该入口堆 purpose。
+     */
     @PostMapping(value = "/directory", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE, produces = MediaType.APPLICATION_XML_VALUE)
     public ResponseEntity<String> directory(@RequestParam MultiValueMap<String, String> params,
                                             @RequestHeader(value = TOKEN_HEADER, required = false) String token) {
+        return dispatchXmlCurl(params, token, firstValue(params, "section"), firstValue(params, "purpose"), "兼容目录入口");
+    }
+
+    @PostMapping(value = "/directory/users", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE, produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> directoryUsers(@RequestParam MultiValueMap<String, String> params,
+                                                 @RequestHeader(value = TOKEN_HEADER, required = false) String token) {
+        return dispatchXmlCurl(params, token, "directory", null, "用户目录");
+    }
+
+    @PostMapping(value = "/directory/gateways", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE, produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> directoryGateways(@RequestParam MultiValueMap<String, String> params,
+                                                    @RequestHeader(value = TOKEN_HEADER, required = false) String token) {
+            return dispatchXmlCurl(params, token, "directory", "gateways", "网关目录");
+    }
+
+    @PostMapping(value = "/dialplan", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE, produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> dialplan(@RequestParam MultiValueMap<String, String> params,
+                                           @RequestHeader(value = TOKEN_HEADER, required = false) String token) {
+        return dispatchXmlCurl(params, token, "dialplan", null, "拨号计划");
+    }
+
+    private ResponseEntity<String> dispatchXmlCurl(MultiValueMap<String, String> params, String token, String section, String purpose, String requestType) {
         if (!validToken(token, firstValue(params, "token"))) {
+            log.warn("FreeSWITCH 动态 XML 配置请求鉴权失败，类型={}，section={}，purpose={}，domain={}",
+                requestType, section, purpose, firstValue(params, "domain"));
             return ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(MediaType.APPLICATION_XML).body(FreeSwitchXmlRenderer.notFound());
         }
-        String section = firstValue(params, "section");
-        if (!"directory".equals(section)) return xml(FreeSwitchXmlRenderer.notFound());
-        String domain = firstValue(params, "domain");
-        String extension = firstValue(params, "user");
-        if (StringUtils.isBlank(extension)) extension = firstValue(params, "sip_auth_username");
-        if (StringUtils.isBlank(extension)) extension = firstValue(params, "key_value");
-        if (StringUtils.isBlank(domain) || StringUtils.isBlank(extension)) return xml(FreeSwitchXmlRenderer.notFound());
-
-        String tenantId = firstValue(params, "tenantId");
-        if (StringUtils.isBlank(tenantId)) tenantId = properties.getDefaultTenantId();
-        SipDirectoryAccountResponse account = sipAccountQueryService.findDirectoryAccount(tenantId, domain, extension);
-        if (account == null) return xml(FreeSwitchXmlRenderer.notFound());
-        return xml(directoryXmlRenderer.render(account));
+        String body = dispatcher.dispatch(params, section, purpose);
+        log.info("已返回 FreeSWITCH 动态 XML 配置，类型={}，section={}，purpose={}，domain={}，tenantId={}，响应长度={} 字符",
+            requestType, section, purpose, firstValue(params, "domain"), firstValue(params, "tenantId"), body.length());
+        return xml(body);
     }
 
     private boolean validToken(String headerToken, String queryToken) {
@@ -70,5 +88,4 @@ public class FreeSwitchDirectoryController {
         String value = request.getFirst(key);
         return value == null ? null : value.trim();
     }
-
 }

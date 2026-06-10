@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 
 @Slf4j
 @Component
@@ -43,6 +44,7 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
 
     @Override
     public void start() {
+        if (running) return;
         running = true;
         executor.submit(this::refreshListeners);
     }
@@ -66,8 +68,14 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
         while (running) {
             try {
                 for (FreeSwitchNodeConnectionResponse node : nodeQueryService.listEnabledConnections()) {
+                    if (!running || executor.isShutdown()) return;
                     listeners.computeIfAbsent(node.getNodeId(), ignored -> executor.submit(() -> listenWithReconnect(node)));
                 }
+            } catch (RejectedExecutionException exception) {
+                if (running) {
+                    log.error("Failed to submit FreeSWITCH ESL listener task", exception);
+                }
+                return;
             } catch (Exception exception) {
                 log.error("Failed to refresh FreeSWITCH ESL listeners", exception);
             }
