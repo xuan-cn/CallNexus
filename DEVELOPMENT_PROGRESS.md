@@ -172,7 +172,7 @@ POST /api/internal/freeswitch/directory/gateways
 
 当前代码侧暂无已知编译阻塞。FreeSWITCH 服务器侧联调结论：
 
-1. 网关 `5295357` 在 `ping > 0` 时无法正常呼入，将 `ping` 改为 `0` 后已可正常拨入。
+1. 网关 `52` 在 `ping > 0` 时无法正常呼入，将 `ping` 改为 `0` 后已可正常拨入。
 2. 该运营商线路不适合通过 SIP OPTIONS 判断网关健康状态，后续必须保持 `ping=0`。
 3. 网关健康状态应优先依据注册状态、真实呼叫结果和告警策略判断。
 4. 如果后续再次出现无法呼入，优先检查网关是否被误改为 `ping > 0`，再检查注册状态、SIP INVITE 和动态 Dialplan。
