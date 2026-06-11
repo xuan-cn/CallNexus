@@ -67,11 +67,13 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         ensureGatewayCodeUnique(request.getGatewayCode(), null);
         FreeSwitchGateway gateway = new FreeSwitchGateway();
         apply(gateway, request.getNodeId(), request.getGatewayCode(), request.getGatewayName(), request.getDirection(), request.getProxy(),
-            request.getRealm(), request.getUsername(), request.getRegisterEnabled(), request.getTransport(), request.getCallerIdNumber(), request.getPing());
+            request.getRealm(), request.getUsername(), request.getRegisterEnabled(), request.getTransport(), request.getCallerIdNumber(), request.getPing(),
+            request.getExpireSeconds(), request.getRetrySeconds(), request.getPingMax(), request.getPingMin(), request.getCallerIdInFrom(),
+            request.getFromUser(), request.getFromDomain(), request.getContactParams(), request.getDialplanContext(), request.getExtension(), request.getDescription());
         gateway.setPassword(request.getPassword());
         gateway.setEnabled(true);
         mapper.insert(gateway);
-        afterCommit(() -> refreshRuntimeGateway(gateway.getNodeId(), gateway.getGatewayCode()));
+        afterCommit(() -> addRuntimeGateway(gateway.getNodeId(), gateway.getGatewayCode()));
         return gateway.getId();
     }
 
@@ -84,13 +86,16 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         if (gateway == null) throw new ServiceException("FREESWITCH_GATEWAY_NOT_FOUND");
         Long oldNodeId = gateway.getNodeId();
         String oldGatewayCode = gateway.getGatewayCode();
+        Boolean oldEnabled = gateway.getEnabled();
         apply(gateway, request.getNodeId(), request.getGatewayCode(), request.getGatewayName(), request.getDirection(), request.getProxy(),
-            request.getRealm(), request.getUsername(), request.getRegisterEnabled(), request.getTransport(), request.getCallerIdNumber(), request.getPing());
+            request.getRealm(), request.getUsername(), request.getRegisterEnabled(), request.getTransport(), request.getCallerIdNumber(), request.getPing(),
+            request.getExpireSeconds(), request.getRetrySeconds(), request.getPingMax(), request.getPingMin(), request.getCallerIdInFrom(),
+            request.getFromUser(), request.getFromDomain(), request.getContactParams(), request.getDialplanContext(), request.getExtension(), request.getDescription());
         if (request.getPassword() != null && !request.getPassword().isBlank()) gateway.setPassword(request.getPassword());
         gateway.setEnabled(request.getEnabled());
         gateway.setVersion(request.getVersion());
         if (mapper.updateById(gateway) != 1) throw new ServiceException("FREESWITCH_GATEWAY_UPDATE_CONFLICT");
-        afterCommit(() -> syncAfterUpdate(oldNodeId, oldGatewayCode, gateway));
+        afterCommit(() -> syncAfterUpdate(oldNodeId, oldGatewayCode, oldEnabled, gateway));
     }
 
     @Override
@@ -133,7 +138,9 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
     }
 
     private void apply(FreeSwitchGateway gateway, Long nodeId, String code, String name, String direction, String proxy, String realm, String username,
-                       Boolean registerEnabled, String transport, String callerIdNumber, Integer ping) {
+                       Boolean registerEnabled, String transport, String callerIdNumber, Integer ping, Integer expireSeconds, Integer retrySeconds,
+                       Integer pingMax, Integer pingMin, Boolean callerIdInFrom, String fromUser, String fromDomain, String contactParams,
+                       String dialplanContext, String extension, String description) {
         gateway.setNodeId(nodeId);
         gateway.setGatewayCode(code);
         gateway.setGatewayName(name);
@@ -145,6 +152,17 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         gateway.setTransport(transport);
         gateway.setCallerIdNumber(callerIdNumber);
         gateway.setPing(ping == null ? 0 : ping);
+        gateway.setExpireSeconds(expireSeconds == null ? 60 : expireSeconds);
+        gateway.setRetrySeconds(retrySeconds == null ? 30 : retrySeconds);
+        gateway.setPingMax(pingMax == null ? 3 : pingMax);
+        gateway.setPingMin(pingMin == null ? 1 : pingMin);
+        gateway.setCallerIdInFrom(callerIdInFrom == null || callerIdInFrom);
+        gateway.setFromUser(fromUser);
+        gateway.setFromDomain(fromDomain);
+        gateway.setContactParams(contactParams);
+        gateway.setDialplanContext(dialplanContext == null || dialplanContext.isBlank() ? "public" : dialplanContext);
+        gateway.setExtension(extension == null || extension.isBlank() ? "auto_to_user" : extension);
+        gateway.setDescription(description);
     }
 
     private FreeSwitchGatewayResponse toResponse(FreeSwitchGateway gateway) {
@@ -163,6 +181,17 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         response.setTransport(gateway.getTransport());
         response.setCallerIdNumber(gateway.getCallerIdNumber());
         response.setPing(gateway.getPing() == null ? 0 : gateway.getPing());
+        response.setExpireSeconds(gateway.getExpireSeconds() == null ? 60 : gateway.getExpireSeconds());
+        response.setRetrySeconds(gateway.getRetrySeconds() == null ? 30 : gateway.getRetrySeconds());
+        response.setPingMax(gateway.getPingMax() == null ? 3 : gateway.getPingMax());
+        response.setPingMin(gateway.getPingMin() == null ? 1 : gateway.getPingMin());
+        response.setCallerIdInFrom(gateway.getCallerIdInFrom() == null || gateway.getCallerIdInFrom());
+        response.setFromUser(gateway.getFromUser());
+        response.setFromDomain(gateway.getFromDomain());
+        response.setContactParams(gateway.getContactParams());
+        response.setDialplanContext(gateway.getDialplanContext());
+        response.setExtension(gateway.getExtension());
+        response.setDescription(gateway.getDescription());
         response.setEnabled(gateway.getEnabled());
         response.setVersion(gateway.getVersion());
         response.setCreateTime(gateway.getCreateTime());
@@ -182,31 +211,52 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         response.setTransport(gateway.getTransport());
         response.setCallerIdNumber(gateway.getCallerIdNumber());
         response.setPing(gateway.getPing() == null ? 0 : gateway.getPing());
+        response.setExpireSeconds(gateway.getExpireSeconds() == null ? 60 : gateway.getExpireSeconds());
+        response.setRetrySeconds(gateway.getRetrySeconds() == null ? 30 : gateway.getRetrySeconds());
+        response.setPingMax(gateway.getPingMax() == null ? 3 : gateway.getPingMax());
+        response.setPingMin(gateway.getPingMin() == null ? 1 : gateway.getPingMin());
+        response.setCallerIdInFrom(gateway.getCallerIdInFrom() == null || gateway.getCallerIdInFrom());
+        response.setFromUser(gateway.getFromUser());
+        response.setFromDomain(gateway.getFromDomain());
+        response.setContactParams(gateway.getContactParams());
+        response.setDialplanContext(gateway.getDialplanContext() == null ? "public" : gateway.getDialplanContext());
+        response.setExtension(gateway.getExtension() == null ? "auto_to_user" : gateway.getExtension());
         return response;
     }
 
-    private void syncAfterUpdate(Long oldNodeId, String oldGatewayCode, FreeSwitchGateway gateway) {
+    private void syncAfterUpdate(Long oldNodeId, String oldGatewayCode, Boolean oldEnabled, FreeSwitchGateway gateway) {
         boolean codeChanged = !oldGatewayCode.equals(gateway.getGatewayCode());
         boolean nodeChanged = !oldNodeId.equals(gateway.getNodeId());
         if (codeChanged || nodeChanged) {
-            removeRuntimeGateway(oldNodeId, oldGatewayCode);
-            refreshRuntimeGateway(gateway.getNodeId(), gateway.getGatewayCode());
+            if (Boolean.TRUE.equals(oldEnabled)) removeRuntimeGateway(oldNodeId, oldGatewayCode);
+            if (Boolean.TRUE.equals(gateway.getEnabled())) addRuntimeGateway(gateway.getNodeId(), gateway.getGatewayCode());
             return;
         }
-        if (Boolean.TRUE.equals(gateway.getEnabled())) {
-            refreshRuntimeGateway(gateway.getNodeId(), gateway.getGatewayCode());
-        } else {
+        if (Boolean.TRUE.equals(oldEnabled) && !Boolean.TRUE.equals(gateway.getEnabled())) {
             removeRuntimeGateway(gateway.getNodeId(), gateway.getGatewayCode());
+        } else if (!Boolean.TRUE.equals(oldEnabled) && Boolean.TRUE.equals(gateway.getEnabled())) {
+            addRuntimeGateway(gateway.getNodeId(), gateway.getGatewayCode());
+        } else if (Boolean.TRUE.equals(gateway.getEnabled())) {
+            updateRuntimeGateway(gateway.getNodeId(), gateway.getGatewayCode());
         }
     }
 
-    private void refreshRuntimeGateway(Long nodeId, String gatewayCode) {
+    private void addRuntimeGateway(Long nodeId, String gatewayCode) {
         FreeSwitchGatewayRuntimeSyncService syncService = runtimeSyncServiceProvider.getIfAvailable();
         if (syncService == null) {
-            log.warn("未找到 FreeSWITCH 网关运行态同步服务，跳过刷新同步，nodeId={}，gatewayCode={}", nodeId, gatewayCode);
+            log.warn("未找到 FreeSWITCH 网关运行态同步服务，跳过新增同步，nodeId={}，gatewayCode={}", nodeId, gatewayCode);
             return;
         }
-        syncService.refreshGateway(nodeId, gatewayCode);
+        syncService.addGateway(nodeId, gatewayCode);
+    }
+
+    private void updateRuntimeGateway(Long nodeId, String gatewayCode) {
+        FreeSwitchGatewayRuntimeSyncService syncService = runtimeSyncServiceProvider.getIfAvailable();
+        if (syncService == null) {
+            log.warn("未找到 FreeSWITCH 网关运行态同步服务，跳过修改同步，nodeId={}，gatewayCode={}", nodeId, gatewayCode);
+            return;
+        }
+        syncService.updateGateway(nodeId, gatewayCode);
     }
 
     private void removeRuntimeGateway(Long nodeId, String gatewayCode) {

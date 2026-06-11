@@ -46,7 +46,12 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         String value = request.firstValue("destination_number");
         if (value == null || value.isBlank()) value = request.firstValue("Caller-Destination-Number");
         if (value == null || value.isBlank()) value = request.firstValue("Hunt-Destination-Number");
-        return value;
+        if (value == null || value.isBlank()) value = request.firstValue("variable_destination_number");
+        if (value == null || value.isBlank()) value = request.firstValue("sip_to_user");
+        if (value == null || value.isBlank()) value = request.firstValue("variable_sip_to_user");
+        if (value == null || value.isBlank()) value = request.firstValue("sip_req_user");
+        if (value == null || value.isBlank()) value = request.firstValue("variable_sip_req_user");
+        return normalizeDialedNumber(value);
     }
 
     private String domain(FreeSwitchXmlCurlRequest request) {
@@ -67,5 +72,17 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         if (value == null || value.isBlank()) value = request.firstValue("Caller-Caller-ID-Number");
         if (value == null || value.isBlank()) value = request.firstValue("variable_caller_id_number");
         return value;
+    }
+
+    private String normalizeDialedNumber(String value) {
+        if (value == null) return null;
+        String normalized = value.trim();
+        if (normalized.regionMatches(true, 0, "sip:", 0, 4)) normalized = normalized.substring(4);
+        if (normalized.regionMatches(true, 0, "tel:", 0, 4)) normalized = normalized.substring(4);
+        int atIndex = normalized.indexOf('@');
+        if (atIndex > 0) normalized = normalized.substring(0, atIndex);
+        int parameterIndex = normalized.indexOf(';');
+        if (parameterIndex > 0) normalized = normalized.substring(0, parameterIndex);
+        return normalized.trim();
     }
 }

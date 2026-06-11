@@ -1,11 +1,11 @@
-package org.dromara.call.domain;
+package org.dromara.agent.domain;
 
 import lombok.Data;
 
 import java.io.Serializable;
 
 @Data
-public class ActiveCall implements Serializable {
+public class AgentActiveCall implements Serializable {
     private String callId;
     private Long agentId;
     private String agentExtension;

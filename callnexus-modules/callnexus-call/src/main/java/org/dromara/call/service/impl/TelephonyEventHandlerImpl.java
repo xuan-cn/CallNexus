@@ -8,10 +8,11 @@ import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
 import org.dromara.agent.service.AgentRealtimeQueryService;
 import org.dromara.call.constant.EslEventNames;
 import org.dromara.call.constant.EslHeaders;
-import org.dromara.call.domain.ActiveCall;
+import org.dromara.agent.domain.AgentActiveCall;
 import org.dromara.call.domain.TelephonyEvent;
 import org.dromara.call.domain.response.CallRealtimeMessage;
 import org.dromara.call.service.TelephonyEventHandler;
+import org.dromara.call.service.CallRecordApplicationService;
 import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
@@ -41,9 +42,16 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private static final Duration ENDED_CALL_TTL = Duration.ofSeconds(30);
 
     private final AgentRealtimeQueryService agentQueryService;
+    private final CallRecordApplicationService callRecordApplicationService;
 
     @Override
     public void onEvent(TelephonyEvent event) {
+        try {
+            callRecordApplicationService.handleEvent(event);
+        } catch (Exception exception) {
+            log.error("通话记录事件落库失败，不影响实时通话状态处理，nodeId={}，eventName={}，uuid={}",
+                event.nodeId(), event.eventName(), event.uuid(), exception);
+        }
         if (!EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName()) && isEndedCallEvent(event)) {
             return;
         }
@@ -171,14 +179,14 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         Collection<String> keys = RedisUtils.keys(ACTIVE_CALL_KEY_PREFIX + "*");
         Set<String> relatedUuids = relatedUuids(event);
         for (String key : keys) {
-            ActiveCall call = RedisUtils.getCacheObject(key);
+            AgentActiveCall call = RedisUtils.getCacheObject(key);
             if (call == null || !matchesEndedCall(event, relatedUuids, call)) continue;
             AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(event.nodeId(), call.getAgentExtension());
             if (target != null) targets.put(target.getAgentId(), target);
         }
     }
 
-    private boolean matchesEndedCall(TelephonyEvent event, Set<String> relatedUuids, ActiveCall call) {
+    private boolean matchesEndedCall(TelephonyEvent event, Set<String> relatedUuids, AgentActiveCall call) {
         if (call.getCallId() != null && relatedUuids.contains(call.getCallId())) return true;
         return equalsAny(call.getAgentExtension(), event.callerNumber(), event.destinationNumber());
     }
@@ -194,7 +202,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private void saveActiveCallIfAbsent(TelephonyEvent event, AgentRealtimeTargetResponse target) {
         String key = activeCallKey(target);
         if (RedisUtils.getCacheObject(key) != null) return;
-        ActiveCall call = new ActiveCall();
+        AgentActiveCall call = new AgentActiveCall();
         call.setCallId(event.uuid());
         call.setAgentId(target.getAgentId());
         call.setAgentExtension(target.getExtension());

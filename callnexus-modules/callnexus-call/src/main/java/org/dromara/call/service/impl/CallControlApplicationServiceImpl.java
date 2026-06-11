@@ -4,7 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.response.CurrentAgentResponse;
 import org.dromara.agent.service.CurrentAgentSessionService;
-import org.dromara.call.domain.ActiveCall;
+import org.dromara.agent.domain.AgentActiveCall;
 import org.dromara.call.domain.EslEndpoint;
 import org.dromara.call.domain.OutboundRoute;
 import org.dromara.call.domain.response.CallControlResponse;
@@ -39,7 +39,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     public CallControlResponse originate(String destination) {
         CurrentAgentResponse agent = requireSignedInAgent();
         String key = activeCallKey(agent.getAgentId());
-        ActiveCall existingCall = RedisUtils.getCacheObject(key);
+        AgentActiveCall existingCall = RedisUtils.getCacheObject(key);
         if (existingCall != null) {
             if (telephonyCommandGateway.callExists(endpoint(agent.getNodeId()), existingCall.getCallId())) {
                 throw new ServiceException("AGENT_ALREADY_HAS_ACTIVE_CALL");
@@ -51,7 +51,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         OutboundRoute outboundRoute = resolveOutboundRoute(agent, destination);
         telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), destination, outboundRoute);
 
-        ActiveCall activeCall = new ActiveCall();
+        AgentActiveCall activeCall = new AgentActiveCall();
         activeCall.setCallId(callId);
         activeCall.setAgentId(agent.getAgentId());
         activeCall.setAgentExtension(agent.getExtension());
@@ -68,7 +68,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     public void hangup(String callId) {
         CurrentAgentResponse agent = requireSignedInAgent();
         String key = activeCallKey(agent.getAgentId());
-        ActiveCall activeCall = RedisUtils.getCacheObject(key);
+        AgentActiveCall activeCall = RedisUtils.getCacheObject(key);
         if (activeCall == null || !activeCall.getCallId().equals(callId)) {
             throw new ServiceException("ACTIVE_CALL_NOT_FOUND");
         }
@@ -112,7 +112,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         return OutboundRoute.external(route.getGatewayCode(), route.getNumber());
     }
 
-    private CallControlResponse toResponse(ActiveCall call) {
+    private CallControlResponse toResponse(AgentActiveCall call) {
         CallControlResponse response = new CallControlResponse();
         response.setCallId(call.getCallId());
         response.setAgentExtension(call.getAgentExtension());

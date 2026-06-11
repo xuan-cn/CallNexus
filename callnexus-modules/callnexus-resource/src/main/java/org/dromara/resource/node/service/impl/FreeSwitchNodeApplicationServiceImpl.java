@@ -72,7 +72,16 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
             .filter(node -> node.getEslHost() != null && !node.getEslHost().isBlank()
                 && node.getEslPort() != null && node.getEslPassword() != null && !node.getEslPassword().isBlank())
             .map(this::toConnectionResponse)
-            .toList());
+              .toList());
+    }
+
+    @Override
+    public String findTenantId(Long nodeId) {
+        if (nodeId == null) return null;
+        return TenantHelper.ignore(() -> {
+            FreeSwitchNode node = mapper.selectById(nodeId);
+            return node == null ? null : node.getTenantId();
+        });
     }
 
     @Override

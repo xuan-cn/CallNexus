@@ -1,0 +1,36 @@
+CREATE TABLE cc_call_record (
+    id                  BIGINT          NOT NULL COMMENT 'Call record ID',
+    tenant_id           VARCHAR(20)     NOT NULL COMMENT 'Tenant ID',
+    node_id             BIGINT          NOT NULL COMMENT 'FreeSWITCH node ID',
+    channel_uuid        VARCHAR(64)     NOT NULL COMMENT 'FreeSWITCH channel UUID',
+    call_uuid           VARCHAR(64)     NULL COMMENT 'Related business call UUID',
+    direction           VARCHAR(16)     NOT NULL DEFAULT 'UNKNOWN' COMMENT 'INBOUND/OUTBOUND/INTERNAL/UNKNOWN',
+    caller_number       VARCHAR(64)     NULL COMMENT 'Caller number',
+    called_number       VARCHAR(64)     NULL COMMENT 'Called number',
+    agent_id            BIGINT          NULL COMMENT 'Related agent ID',
+    agent_extension     VARCHAR(32)     NULL COMMENT 'Related agent extension',
+    call_status         VARCHAR(16)     NOT NULL DEFAULT 'CREATED' COMMENT 'CREATED/RINGING/ANSWERED/BRIDGED/ENDED',
+    started_at          DATETIME        NULL COMMENT 'Channel create time',
+    ringing_at          DATETIME        NULL COMMENT 'Progress or ringing time',
+    answered_at         DATETIME        NULL COMMENT 'Answer time',
+    ended_at            DATETIME        NULL COMMENT 'Hangup complete time',
+    duration_seconds    INT             NOT NULL DEFAULT 0 COMMENT 'Total duration seconds',
+    billable_seconds    INT             NOT NULL DEFAULT 0 COMMENT 'Answered duration seconds',
+    hangup_cause        VARCHAR(64)     NULL COMMENT 'FreeSWITCH hangup cause',
+    create_dept         BIGINT          NULL,
+    create_by           BIGINT          NULL,
+    create_time         DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_by           BIGINT          NULL,
+    update_time         DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    version             INT             NOT NULL DEFAULT 0 COMMENT 'Optimistic lock version',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_cc_call_record_tenant_channel (tenant_id, channel_uuid),
+    KEY idx_cc_call_record_call_uuid (tenant_id, call_uuid),
+    KEY idx_cc_call_record_agent (tenant_id, agent_id, started_at),
+    KEY idx_cc_call_record_caller (tenant_id, caller_number, started_at),
+    KEY idx_cc_call_record_called (tenant_id, called_number, started_at),
+    KEY idx_cc_call_record_started (tenant_id, started_at)
+) ENGINE=InnoDB COMMENT='Call detail record';
+
+INSERT INTO sys_menu VALUES('9009', '通话记录', '9000', '9', 'call-record', 'callcenter/call-record/index', '', 1, 0, 'C', '0', '0', 'callcenter:call-record:list', 'phone', 103, 1, sysdate(), null, null, '呼叫中心通话记录菜单');
+INSERT INTO sys_menu VALUES('9091', '通话记录查询', '9009', '1', '', '', '', 1, 0, 'F', '0', '0', 'callcenter:call-record:query', '#', 103, 1, sysdate(), null, null, '');

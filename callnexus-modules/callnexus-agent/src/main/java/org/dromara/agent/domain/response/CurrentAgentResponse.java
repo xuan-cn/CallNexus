@@ -18,6 +18,8 @@ public class CurrentAgentResponse {
     private String sipDisplayName;
     private String sipDomain;
     private String wssUrl;
+    private String activeCallId;
+    private String activeCallNumber;
     private AgentPresenceStatus status;
     private LocalDateTime signedInAt;
     private LocalDateTime updatedAt;

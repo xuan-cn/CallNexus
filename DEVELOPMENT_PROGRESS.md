@@ -24,16 +24,20 @@
 
 当前处于：
 
-**阶段 3：网关、号码和呼入路由基础能力开发中**
+**阶段 4：真实呼入闭环与 CDR 通话记录联调中**
 
-基础呼叫中心底座已经基本完成，FreeSWITCH 动态 Directory 已完成联调，当前进入外线接入前置能力建设。
+基础呼叫中心底座、FreeSWITCH 动态 Directory、网关、号码管理和固定分机呼入路由已经完成第一版，真实外线已经可以呼入，当前重点是完成浏览器坐席工作台闭环并验证 CDR 数据。
 
 当前正在处理的问题：
 
 - 已完成网关管理第一版，包括后端 CRUD、前端页面、菜单权限、数据库迁移脚本和动态 Gateway XML 后端输出。
 - 已完成号码管理第一版，用于维护 DID、默认主叫号码、号码归属节点、呼入路由和启停状态。
 - 已完成动态 Dialplan 第一版，支持 FreeSWITCH 通过独立 XML Curl 接口按号码获取呼入路由。
-- 当前阻塞在服务器侧 FreeSWITCH 联调：手动 curl CallNexus `/dialplan` 可以返回正确 XML，但真实呼入时 FreeSWITCH 最新临时 XML 仍返回 `not found`，需要继续确认 `xml_curl.conf.xml` 的真实请求 URL、`domain`、`tenantId`、`destination_number` 和 `Caller-Context` 是否与手动 curl 一致。
+- 已增强真实呼入兼容能力：支持从更多 FreeSWITCH 请求字段提取被叫号码，并兼容 `sip:`、`tel:`、`号码@域名` 等格式；请求 domain 无法匹配节点时，可按租户内唯一 DID 兜底查找绑定节点。
+- 已完成真实外线呼入验证：将网关 `ping` 设置为 `0` 后可以正常拨入，确认该运营商线路不适合使用 SIP OPTIONS 探测。
+- 已完成 CDR 通话记录第一版，支持 ESL 通话生命周期落库、列表详情查询，以及客户和工单详情的通话记录 Tab。
+- 已支持浏览器软电话通过活动通话快照恢复来电状态，避免遗漏 WebSocket 瞬时事件后无法自动弹出。
+- 浏览器悬浮软电话已支持拖拽、边界限制和当前会话位置记忆。
 
 ## 已完成内容
 
@@ -60,6 +64,8 @@
 - 已处理部分通话挂断后浏览器状态同步问题。
 - 当前 WebRTC WSS 直连浏览器软电话方案暂不作为主方案，优先采用“普通 SIP 软电话 + ESL 控制”。
 - 已处理软电话侧挂断后 Web 电话条仍显示通话中的状态同步问题。
+- 当前坐席接口已返回活动通话快照，浏览器通过 WebSocket 实时事件与定时同步双重机制恢复来电号码、通话 ID 和软电话面板状态。
+- 悬浮软电话支持拖拽标题栏移动，避免遮挡客户或工单操作按钮。
 
 ### FreeSWITCH 动态 XML
 
@@ -111,6 +117,7 @@ curl -X POST "http://后端地址/api/internal/freeswitch/directory?token=cnx_fs
 - 已支持客户详情和工单详情展示自定义字段。
 - 已支持客户跟进记录。
 - 已支持客户详情右侧 Tabs，当前第一个 Tab 为跟进记录，后续可扩展通话记录。
+- 客户详情和工单详情的通话记录 Tab 已接入真实 CDR 查询。
 - 新建客户时，如果号码已存在，应直接带出已有客户信息，不重复创建。
 
 ### 网关和外线接入基础
@@ -123,6 +130,9 @@ curl -X POST "http://后端地址/api/internal/freeswitch/directory?token=cnx_fs
 - 已将网关 XML 调整为 FreeSWITCH 期望的 user gateways 目录格式，`<gateway>` 位于 `<user><gateways>` 下。
 - 已新增网关 `ping` 配置字段，默认 `0`，用于兼容运营商不响应 SIP OPTIONS 导致网关进入 `FAIL_WAIT` 的场景。
 - 已实现网关新增、修改、删除后的 ESL 运行时同步能力，后续仍需在真实 FreeSWITCH 环境继续验证稳定性。
+- 已修正网关运行态同步语义：新增执行 `reloadxml + rescan`；修改执行 `killgw + 等待释放 + reloadxml + rescan`；删除仅执行 `killgw`，避免旧配置不生效或删除后被重新加载。
+- 已补齐网关 REGISTER 续期、注册重试、Ping 阈值、From 头、Contact 参数、Context 和 Extension 等可配置参数。
+- 网关页面的“注册与保活”和“高级配置”已改为折叠展示。
 
 ### 号码管理和动态 Dialplan
 
@@ -144,6 +154,14 @@ POST /api/internal/freeswitch/directory/gateways
 - 已实现号码呼入到固定 SIP 分机的第一版路由，例如 DID `5295357` 可返回桥接到 `user/1001@192.168.244.128` 的 Dialplan XML。
 - 已在 FreeSWITCH XML Curl 关键请求和返回位置补充中文日志，方便排查真实请求参数和路由命中情况。
 
+### CDR 通话记录
+
+- 已新增 `cc_call_record` 通话记录表、菜单、后端查询接口、前端列表和详情页面。
+- 已支持 `CHANNEL_CREATE`、振铃、接听、桥接和挂断事件持续更新通话记录。
+- 已记录 Channel UUID、Call UUID、主叫、被叫、坐席分机、呼叫方向、开始时间、接听时间、结束时间、总时长、通话时长和挂断原因。
+- 当前按每个 FreeSWITCH Channel UUID 保存一条底层通话腿记录，因此一次外线呼入桥接到坐席时可能产生两条记录。
+- 后续需要将同一业务通话的多条通话腿聚合为列表中的一条业务通话，详情中再展示底层通话腿。
+
 ### 文档
 
 - 已新增 `FEATURE_ROADMAP.md`，记录全部功能模块和开发顺序。
@@ -152,57 +170,57 @@ POST /api/internal/freeswitch/directory/gateways
 
 ## 阻塞事项
 
-当前代码侧暂无已知编译阻塞，主要阻塞在 FreeSWITCH 服务器侧联调：
+当前代码侧暂无已知编译阻塞。FreeSWITCH 服务器侧联调结论：
 
-1. CallNexus 手动 curl `/api/internal/freeswitch/dialplan` 时可以返回正确 Dialplan XML，示例路由为 `5295357 -> user/1001@192.168.244.128`。
-2. 真实外线呼入时，FreeSWITCH 生成的最新 `/tmp/*.tmp.xml` 仍可能是 `<result status="not found"/>`，说明真实 `mod_xml_curl` 请求的 URL 或参数仍与手动 curl 不一致。
-3. 服务器侧 `xml_curl.conf.xml` 的 dialplan binding 必须使用独立地址 `/api/internal/freeswitch/dialplan`，并固定带上 `tenantId=000000` 和 `domain=192.168.244.128`；XML 中 URL 参数连接符必须写成 `&amp;`。
-4. FreeSWITCH 配置里建议使用 `<param name="bindings" value="dialplan"/>`，directory/gateway binding 也统一使用 `bindings`。
-5. 当前在部分 shell/container 中执行 `fs_cli -x ...` 报 `Error Connecting []`，说明未连到 FreeSWITCH Event Socket，暂时阻塞命令方式模拟呼入测试；需要进入真正运行 FreeSWITCH 的容器/主机，或使用正确的 `fs_cli -H 127.0.0.1 -P 8021 -p <password>` 参数。
-6. 如果手机真实呼入无法触发正确 Dialplan，需要抓包或查看 CallNexus 后端中文日志，确认真实请求中的 `section`、`destination_number`、`Caller-Context`、`domain`、`tenantId`。
+1. 网关 `5295357` 在 `ping > 0` 时无法正常呼入，将 `ping` 改为 `0` 后已可正常拨入。
+2. 该运营商线路不适合通过 SIP OPTIONS 判断网关健康状态，后续必须保持 `ping=0`。
+3. 网关健康状态应优先依据注册状态、真实呼叫结果和告警策略判断。
+4. 如果后续再次出现无法呼入，优先检查网关是否被误改为 `ping > 0`，再检查注册状态、SIP INVITE 和动态 Dialplan。
+5. 当前 CDR 按底层通话腿记录，一次呼入可能产生“外线到 DID”和“桥接到坐席”两条记录，这是当前第一版设计，待继续实现业务通话聚合。
+6. 浏览器来电自动弹出需要后端活动通话快照和前端新版本同时部署，并保持坐席已签入。
 
 ## 下一步开发任务
 
-### 下一步 1：继续联调 FreeSWITCH 动态 Dialplan 真实呼入
+### 下一步 1：部署并验证真实呼入浏览器闭环
 
-状态：进行中，服务器侧请求参数阻塞
+状态：进行中，代码已完成，待部署联调
 
 目标：
 
-- 确认 FreeSWITCH 真实呼入时请求到 CallNexus 独立 `/dialplan` 接口。
-- 确认真实请求带上正确 `tenantId`、`domain`、`destination_number` 和 `Caller-Context`。
-- 确认真实呼入最新 `/tmp/*.tmp.xml` 返回 `section name="dialplan"`，而不是 `result not found`。
+- 确认外线呼入后目标软电话正常响铃、接听和双向通话。
+- 确认浏览器坐席工作台能展示真实来电号码。
+- 确认软电话挂断后浏览器状态自动结束。
+- 确认呼入过程中可以创建或带出客户、创建工单。
+- 确认遗漏 WebSocket 来电事件时，浏览器最多 3 秒内仍可通过活动通话快照自动弹出软电话。
+- 确认悬浮软电话拖拽、窗口边界限制和位置记忆正常。
 
 建议范围：
 
-1. 检查服务器 `/etc/freeswitch/autoload_configs/xml_curl.conf.xml`。
-2. 重载 `reloadxml` 和 `reload mod_xml_curl`。
-3. 用 `curl`、`tcpdump`、FreeSWITCH 临时 XML 文件和 CallNexus 后端中文日志交叉确认真实请求参数。
-4. 修复 `fs_cli` 连接问题后，用 `xml_locate` 或 `originate loopback/5295357/public` 模拟呼入。
+1. 使用手机拨入线路号码并接听。
+2. 验证双向语音和 RTP NAT。
+3. 检查 CallNexus 浏览器来电事件和客户号码。
+4. 完整验证接听、挂断、客户和工单操作。
 
-本阶段暂不做：
+### 下一步 2：实现 CDR 业务通话聚合
 
-- 不做 IVR。
-- 不扩展队列、技能组和复杂路由。
-- 不先开发 CDR，等呼入主链路打通后再做。
-
-### 下一步 2：完善动态 Dialplan 和呼入路由
-
-状态：第一版已完成，待真实呼入联调通过后继续
+状态：第一版底层通话腿记录已完成，待开发聚合
 
 目标：
 
-- FreeSWITCH 根据 CallNexus 的路由配置动态生成拨号计划。
-- 外线来电可以按号码进入 IVR、队列、坐席或技能组。
+- 使用 `callUuid`、桥接 UUID 和关联 UUID 将同一次呼入的 A-Leg、B-Leg 聚合为一条业务通话。
+- 通话记录列表只展示一条业务记录，例如“客户号码 -> DID -> 坐席 1001”。
+- 通话记录详情展示全部底层通话腿。
+- 明确业务通话方向、最终坐席、接听结果和通话时长计算规则。
 
-### 下一步 3：开发 CDR 通话记录
+### 下一步 3：接入录音和显式业务关联
 
-状态：待开始
+状态：待 CDR 聚合完成后开始
 
 目标：
 
-- 将 ESL 事件和 FreeSWITCH 通话生命周期整理为可查询的通话记录。
-- 为客户详情、工单详情的通话记录 Tab 做准备。
+- 将录音文件与业务通话关联并支持回放。
+- 支持通话记录显式关联客户和工单，不再只依赖电话号码查询。
+- 完成以上能力后，再进入 IVR、技能组和队列开发。
 
 ## 已完成阶段
 
@@ -265,6 +283,56 @@ POST /api/internal/freeswitch/directory/gateways
 
 - 开发号码管理。
 
+### 2026-06-11：完成 CDR 通话记录第一版
+
+本次完成：
+
+- 新增 `cc_call_record` 通话记录表和通话记录菜单。
+- ESL 通话事件已接入 CDR 生命周期落库，支持创建、振铃、接听、桥接和挂断状态。
+- 通话挂断后记录总时长、接通时长和 FreeSWITCH 挂断原因。
+- 支持按主叫、被叫、参与号码、呼叫方向和通话状态查询。
+- 新增通话记录列表与详情页面。
+- 客户详情和工单详情的“通话记录”Tab 已接入真实 CDR 数据。
+- CDR 落库异常已与实时电话条状态处理隔离，数据库写入失败不会阻断浏览器通话状态推送。
+
+下一步：
+
+- 部署并执行 `V13__add_call_record.sql`，通过真实呼入、呼出和内部通话验证 CDR 数据。
+- 根据真实 FreeSWITCH 事件头优化多通话腿聚合规则，再接入录音文件和客户、工单显式关联。
+
+### 2026-06-11：增强浏览器来电恢复与悬浮软电话交互
+
+本次完成：
+
+- 修复客户外线呼入时浏览器可能未自动弹出软电话的问题。
+- 将活动通话快照补充到当前坐席接口，返回活动通话 ID 和对端号码。
+- 前端继续使用 WebSocket 实时处理来电，同时每 3 秒同步当前坐席活动通话作为兜底。
+- 页面刷新、WebSocket 重连或来电事件遗漏时，浏览器可恢复活动通话并自动展开软电话。
+- 悬浮软电话支持通过标题栏拖拽，位置被限制在浏览器可视区域，并在当前会话中记忆。
+- 后端 Maven 编译通过，相关前端 ESLint 通过。
+
+下一步：
+
+- 部署前后端新版本，验证真实外线呼入时浏览器自动弹出、号码展示、拖拽、接听、挂断和状态恢复。
+- 开发 CDR 业务通话聚合，将同一次呼入产生的多条底层通话腿合并为一条业务通话记录。
+
+### 2026-06-11：补齐网关注册保活和高级参数
+
+本次完成：
+
+- 网关新增 REGISTER 续期和失败重试配置，默认值分别为 `expire-seconds=60`、`retry-seconds=30`。
+- 网关新增 `ping-max`、`ping-min` 配置，仅在启用 OPTIONS ping 时输出。
+- 网关新增 From 头、Contact 参数、呼入 Context、呼入 Extension 和备注配置。
+- 动态 Gateway XML 改为从数据库输出上述参数，不再依赖硬编码值。
+- 网关编辑页按“注册与保活”“高级配置”分区展示，并在列表中展示注册续期间隔。
+- 修改已启用网关后继续通过 `killgw + reloadxml + rescan` 更新 FreeSWITCH 运行态。
+
+当前线路建议配置：
+
+- `ping=0`，避免运营商不响应 OPTIONS 导致网关被误判为 DOWN。
+- `expireSeconds=60`、`retrySeconds=30`，使用 REGISTER 保持 NAT 映射。
+- 如果仍出现 NAT 呼入空窗，可逐步降低 `expireSeconds`，并观察运营商是否返回 `423 Interval Too Brief`。
+
 ### 2026-06-10：完成号码管理、动态 Dialplan 第一版，并记录 FreeSWITCH 联调阻塞
 
 本次完成：
@@ -287,6 +355,42 @@ POST /api/internal/freeswitch/directory/gateways
 - 服务器侧修正并确认 `xml_curl.conf.xml`，dialplan binding 使用独立 `/dialplan` URL，并带 `token`、`tenantId=000000`、`domain=192.168.244.128`。
 - 重新执行 `reloadxml` 和 `reload mod_xml_curl` 后，真实呼入并检查最新 `/tmp/*.tmp.xml` 是否返回 `section name="dialplan"`。
 - 修复 `fs_cli` 连接后，使用 `xml_locate dialplan public 5295357` 或 `originate loopback/5295357/public` 做不依赖手机线路的命令测试。
+
+### 2026-06-11：增强动态 Dialplan 真实呼入参数兼容
+
+本次完成：
+
+- 动态 Dialplan 支持从 `destination_number`、`Caller-Destination-Number`、`Hunt-Destination-Number`、`variable_destination_number`、`sip_to_user`、`variable_sip_to_user`、`sip_req_user`、`variable_sip_req_user` 提取被叫号码。
+- 支持清理 `sip:`、`tel:`、`号码@域名` 和 SIP 参数格式。
+- 呼入路由先按节点 SIP 域精确匹配，失败后按租户内唯一号码兜底查找，并校验号码绑定节点处于启用状态。
+
+下一步：
+
+- 重新部署 CallNexus 后进行真实外线呼入，查看后端“动态呼入路由按号码兜底匹配成功”或“动态拨号计划匹配到固定分机路由”日志。
+- 如果仍返回 `not found`，确认真实请求是否进入 `/api/internal/freeswitch/dialplan`。
+
+### 2026-06-11：完成外线呼入联调
+
+联调结论：
+
+- 网关注册状态正常，但启用 SIP OPTIONS 探测时无法正常呼入。
+- 将网关 `ping` 设置为 `0` 后，外线电话可以正常拨入。
+- 该运营商线路后续必须保持 `ping=0`，动态 Gateway XML 在 `ping <= 0` 时完全不输出 `ping` 参数，避免 FreeSWITCH 继续执行 SIP OPTIONS 探测。
+- 如果运行一段时间后仍出现 `Ping failed`，说明 FreeSWITCH 仍加载着旧运行态或重复网关配置，需要先清理重复网关并重新加载 external profile。
+
+下一步：
+
+- 验证真实呼入后的响铃、接听、双向语音、浏览器来电展示、挂断同步、客户和工单创建完整闭环。
+
+### 2026-06-11：修正 FreeSWITCH 网关运行态同步
+
+本次完成：
+
+- 将新增、修改、删除网关拆分为不同的运行态同步动作。
+- 新增网关执行 `reloadxml + external rescan`。
+- 修改已启用网关执行 `external killgw + 等待释放 + reloadxml + external rescan`，确保 `ping`、密码、代理地址等修改真正生效。
+- 删除或停用网关只执行 `external killgw`，不再执行 `rescan`，避免网关被重新拉取。
+- 正确处理网关启用、停用、改名和更换 FreeSWITCH 节点的状态转换。
 
 ### 2026-06-09：补齐 FreeSWITCH 动态 Gateway XML 后端输出
 

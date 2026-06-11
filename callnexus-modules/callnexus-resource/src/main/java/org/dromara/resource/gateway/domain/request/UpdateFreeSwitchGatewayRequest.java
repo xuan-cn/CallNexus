@@ -40,6 +40,31 @@ public class UpdateFreeSwitchGatewayRequest {
     @Min(0)
     @Max(3600)
     private Integer ping;
+    @Min(10)
+    @Max(86400)
+    private Integer expireSeconds;
+    @Min(1)
+    @Max(3600)
+    private Integer retrySeconds;
+    @Min(1)
+    @Max(100)
+    private Integer pingMax;
+    @Min(1)
+    @Max(100)
+    private Integer pingMin;
+    private Boolean callerIdInFrom;
+    @Size(max = 64)
+    private String fromUser;
+    @Size(max = 128)
+    private String fromDomain;
+    @Size(max = 255)
+    private String contactParams;
+    @Pattern(regexp = "^[A-Za-z0-9_-]{1,64}$")
+    private String dialplanContext;
+    @Pattern(regexp = "^[A-Za-z0-9_+*#${}-]{1,64}$")
+    private String extension;
+    @Size(max = 255)
+    private String description;
     @NotNull
     private Boolean enabled;
     @NotNull

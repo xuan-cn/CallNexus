@@ -28,6 +28,17 @@ public class FreeSwitchGateway extends TenantEntity {
     private String transport;
     private String callerIdNumber;
     private Integer ping;
+    private Integer expireSeconds;
+    private Integer retrySeconds;
+    private Integer pingMax;
+    private Integer pingMin;
+    private Boolean callerIdInFrom;
+    private String fromUser;
+    private String fromDomain;
+    private String contactParams;
+    private String dialplanContext;
+    private String extension;
+    private String description;
     private Boolean enabled;
     @Version
     private Integer version;

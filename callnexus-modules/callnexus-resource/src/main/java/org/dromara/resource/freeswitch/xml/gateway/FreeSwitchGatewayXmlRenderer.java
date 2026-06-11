@@ -44,12 +44,19 @@ public class FreeSwitchGatewayXmlRenderer {
         appendParam(xml, "password", gateway.getPassword());
         appendParam(xml, "register", Boolean.TRUE.equals(gateway.getRegisterEnabled()) ? "true" : "false");
         appendParam(xml, "transport", gateway.getTransport() == null ? null : gateway.getTransport().toLowerCase());
-        appendParam(xml, "caller-id-in-from", "true");
-        appendParam(xml, "from-user", StringUtils.isBlank(gateway.getCallerIdNumber()) ? gateway.getUsername() : gateway.getCallerIdNumber());
-        appendParam(xml, "from-domain", StringUtils.isBlank(gateway.getRealm()) ? gateway.getProxy() : gateway.getRealm());
-        appendParam(xml, "extension", "auto_to_user");
-        appendParam(xml, "context", "public");
-        appendParam(xml, "ping", String.valueOf(gateway.getPing() == null ? 0 : gateway.getPing()));
+        appendParam(xml, "expire-seconds", String.valueOf(gateway.getExpireSeconds()));
+        appendParam(xml, "retry-seconds", String.valueOf(gateway.getRetrySeconds()));
+        if (gateway.getPing() != null && gateway.getPing() > 0) {
+            appendParam(xml, "ping", String.valueOf(gateway.getPing()));
+            appendParam(xml, "ping-max", String.valueOf(gateway.getPingMax()));
+            appendParam(xml, "ping-min", String.valueOf(gateway.getPingMin()));
+        }
+        appendParam(xml, "caller-id-in-from", Boolean.TRUE.equals(gateway.getCallerIdInFrom()) ? "true" : "false");
+        appendParam(xml, "from-user", firstNotBlank(gateway.getFromUser(), gateway.getCallerIdNumber(), gateway.getUsername()));
+        appendParam(xml, "from-domain", firstNotBlank(gateway.getFromDomain(), gateway.getRealm(), gateway.getProxy()));
+        appendParam(xml, "contact-params", gateway.getContactParams());
+        appendParam(xml, "extension", gateway.getExtension());
+        appendParam(xml, "context", gateway.getDialplanContext());
         xml.append("                </gateway>\n");
         xml.append("              </gateways>\n");
         xml.append("              <params>\n");
@@ -65,5 +72,12 @@ public class FreeSwitchGatewayXmlRenderer {
             .append("\" value=\"")
             .append(FreeSwitchXmlRenderer.escape(value))
             .append("\"/>\n");
+    }
+
+    private String firstNotBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.isNotBlank(value)) return value;
+        }
+        return null;
     }
 }

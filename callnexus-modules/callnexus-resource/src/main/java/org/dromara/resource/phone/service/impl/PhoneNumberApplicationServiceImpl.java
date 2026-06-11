@@ -105,17 +105,18 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     public PhoneNumberDialplanRouteResponse findDialplanRoute(String tenantId, String domain, String destinationNumber) {
         if (StringUtils.isBlank(destinationNumber)) return null;
         return TenantHelper.dynamic(tenantId, () -> {
-            FreeSwitchNode node = nodeMapper.selectOne(new LambdaQueryWrapper<FreeSwitchNode>()
-                .eq(FreeSwitchNode::getSipDomain, domain)
-                .eq(FreeSwitchNode::getEnabled, true)
-                .last("limit 1"));
-            if (node == null) return null;
-            PhoneNumber number = mapper.selectOne(new LambdaQueryWrapper<PhoneNumber>()
-                .eq(PhoneNumber::getNodeId, node.getId())
-                .eq(PhoneNumber::getNumber, destinationNumber)
-                .eq(PhoneNumber::getEnabled, true)
-                .last("limit 1"));
+            FreeSwitchNode node = findEnabledNodeByDomain(domain);
+            PhoneNumber number = node == null ? null : findEnabledNumber(destinationNumber, node.getId());
+            if (number == null) {
+                number = findEnabledNumber(destinationNumber, null);
+            }
             if (number == null) return null;
+            if (node == null || !number.getNodeId().equals(node.getId())) {
+                node = nodeMapper.selectById(number.getNodeId());
+                if (node == null || !Boolean.TRUE.equals(node.getEnabled())) return null;
+                log.info("动态呼入路由按号码兜底匹配成功，tenantId={}，requestDomain={}，number={}，nodeId={}，nodeDomain={}",
+                    tenantId, domain, destinationNumber, node.getId(), node.getSipDomain());
+            }
             PhoneNumberDialplanRouteResponse response = new PhoneNumberDialplanRouteResponse();
             response.setId(number.getId());
             response.setNumber(number.getNumber());
@@ -124,6 +125,22 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
             response.setSipDomain(node.getSipDomain());
             return response;
         });
+    }
+
+    private PhoneNumber findEnabledNumber(String number, Long nodeId) {
+        return mapper.selectOne(new LambdaQueryWrapper<PhoneNumber>()
+            .eq(nodeId != null, PhoneNumber::getNodeId, nodeId)
+            .eq(PhoneNumber::getNumber, number)
+            .eq(PhoneNumber::getEnabled, true)
+            .last("limit 1"));
+    }
+
+    private FreeSwitchNode findEnabledNodeByDomain(String domain) {
+        if (StringUtils.isBlank(domain)) return null;
+        return nodeMapper.selectOne(new LambdaQueryWrapper<FreeSwitchNode>()
+            .eq(FreeSwitchNode::getSipDomain, domain)
+            .eq(FreeSwitchNode::getEnabled, true)
+            .last("limit 1"));
     }
 
     @Override

@@ -6,6 +6,7 @@ import org.dromara.agent.domain.Agent;
 import org.dromara.agent.domain.AgentExtension;
 import org.dromara.agent.domain.AgentPresence;
 import org.dromara.agent.domain.AgentPresenceStatus;
+import org.dromara.agent.domain.AgentActiveCall;
 import org.dromara.agent.domain.response.CurrentAgentResponse;
 import org.dromara.agent.mapper.AgentExtensionMapper;
 import org.dromara.agent.mapper.AgentMapper;
@@ -25,6 +26,7 @@ import java.time.LocalDateTime;
 @RequiredArgsConstructor
 public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionService {
     private static final String PRESENCE_KEY_PREFIX = "callnexus:agent:presence:";
+    private static final String ACTIVE_CALL_KEY_PREFIX = "callnexus:agent:active-call:";
     private static final Duration PRESENCE_TTL = Duration.ofHours(12);
 
     private final AgentMapper agentMapper;
@@ -143,10 +145,19 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
             }
         }
         response.setStatus(presence == null ? AgentPresenceStatus.OFFLINE : presence.getStatus());
+        AgentActiveCall activeCall = RedisUtils.getCacheObject(activeCallKey(agent.getId()));
+        if (activeCall != null) {
+            response.setActiveCallId(activeCall.getCallId());
+            response.setActiveCallNumber(activeCall.getDestination());
+        }
         if (presence != null) {
             response.setSignedInAt(presence.getSignedInAt());
             response.setUpdatedAt(presence.getUpdatedAt());
         }
         return response;
+    }
+
+    private String activeCallKey(Long agentId) {
+        return ACTIVE_CALL_KEY_PREFIX + LoginHelper.getTenantId() + ":" + agentId;
     }
 }
