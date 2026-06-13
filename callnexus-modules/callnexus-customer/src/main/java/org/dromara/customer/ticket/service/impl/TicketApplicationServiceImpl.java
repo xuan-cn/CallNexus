@@ -46,7 +46,7 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
     @Override
     public TicketResponse get(Long id) {
         Ticket ticket = ticketMapper.selectById(id);
-        if (ticket == null) throw new ServiceException("TICKET_NOT_FOUND");
+        if (ticket == null) throw new ServiceException("工单不存在");
         TicketResponse response = toResponse(ticket);
         response.setFormData(formSubmissionService.getFormData(FormBusinessType.TICKET, id));
         return response;

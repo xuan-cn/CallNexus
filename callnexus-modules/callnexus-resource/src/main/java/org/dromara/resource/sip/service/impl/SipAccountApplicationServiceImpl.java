@@ -43,7 +43,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     @Override
     public SipAccountResponse get(Long id) {
         SipAccount account = mapper.selectById(id);
-        if (account == null) throw new ServiceException("SIP_ACCOUNT_NOT_FOUND");
+        if (account == null) throw new ServiceException("SIP 分机不存在");
         return toResponse(account);
     }
 
@@ -68,7 +68,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     public void update(Long id, UpdateSipAccountRequest request) {
         ensureExtensionUnique(request.getExtension(), id);
         SipAccount account = mapper.selectById(id);
-        if (account == null) throw new ServiceException("SIP_ACCOUNT_NOT_FOUND");
+        if (account == null) throw new ServiceException("SIP 分机不存在");
         FreeSwitchNode node = requireEnabledNode(request.getNodeId());
         account.setNodeId(node.getId());
         account.setExtension(request.getExtension());
@@ -77,12 +77,12 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         account.setEnabled(request.getEnabled());
         account.setVersion(request.getVersion());
         if (request.getPassword() != null && !request.getPassword().isBlank()) account.setAuthPassword(request.getPassword());
-        if (mapper.updateById(account) != 1) throw new ServiceException("SIP_ACCOUNT_UPDATE_CONFLICT");
+        if (mapper.updateById(account) != 1) throw new ServiceException("SIP 分机已被其他用户修改，请刷新后重试");
     }
 
     @Override
     public void delete(Long id) {
-        if (mapper.deleteById(id) != 1) throw new ServiceException("SIP_ACCOUNT_NOT_FOUND");
+        if (mapper.deleteById(id) != 1) throw new ServiceException("SIP 分机不存在");
     }
 
     @Override
@@ -151,7 +151,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
             .eq(SipAccount::getTenantId, LoginHelper.getTenantId())
             .eq(SipAccount::getExtension, extension)
             .ne(excludedId != null, SipAccount::getId, excludedId));
-        if (exists) throw new ServiceException("SIP_ACCOUNT_EXTENSION_ALREADY_EXISTS");
+        if (exists) throw new ServiceException("SIP 分机号已存在");
     }
 
     private SipAccountResponse toResponse(SipAccount account) {
@@ -172,15 +172,15 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     }
 
     private FreeSwitchNode requireEnabledNode(Long nodeId) {
-        if (nodeId == null) throw new ServiceException("SIP_ACCOUNT_NODE_NOT_BOUND");
+        if (nodeId == null) throw new ServiceException("SIP 分机未绑定 FreeSWITCH 节点");
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
-        if (node == null || !Boolean.TRUE.equals(node.getEnabled())) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND_OR_DISABLED");
+        if (node == null || !Boolean.TRUE.equals(node.getEnabled())) throw new ServiceException("FreeSWITCH 节点不存在或已停用");
         return node;
     }
 
     private SipAccount requireEnabledAccount(Long id) {
         SipAccount account = mapper.selectById(id);
-        if (account == null || !Boolean.TRUE.equals(account.getEnabled())) throw new ServiceException("SIP_ACCOUNT_NOT_FOUND_OR_DISABLED");
+        if (account == null || !Boolean.TRUE.equals(account.getEnabled())) throw new ServiceException("SIP 分机不存在或已停用");
         return account;
     }
 }

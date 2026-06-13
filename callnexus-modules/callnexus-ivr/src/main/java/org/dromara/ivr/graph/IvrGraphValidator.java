@@ -20,27 +20,27 @@ public class IvrGraphValidator {
 
     public void validate(IvrFlow flow, IvrGraphDefinition graph) {
         if (graph.nodes().isEmpty()) {
-            throw new ServiceException("IVR_GRAPH_EMPTY");
+            throw new ServiceException("IVR 流程图为空");
         }
         IvrNodeDefinition start = null;
         for (IvrNodeDefinition node : graph.nodes()) {
             if (node.id() == null || node.id().isBlank()) {
-                throw new ServiceException("IVR_NODE_INVALID");
+                throw new ServiceException("IVR 节点配置不合法");
             }
             if ("START".equals(node.type())) {
                 if (start != null) {
-                    throw new ServiceException("IVR_START_NODE_MUST_BE_UNIQUE");
+                    throw new ServiceException("IVR 流程必须有且仅有一个起始节点");
                 }
                 start = node;
             }
             compilerRegistry.require(node.type());
         }
         if (start == null) {
-            throw new ServiceException("IVR_START_NODE_REQUIRED");
+            throw new ServiceException("请添加 IVR 起始节点");
         }
         for (IvrEdgeDefinition edge : graph.edges()) {
             if (!graph.nodeById().containsKey(edge.source()) || !graph.nodeById().containsKey(edge.target())) {
-                throw new ServiceException("IVR_EDGE_INVALID");
+                throw new ServiceException("IVR 流程连线不合法");
             }
         }
         for (IvrNodeDefinition node : graph.nodes()) {
@@ -51,7 +51,7 @@ public class IvrGraphValidator {
         Set<String> reached = new HashSet<>();
         walk(start.id(), graph, reached);
         if (reached.size() != graph.nodes().size()) {
-            throw new ServiceException("IVR_GRAPH_HAS_UNREACHABLE_NODE");
+            throw new ServiceException("IVR 流程存在不可达节点");
         }
     }
 

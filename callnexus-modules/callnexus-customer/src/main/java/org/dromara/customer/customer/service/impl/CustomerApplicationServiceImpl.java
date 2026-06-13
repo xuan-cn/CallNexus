@@ -47,7 +47,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     @Override
     public CustomerResponse get(Long id) {
         Customer customer = customerMapper.selectById(id);
-        if (customer == null) throw new ServiceException("CUSTOMER_NOT_FOUND");
+        if (customer == null) throw new ServiceException("客户不存在");
         return toDetailResponse(customer);
     }
 
@@ -116,7 +116,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
 
     private Customer requireCustomer(Long id) {
         Customer customer = customerMapper.selectById(id);
-        if (customer == null) throw new ServiceException("CUSTOMER_NOT_FOUND");
+        if (customer == null) throw new ServiceException("客户不存在");
         return customer;
     }
 

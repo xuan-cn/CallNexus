@@ -62,7 +62,7 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
     public Long uploadVersion(Long mediaId, Long durationMs, MultipartFile file) {
         MediaAsset asset = requirePublishableAsset(mediaId);
         if (file == null || file.isEmpty() || file.getContentType() == null || !file.getContentType().startsWith("audio/")) {
-            throw new ServiceException("MEDIA_FILE_TYPE_INVALID");
+            throw new ServiceException("声音文件格式不支持");
         }
         String checksum = checksum(file);
         SysOssVo oss = ossService.upload(file, storageProperties.getConfigKey(MediaAssetCategory.valueOf(asset.getCategory())));
@@ -112,7 +112,7 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
     public void publish(Long mediaId, List<Long> groupIds) {
         MediaAsset asset = requirePublishableAsset(mediaId);
         MediaAssetVersion version = versionMapper.selectById(asset.getLatestVersionId());
-        if (version == null) throw new ServiceException("MEDIA_VERSION_NOT_FOUND");
+        if (version == null) throw new ServiceException("声音媒体版本不存在");
         List<MediaPublication> previous = publicationMapper.selectList(new LambdaQueryWrapper<MediaPublication>()
             .eq(MediaPublication::getMediaId, mediaId).ne(MediaPublication::getStatus, "UNPUBLISHED"));
         for (MediaPublication old : previous) {
@@ -122,7 +122,7 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
         }
         for (Long groupId : groupIds.stream().distinct().toList()) {
             FreeSwitchNodeGroup group = groupMapper.selectById(groupId);
-            if (group == null || !Boolean.TRUE.equals(group.getEnabled())) throw new ServiceException("NODE_GROUP_NOT_FOUND_OR_DISABLED");
+            if (group == null || !Boolean.TRUE.equals(group.getEnabled())) throw new ServiceException("节点分组不存在或已停用");
             MediaPublication publication = new MediaPublication();
             publication.setMediaId(mediaId);
             publication.setVersionId(version.getId());
@@ -219,13 +219,13 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
             MediaNodeSync task = requireLeasedTask(taskId, node.getId(), leaseToken);
             MediaAssetVersion version = versionMapper.selectById(task.getVersionId());
             SysOssVo oss = ossService.getById(version.getOssId());
-            if (oss == null) throw new ServiceException("MEDIA_SOURCE_NOT_FOUND");
+            if (oss == null) throw new ServiceException("声音媒体源文件不存在");
             response.setContentType(version.getContentType() == null ? "application/octet-stream" : version.getContentType());
             response.setHeader("Content-Disposition", "attachment; filename=\"source" + safeSuffix(version.getFileSuffix()) + "\"");
             try {
                 OssFactory.instance(oss.getService()).download(oss.getFileName(), response.getOutputStream(), response::setContentLengthLong);
             } catch (IOException exception) {
-                throw new ServiceException("MEDIA_SOURCE_DOWNLOAD_FAILED");
+                throw new ServiceException("声音媒体源文件下载失败");
             }
         });
     }
@@ -331,12 +331,12 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
     }
 
     private FreeSwitchNode authenticate(String nodeCode, String token) {
-        if (nodeCode == null || token == null) throw new ServiceException("MEDIA_AGENT_AUTH_FAILED");
+        if (nodeCode == null || token == null) throw new ServiceException("媒体同步 Agent 鉴权失败");
         String hash = sha256(token);
         FreeSwitchNode node = TenantHelper.ignore(() -> nodeMapper.selectOne(new LambdaQueryWrapper<FreeSwitchNode>()
             .eq(FreeSwitchNode::getNodeCode, nodeCode).eq(FreeSwitchNode::getAgentTokenHash, hash)
             .eq(FreeSwitchNode::getAgentEnabled, true).eq(FreeSwitchNode::getEnabled, true).last("limit 1")));
-        if (node == null) throw new ServiceException("MEDIA_AGENT_AUTH_FAILED");
+        if (node == null) throw new ServiceException("媒体同步 Agent 鉴权失败");
         return node;
     }
 
@@ -344,15 +344,15 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
         MediaNodeSync task = syncMapper.selectById(taskId);
         if (task == null || !nodeId.equals(task.getNodeId()) || leaseToken == null || !leaseToken.equals(task.getLeaseToken())
             || task.getLeaseExpiresAt() == null || task.getLeaseExpiresAt().isBefore(LocalDateTime.now())) {
-            throw new ServiceException("MEDIA_SYNC_TASK_LEASE_INVALID");
+            throw new ServiceException("媒体同步任务租约无效");
         }
         return task;
     }
 
     private MediaAsset requirePublishableAsset(Long id) {
         MediaAsset asset = assetMapper.selectById(id);
-        if (asset == null) throw new ServiceException("MEDIA_ASSET_NOT_FOUND");
-        if ("CALL_RECORDING".equals(asset.getCategory())) throw new ServiceException("CALL_RECORDING_PUBLISH_NOT_ALLOWED");
+        if (asset == null) throw new ServiceException("声音媒体不存在");
+        if ("CALL_RECORDING".equals(asset.getCategory())) throw new ServiceException("通话录音不允许发布到节点");
         return asset;
     }
 
@@ -396,7 +396,7 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception exception) {
-            throw new ServiceException("MEDIA_AGENT_TOKEN_HASH_FAILED");
+            throw new ServiceException("生成媒体 Agent Token 失败");
         }
     }
 

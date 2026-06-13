@@ -54,7 +54,7 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
     @Override
     public FreeSwitchNodeResponse get(Long id) {
         FreeSwitchNode node = mapper.selectById(id);
-        if (node == null) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND");
+        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
         return toResponse(node);
     }
 
@@ -62,11 +62,11 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
     public FreeSwitchNodeConnectionResponse getEnabledConnection(Long nodeId) {
         FreeSwitchNode node = mapper.selectById(nodeId);
         if (node == null || !Boolean.TRUE.equals(node.getEnabled())) {
-            throw new ServiceException("FREESWITCH_NODE_NOT_FOUND_OR_DISABLED");
+            throw new ServiceException("FreeSWITCH 节点不存在或已停用");
         }
         if (node.getEslHost() == null || node.getEslHost().isBlank()
             || node.getEslPort() == null || node.getEslPassword() == null || node.getEslPassword().isBlank()) {
-            throw new ServiceException("FREESWITCH_NODE_ESL_NOT_CONFIGURED");
+            throw new ServiceException("FreeSWITCH 节点 ESL 未配置");
         }
         return toConnectionResponse(node);
     }
@@ -110,41 +110,41 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
     public void update(Long id, UpdateFreeSwitchNodeRequest request) {
         ensureNodeCodeUnique(request.getNodeCode(), id);
         FreeSwitchNode node = mapper.selectById(id);
-        if (node == null) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND");
+        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
         apply(node, request.getNodeCode(), request.getNodeName(), request.getSipDomain(), request.getWssUrl(), request.getEslHost(), request.getEslPort());
         if (request.getEslPassword() != null && !request.getEslPassword().isBlank()) node.setEslPassword(request.getEslPassword());
         node.setEnabled(request.getEnabled());
         node.setAgentEnabled(request.getAgentEnabled());
         node.setMediaRootPath(request.getMediaRootPath());
         node.setVersion(request.getVersion());
-        if (mapper.updateById(node) != 1) throw new ServiceException("FREESWITCH_NODE_UPDATE_CONFLICT");
+        if (mapper.updateById(node) != 1) throw new ServiceException("FreeSWITCH 节点已被其他用户修改，请刷新后重试");
     }
 
     @Override
     public void delete(Long id) {
         if (sipAccountMapper.exists(new LambdaQueryWrapper<SipAccount>().eq(SipAccount::getNodeId, id))) {
-            throw new ServiceException("FREESWITCH_NODE_IN_USE");
+            throw new ServiceException("FreeSWITCH 节点正在被使用，无法删除");
         }
         if (gatewayMapper.exists(new LambdaQueryWrapper<FreeSwitchGateway>().eq(FreeSwitchGateway::getNodeId, id))) {
-            throw new ServiceException("FREESWITCH_NODE_IN_USE");
+            throw new ServiceException("FreeSWITCH 节点正在被使用，无法删除");
         }
         if (groupMemberMapper.exists(new LambdaQueryWrapper<FreeSwitchNodeGroupMember>().eq(FreeSwitchNodeGroupMember::getNodeId, id))) {
-            throw new ServiceException("FREESWITCH_NODE_IN_GROUP");
+            throw new ServiceException("FreeSWITCH 节点已加入节点分组，无法删除");
         }
-        if (mapper.deleteById(id) != 1) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND");
+        if (mapper.deleteById(id) != 1) throw new ServiceException("FreeSWITCH 节点不存在");
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String resetAgentToken(Long id) {
         FreeSwitchNode node = mapper.selectById(id);
-        if (node == null) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND");
+        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
         String token = UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", "");
         try {
             node.setAgentTokenHash(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest(token.getBytes(StandardCharsets.UTF_8))));
         } catch (Exception exception) {
-            throw new ServiceException("MEDIA_AGENT_TOKEN_HASH_FAILED");
+            throw new ServiceException("生成媒体 Agent Token 失败");
         }
         node.setAgentEnabled(true);
         mapper.updateById(node);
@@ -156,7 +156,7 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
             .eq(FreeSwitchNode::getTenantId, LoginHelper.getTenantId())
             .eq(FreeSwitchNode::getNodeCode, nodeCode)
             .ne(excludedId != null, FreeSwitchNode::getId, excludedId));
-        if (exists) throw new ServiceException("FREESWITCH_NODE_CODE_ALREADY_EXISTS");
+        if (exists) throw new ServiceException("FreeSWITCH 节点编码已存在");
     }
 
     private void apply(FreeSwitchNode node, String code, String name, String sipDomain, String wssUrl, String eslHost, Integer eslPort) {

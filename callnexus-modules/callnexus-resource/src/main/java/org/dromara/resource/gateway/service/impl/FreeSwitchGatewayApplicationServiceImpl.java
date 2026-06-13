@@ -56,7 +56,7 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
     @Override
     public FreeSwitchGatewayResponse get(Long id) {
         FreeSwitchGateway gateway = mapper.selectById(id);
-        if (gateway == null) throw new ServiceException("FREESWITCH_GATEWAY_NOT_FOUND");
+        if (gateway == null) throw new ServiceException("FreeSWITCH 网关不存在");
         return toResponse(gateway);
     }
 
@@ -83,7 +83,7 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         ensureNodeExists(request.getNodeId());
         ensureGatewayCodeUnique(request.getGatewayCode(), id);
         FreeSwitchGateway gateway = mapper.selectById(id);
-        if (gateway == null) throw new ServiceException("FREESWITCH_GATEWAY_NOT_FOUND");
+        if (gateway == null) throw new ServiceException("FreeSWITCH 网关不存在");
         Long oldNodeId = gateway.getNodeId();
         String oldGatewayCode = gateway.getGatewayCode();
         Boolean oldEnabled = gateway.getEnabled();
@@ -94,7 +94,7 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         if (request.getPassword() != null && !request.getPassword().isBlank()) gateway.setPassword(request.getPassword());
         gateway.setEnabled(request.getEnabled());
         gateway.setVersion(request.getVersion());
-        if (mapper.updateById(gateway) != 1) throw new ServiceException("FREESWITCH_GATEWAY_UPDATE_CONFLICT");
+        if (mapper.updateById(gateway) != 1) throw new ServiceException("FreeSWITCH 网关已被其他用户修改，请刷新后重试");
         afterCommit(() -> syncAfterUpdate(oldNodeId, oldGatewayCode, oldEnabled, gateway));
     }
 
@@ -102,8 +102,8 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
         FreeSwitchGateway gateway = mapper.selectById(id);
-        if (gateway == null) throw new ServiceException("FREESWITCH_GATEWAY_NOT_FOUND");
-        if (mapper.deleteById(id) != 1) throw new ServiceException("FREESWITCH_GATEWAY_NOT_FOUND");
+        if (gateway == null) throw new ServiceException("FreeSWITCH 网关不存在");
+        if (mapper.deleteById(id) != 1) throw new ServiceException("FreeSWITCH 网关不存在");
         afterCommit(() -> removeRuntimeGateway(gateway.getNodeId(), gateway.getGatewayCode()));
     }
 
@@ -152,7 +152,7 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
 
     private void ensureNodeExists(Long nodeId) {
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
-        if (node == null) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND");
+        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
     }
 
     private void ensureGatewayCodeUnique(String gatewayCode, Long excludedId) {
@@ -160,7 +160,7 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
             .eq(FreeSwitchGateway::getTenantId, LoginHelper.getTenantId())
             .eq(FreeSwitchGateway::getGatewayCode, gatewayCode)
             .ne(excludedId != null, FreeSwitchGateway::getId, excludedId));
-        if (exists) throw new ServiceException("FREESWITCH_GATEWAY_CODE_ALREADY_EXISTS");
+        if (exists) throw new ServiceException("FreeSWITCH 网关编码已存在");
     }
 
     private void apply(FreeSwitchGateway gateway, Long nodeId, String code, String name, String direction, String proxy, String realm, String username,

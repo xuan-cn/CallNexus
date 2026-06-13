@@ -91,7 +91,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     @Override
     public CallRecordResponse get(Long id) {
         CallSession session = sessionMapper.selectById(id);
-        if (session == null) throw new ServiceException("CALL_RECORD_NOT_FOUND");
+        if (session == null) throw new ServiceException("通话记录不存在");
         return toResponse(session, true);
     }
 

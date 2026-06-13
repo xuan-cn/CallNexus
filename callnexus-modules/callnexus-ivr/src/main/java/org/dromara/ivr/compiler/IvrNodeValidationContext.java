@@ -23,19 +23,19 @@ public record IvrNodeValidationContext(
     public void requireSingleDefaultRoute() {
         rejectConditions();
         if (outgoing().size() != 1) {
-            throw new ServiceException("IVR_NODE_DEFAULT_ROUTE_REQUIRED");
+            throw new ServiceException("请为 IVR 节点配置默认路由");
         }
     }
 
     public void requireTerminal() {
         if (!outgoing().isEmpty()) {
-            throw new ServiceException("IVR_TERMINAL_NODE_ROUTE_NOT_ALLOWED");
+            throw new ServiceException("终止节点不能配置后续路由");
         }
     }
 
     public void rejectConditions() {
         if (outgoing().stream().anyMatch(edge -> edge.condition() != null && !edge.condition().isBlank())) {
-            throw new ServiceException("IVR_EDGE_CONDITION_NOT_ALLOWED");
+            throw new ServiceException("当前 IVR 连线不允许配置条件");
         }
     }
 }

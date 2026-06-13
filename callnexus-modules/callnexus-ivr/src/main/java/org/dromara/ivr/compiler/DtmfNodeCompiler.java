@@ -19,15 +19,15 @@ public class DtmfNodeCompiler implements IvrNodeCompiler {
     public void validate(IvrNodeValidationContext context) {
         context.mediaPathResolver().validatePublishedForGroup(mediaId(context), context.flow().getNodeGroupId());
         if (context.outgoing().isEmpty()) {
-            throw new ServiceException("IVR_DTMF_ROUTE_REQUIRED");
+            throw new ServiceException("请为 DTMF 节点配置按键路由");
         }
         Set<String> conditions = new HashSet<>();
         for (IvrEdgeDefinition edge : context.outgoing()) {
             if (edge.condition() == null || !edge.condition().matches("^[0-9]$")) {
-                throw new ServiceException("IVR_DTMF_KEY_INVALID");
+                throw new ServiceException("DTMF 按键不合法");
             }
             if (!conditions.add(edge.condition())) {
-                throw new ServiceException("IVR_DTMF_KEY_DUPLICATED");
+                throw new ServiceException("DTMF 按键重复");
             }
         }
     }

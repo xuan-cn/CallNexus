@@ -67,7 +67,7 @@ public class IvrFlowService {
         flow.setPublishStatus(flow.getLatestVersionNo() > 0 ? "PUBLISHED" : "DRAFT");
         flow.setVersion(request.getVersion());
         if (flowMapper.updateById(flow) != 1) {
-            throw new ServiceException("IVR_FLOW_UPDATE_CONFLICT");
+            throw new ServiceException("IVR 流程已被其他用户修改，请刷新后重试");
         }
     }
 
@@ -92,7 +92,7 @@ public class IvrFlowService {
     public void delete(Long id) {
         IvrFlow flow = require(id);
         if ("PUBLISHED".equals(flow.getPublishStatus())) {
-            throw new ServiceException("IVR_FLOW_IS_PUBLISHED");
+            throw new ServiceException("IVR 流程已发布，无法删除");
         }
         flowMapper.deleteById(id);
     }
@@ -100,7 +100,7 @@ public class IvrFlowService {
     public IvrFlow requirePublished(Long id) {
         IvrFlow flow = require(id);
         if (!Boolean.TRUE.equals(flow.getEnabled()) || !"PUBLISHED".equals(flow.getPublishStatus())) {
-            throw new ServiceException("IVR_FLOW_NOT_PUBLISHED");
+            throw new ServiceException("IVR 流程尚未发布");
         }
         return flow;
     }
@@ -111,7 +111,7 @@ public class IvrFlowService {
             .eq(IvrFlowVersion::getVersionNo, flow.getLatestVersionNo())
             .last("limit 1"));
         if (version == null) {
-            throw new ServiceException("IVR_VERSION_NOT_FOUND");
+            throw new ServiceException("IVR 流程版本不存在");
         }
         return version;
     }
@@ -119,7 +119,7 @@ public class IvrFlowService {
     private IvrFlow require(Long id) {
         IvrFlow flow = flowMapper.selectById(id);
         if (flow == null) {
-            throw new ServiceException("IVR_FLOW_NOT_FOUND");
+            throw new ServiceException("IVR 流程不存在");
         }
         return flow;
     }
@@ -127,7 +127,7 @@ public class IvrFlowService {
     private FreeSwitchNodeGroup requireGroup(Long id) {
         FreeSwitchNodeGroup group = groupMapper.selectById(id);
         if (group == null || !Boolean.TRUE.equals(group.getEnabled())) {
-            throw new ServiceException("NODE_GROUP_NOT_FOUND_OR_DISABLED");
+            throw new ServiceException("节点分组不存在或已停用");
         }
         return group;
     }
@@ -136,7 +136,7 @@ public class IvrFlowService {
         if (flowMapper.exists(new LambdaQueryWrapper<IvrFlow>()
             .eq(IvrFlow::getFlowCode, code)
             .ne(excluded != null, IvrFlow::getId, excluded))) {
-            throw new ServiceException("IVR_FLOW_CODE_EXISTS");
+            throw new ServiceException("IVR 流程编码已存在");
         }
     }
 

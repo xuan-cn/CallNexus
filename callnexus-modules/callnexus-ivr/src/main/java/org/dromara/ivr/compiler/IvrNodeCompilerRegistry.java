@@ -28,14 +28,14 @@ public class IvrNodeCompilerRegistry {
     public IvrNodeCompiler require(String nodeType) {
         IvrNodeCompiler compiler = nodeType == null ? null : compilers.get(normalize(nodeType));
         if (compiler == null) {
-            throw new ServiceException("IVR_NODE_TYPE_NOT_SUPPORTED");
+            throw new ServiceException("不支持的 IVR 节点类型");
         }
         return compiler;
     }
 
     private String normalize(String nodeType) {
         if (nodeType == null || nodeType.isBlank()) {
-            throw new ServiceException("IVR_NODE_INVALID");
+            throw new ServiceException("IVR 节点配置不合法");
         }
         return nodeType.trim().toUpperCase(Locale.ROOT);
     }

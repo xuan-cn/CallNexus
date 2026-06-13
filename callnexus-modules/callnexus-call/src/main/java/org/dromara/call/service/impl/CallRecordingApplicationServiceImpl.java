@@ -24,13 +24,13 @@ public class CallRecordingApplicationServiceImpl implements CallRecordingApplica
     @Override
     public void upload(String tenantId, String businessCallId, MultipartFile file) {
         if (StringUtils.isBlank(tenantId) || StringUtils.isBlank(businessCallId) || file == null || file.isEmpty()) {
-            throw new ServiceException("CALL_RECORDING_REQUEST_INVALID");
+            throw new ServiceException("通话录音上传参数不合法");
         }
         TenantHelper.dynamic(tenantId, () -> {
             CallSession session = sessionMapper.selectOne(new LambdaQueryWrapper<CallSession>()
                 .eq(CallSession::getBusinessCallId, businessCallId)
                 .last("limit 1"));
-            if (session == null) throw new ServiceException("CALL_RECORD_NOT_FOUND");
+            if (session == null) throw new ServiceException("通话记录不存在");
             try {
                 session.setRecordingStatus("PENDING");
                 sessionMapper.updateById(session);

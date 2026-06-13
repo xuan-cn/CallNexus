@@ -114,16 +114,16 @@ public class FormTemplateApplicationServiceImpl implements FormTemplateApplicati
     }
 
     private void validateFields(List<SaveFormTemplateRequest.FieldRequest> fields) {
-        if (fields == null) throw new ServiceException("FORM_FIELDS_REQUIRED");
+        if (fields == null) throw new ServiceException("请配置表单字段");
         long uniqueCodes = fields.stream().map(SaveFormTemplateRequest.FieldRequest::getFieldCode).distinct().count();
-        if (uniqueCodes != fields.size()) throw new ServiceException("FORM_FIELD_CODE_DUPLICATED");
+        if (uniqueCodes != fields.size()) throw new ServiceException("表单字段编码重复");
         for (SaveFormTemplateRequest.FieldRequest field : fields) {
             if (field.getOptions() == null) field.setOptions(List.of());
             if (OPTION_FIELD_TYPES.contains(field.getFieldType()) && field.getOptions().isEmpty()) {
-                throw new ServiceException("FORM_FIELD_OPTIONS_REQUIRED");
+                throw new ServiceException("请配置表单字段选项");
             }
             long uniqueOptions = field.getOptions().stream().map(SaveFormTemplateRequest.OptionRequest::getValue).distinct().count();
-            if (uniqueOptions != field.getOptions().size()) throw new ServiceException("FORM_FIELD_OPTION_VALUE_DUPLICATED");
+            if (uniqueOptions != field.getOptions().size()) throw new ServiceException("表单字段选项值重复");
         }
     }
 
@@ -131,12 +131,12 @@ public class FormTemplateApplicationServiceImpl implements FormTemplateApplicati
         boolean exists = templateMapper.exists(new LambdaQueryWrapper<FormTemplate>()
             .eq(FormTemplate::getTemplateCode, code)
             .ne(excludedId != null, FormTemplate::getId, excludedId));
-        if (exists) throw new ServiceException("FORM_TEMPLATE_CODE_ALREADY_EXISTS");
+        if (exists) throw new ServiceException("表单模板编码已存在");
     }
 
     private FormTemplate requireTemplate(Long id) {
         FormTemplate template = templateMapper.selectById(id);
-        if (template == null) throw new ServiceException("FORM_TEMPLATE_NOT_FOUND");
+        if (template == null) throw new ServiceException("表单模板不存在");
         return template;
     }
 

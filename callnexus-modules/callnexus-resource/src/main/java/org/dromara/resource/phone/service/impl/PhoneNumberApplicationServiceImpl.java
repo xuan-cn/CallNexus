@@ -55,7 +55,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     @Override
     public PhoneNumberResponse get(Long id) {
         PhoneNumber number = mapper.selectById(id);
-        if (number == null) throw new ServiceException("PHONE_NUMBER_NOT_FOUND");
+        if (number == null) throw new ServiceException("号码不存在");
         return toResponse(number);
     }
 
@@ -84,12 +84,12 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
         ensureRouteValid(request.getNodeId(), request.getRouteType(), request.getRouteTarget());
         ensureNumberUnique(request.getNumber(), id);
         PhoneNumber number = mapper.selectById(id);
-        if (number == null) throw new ServiceException("PHONE_NUMBER_NOT_FOUND");
+        if (number == null) throw new ServiceException("号码不存在");
         apply(number, request.getNumber(), request.getNumberName(), request.getNumberType(), request.getNodeId(), request.getGatewayId(),
             request.getRouteType(), request.getRouteTarget(), request.getOutboundDefault());
         number.setEnabled(request.getEnabled());
         number.setVersion(request.getVersion());
-        if (mapper.updateById(number) != 1) throw new ServiceException("PHONE_NUMBER_UPDATE_CONFLICT");
+        if (mapper.updateById(number) != 1) throw new ServiceException("号码已被其他用户修改，请刷新后重试");
         log.info("更新号码管理配置，id={}，number={}，enabled={}，routeType={}，routeTarget={}",
             number.getId(), number.getNumber(), number.getEnabled(), number.getRouteType(), number.getRouteTarget());
     }
@@ -98,8 +98,8 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
         PhoneNumber number = mapper.selectById(id);
-        if (number == null) throw new ServiceException("PHONE_NUMBER_NOT_FOUND");
-        if (mapper.deleteById(id) != 1) throw new ServiceException("PHONE_NUMBER_NOT_FOUND");
+        if (number == null) throw new ServiceException("号码不存在");
+        if (mapper.deleteById(id) != 1) throw new ServiceException("号码不存在");
         log.info("删除号码管理配置，id={}，number={}", id, number.getNumber());
     }
 
@@ -200,29 +200,29 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
 
     private void ensureNodeExists(Long nodeId) {
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
-        if (node == null) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND");
+        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
     }
 
     private void ensureGatewayAvailable(Long nodeId, Long gatewayId) {
         if (gatewayId == null) return;
         FreeSwitchGateway gateway = gatewayMapper.selectById(gatewayId);
         if (gateway == null || !nodeId.equals(gateway.getNodeId())) {
-            throw new ServiceException("FREESWITCH_GATEWAY_NOT_FOUND");
+            throw new ServiceException("FreeSWITCH 网关不存在");
         }
     }
 
     private void ensureRouteValid(Long nodeId, String routeType, String routeTarget) {
         if (("EXTENSION".equals(routeType) || "IVR".equals(routeType)) && StringUtils.isBlank(routeTarget)) {
-            throw new ServiceException("PHONE_NUMBER_ROUTE_TARGET_REQUIRED");
+            throw new ServiceException("请填写号码呼入路由目标");
         }
         if ("IVR".equals(routeType)) {
             try {
                 Long flowId = Long.valueOf(routeTarget);
                 if (!ivrDialplanQueryService.isPublishedFlowAvailable(LoginHelper.getTenantId(), flowId, nodeId)) {
-                    throw new ServiceException("PHONE_NUMBER_IVR_NOT_PUBLISHED_OR_NODE_UNAVAILABLE");
+                    throw new ServiceException("关联的 IVR 流程未发布，或目标节点不可用");
                 }
             } catch (NumberFormatException exception) {
-                throw new ServiceException("PHONE_NUMBER_IVR_TARGET_INVALID");
+                throw new ServiceException("号码呼入路由目标 IVR 不合法");
             }
         }
     }
@@ -232,7 +232,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
             .eq(PhoneNumber::getTenantId, LoginHelper.getTenantId())
             .eq(PhoneNumber::getNumber, number)
             .ne(excludedId != null, PhoneNumber::getId, excludedId));
-        if (exists) throw new ServiceException("PHONE_NUMBER_ALREADY_EXISTS");
+        if (exists) throw new ServiceException("该号码已存在");
     }
 
     private void apply(PhoneNumber number, String value, String name, String type, Long nodeId, Long gatewayId,

@@ -56,7 +56,7 @@ public class NodeGroupService {
         List<Long> oldIds = memberIds(id);
         apply(group, request);
         group.setVersion(request.getVersion());
-        if (groupMapper.updateById(group) != 1) throw new ServiceException("NODE_GROUP_UPDATE_CONFLICT");
+        if (groupMapper.updateById(group) != 1) throw new ServiceException("节点分组已被其他用户修改，请刷新后重试");
         replaceMembers(id, request.getNodeIds());
         List<Long> added = request.getNodeIds().stream().filter(nodeId -> !oldIds.contains(nodeId)).toList();
         if (!added.isEmpty()) publicationService.syncNewGroupMembers(id, added);
@@ -67,7 +67,7 @@ public class NodeGroupService {
         requireGroup(id);
         if (publicationMapper.exists(new LambdaQueryWrapper<MediaPublication>().eq(MediaPublication::getNodeGroupId, id)
             .ne(MediaPublication::getStatus, "UNPUBLISHED"))) {
-            throw new ServiceException("NODE_GROUP_HAS_ACTIVE_PUBLICATION");
+            throw new ServiceException("节点分组下存在已发布的媒体，无法删除");
         }
         memberMapper.delete(new LambdaQueryWrapper<FreeSwitchNodeGroupMember>().eq(FreeSwitchNodeGroupMember::getGroupId, id));
         groupMapper.deleteById(id);
@@ -90,17 +90,17 @@ public class NodeGroupService {
 
     private void validateNodes(List<Long> nodeIds) {
         long count = nodeMapper.selectCount(new LambdaQueryWrapper<FreeSwitchNode>().in(FreeSwitchNode::getId, nodeIds).eq(FreeSwitchNode::getEnabled, true));
-        if (count != nodeIds.stream().distinct().count()) throw new ServiceException("NODE_GROUP_CONTAINS_INVALID_NODE");
+        if (count != nodeIds.stream().distinct().count()) throw new ServiceException("节点分组包含无效或已停用的节点");
     }
 
     private void ensureCode(String code, Long excludedId) {
         if (groupMapper.exists(new LambdaQueryWrapper<FreeSwitchNodeGroup>().eq(FreeSwitchNodeGroup::getGroupCode, code)
-            .ne(excludedId != null, FreeSwitchNodeGroup::getId, excludedId))) throw new ServiceException("NODE_GROUP_CODE_EXISTS");
+            .ne(excludedId != null, FreeSwitchNodeGroup::getId, excludedId))) throw new ServiceException("节点分组编码已存在");
     }
 
     private FreeSwitchNodeGroup requireGroup(Long id) {
         FreeSwitchNodeGroup group = groupMapper.selectById(id);
-        if (group == null) throw new ServiceException("NODE_GROUP_NOT_FOUND");
+        if (group == null) throw new ServiceException("节点分组不存在");
         return group;
     }
 

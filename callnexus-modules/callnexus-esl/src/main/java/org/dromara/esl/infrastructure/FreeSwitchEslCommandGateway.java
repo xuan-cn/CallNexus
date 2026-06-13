@@ -90,23 +90,23 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             }
         } catch (IOException exception) {
             log.error("FreeSWITCH ESL command failed, host={}, port={}", endpoint.host(), endpoint.port(), exception);
-            throw new ServiceException("FREESWITCH_ESL_CONNECTION_FAILED");
+            throw new ServiceException("连接 FreeSWITCH ESL 失败");
         }
     }
 
     private void requireCallId(String callId) {
         if (callId == null || !callId.matches("^[0-9a-fA-F-]{36}$")) {
-            throw new ServiceException("INVALID_CALL_ID");
+            throw new ServiceException("通话 ID 不合法");
         }
     }
 
     private void requireEndpoint(EslEndpoint endpoint) {
         if (endpoint.host() == null || endpoint.host().isBlank() || endpoint.port() <= 0 || endpoint.port() > 65535
             || endpoint.password() == null || endpoint.password().isBlank()) {
-            throw new ServiceException("FREESWITCH_NODE_ESL_NOT_CONFIGURED");
+            throw new ServiceException("FreeSWITCH 节点 ESL 未配置");
         }
         if (endpoint.password().contains("\r") || endpoint.password().contains("\n")) {
-            throw new ServiceException("FREESWITCH_ESL_PASSWORD_INVALID");
+            throw new ServiceException("FreeSWITCH ESL 密码错误");
         }
     }
 
@@ -115,14 +115,14 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         log.warn("Unexpected FreeSWITCH ESL greeting, host={}, port={}, contentType={}, headers={}, body={}",
             endpoint.host(), endpoint.port(), contentType, greeting.headers(), greeting.body());
         if ("text/disconnect-notice".equalsIgnoreCase(contentType) || "text/rude-rejection".equalsIgnoreCase(contentType)) {
-            throw new ServiceException("FREESWITCH_ESL_ACCESS_DENIED");
+            throw new ServiceException("FreeSWITCH ESL 鉴权被拒绝");
         }
-        throw new ServiceException("FREESWITCH_ESL_AUTH_REQUEST_NOT_RECEIVED");
+        throw new ServiceException("未收到 FreeSWITCH ESL 鉴权请求");
     }
 
     private void requireDialValue(String value) {
         if (value == null || !value.matches("^[A-Za-z0-9._*#+-]{1,128}$")) {
-            throw new ServiceException("INVALID_DIAL_VALUE");
+            throw new ServiceException("拨号参数不合法");
         }
     }
 

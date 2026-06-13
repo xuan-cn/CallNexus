@@ -44,7 +44,7 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
     @Override
     public AgentResponse get(Long id) {
         Agent agent = agentMapper.selectById(id);
-        if (agent == null) throw new ServiceException("AGENT_NOT_FOUND");
+        if (agent == null) throw new ServiceException("坐席不存在");
         AgentExtension binding = extensionMapper.selectOne(new LambdaQueryWrapper<AgentExtension>().eq(AgentExtension::getAgentId, id));
         return toResponse(agent, binding == null ? null : binding.getSipAccountId());
     }
@@ -67,31 +67,31 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         ensureAgentCodeUnique(request.getAgentCode(), id);
         ensureUserUnique(request.getUserId(), id);
         Agent agent = agentMapper.selectById(id);
-        if (agent == null) throw new ServiceException("AGENT_NOT_FOUND");
+        if (agent == null) throw new ServiceException("坐席不存在");
         agent.setAgentCode(request.getAgentCode());
         agent.setAgentName(request.getAgentName());
         agent.setUserId(request.getUserId());
         agent.setEnabled(request.getEnabled());
         agent.setVersion(request.getVersion());
-        if (agentMapper.updateById(agent) != 1) throw new ServiceException("AGENT_UPDATE_CONFLICT");
+        if (agentMapper.updateById(agent) != 1) throw new ServiceException("坐席信息已被其他用户修改，请刷新后重试");
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
         extensionMapper.delete(new LambdaQueryWrapper<AgentExtension>().eq(AgentExtension::getAgentId, id));
-        if (agentMapper.deleteById(id) != 1) throw new ServiceException("AGENT_NOT_FOUND");
+        if (agentMapper.deleteById(id) != 1) throw new ServiceException("坐席不存在");
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void bindExtension(Long agentId, BindAgentExtensionRequest request) {
-        if (agentMapper.selectById(agentId) == null) throw new ServiceException("AGENT_NOT_FOUND");
-        if (!sipAccountQueryService.existsEnabled(request.getSipAccountId())) throw new ServiceException("SIP_ACCOUNT_NOT_FOUND_OR_DISABLED");
+        if (agentMapper.selectById(agentId) == null) throw new ServiceException("坐席不存在");
+        if (!sipAccountQueryService.existsEnabled(request.getSipAccountId())) throw new ServiceException("SIP 分机不存在或已停用");
         boolean occupied = extensionMapper.exists(new LambdaQueryWrapper<AgentExtension>()
             .eq(AgentExtension::getSipAccountId, request.getSipAccountId())
             .ne(AgentExtension::getAgentId, agentId));
-        if (occupied) throw new ServiceException("SIP_ACCOUNT_ALREADY_BOUND");
+        if (occupied) throw new ServiceException("该 SIP 分机已被其他坐席绑定");
         extensionMapper.delete(new LambdaQueryWrapper<AgentExtension>().eq(AgentExtension::getAgentId, agentId));
         AgentExtension binding = new AgentExtension();
         binding.setAgentId(agentId);
@@ -108,7 +108,7 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         boolean exists = agentMapper.exists(new LambdaQueryWrapper<Agent>()
             .eq(Agent::getAgentCode, agentCode)
             .ne(excludedId != null, Agent::getId, excludedId));
-        if (exists) throw new ServiceException("AGENT_CODE_ALREADY_EXISTS");
+        if (exists) throw new ServiceException("坐席工号已存在");
     }
 
     private void ensureUserUnique(Long userId, Long excludedId) {
@@ -116,7 +116,7 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         boolean exists = agentMapper.exists(new LambdaQueryWrapper<Agent>()
             .eq(Agent::getUserId, userId)
             .ne(excludedId != null, Agent::getId, excludedId));
-        if (exists) throw new ServiceException("AGENT_USER_ALREADY_BOUND");
+        if (exists) throw new ServiceException("该用户已绑定其他坐席");
     }
 
     private Map<Long, Long> findExtensionBindings(List<Long> agentIds) {

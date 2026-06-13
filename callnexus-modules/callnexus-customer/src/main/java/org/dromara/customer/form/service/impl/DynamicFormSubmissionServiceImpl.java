@@ -41,13 +41,13 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
         if (templateId == null) return;
         FormTemplate template = templateMapper.selectById(templateId);
         if (template == null || !Boolean.TRUE.equals(template.getEnabled()) || template.getBusinessType() != businessType) {
-            throw new ServiceException("FORM_TEMPLATE_NOT_FOUND_OR_DISABLED");
+            throw new ServiceException("表单模板不存在或已停用");
         }
         Map<String, Object> values = formData == null ? Map.of() : formData;
         List<FormField> fields = fieldMapper.selectList(new LambdaQueryWrapper<FormField>()
             .eq(FormField::getTemplateId, templateId).eq(FormField::getEnabled, true));
         Set<String> fieldCodes = fields.stream().map(FormField::getFieldCode).collect(Collectors.toSet());
-        if (!fieldCodes.containsAll(values.keySet())) throw new ServiceException("FORM_DATA_CONTAINS_UNKNOWN_FIELD");
+        if (!fieldCodes.containsAll(values.keySet())) throw new ServiceException("表单提交包含未知字段");
         for (FormField field : fields) validateField(field, values.get(field.getFieldCode()));
 
         FormSubmission submission = submissionMapper.selectOne(new LambdaQueryWrapper<FormSubmission>()
@@ -91,13 +91,13 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
         Collection<?> submittedValues = MULTI_VALUE_TYPES.contains(field.getFieldType())
             ? requireCollection(value, field.getFieldCode()) : List.of(value);
         if (submittedValues.stream().map(String::valueOf).anyMatch(item -> !allowedValues.contains(item))) {
-            throw new ServiceException("FORM_FIELD_OPTION_INVALID:" + field.getFieldName());
+            throw new ServiceException("表单字段选项值不合法：" + field.getFieldName());
         }
     }
 
     private Collection<?> requireCollection(Object value, String fieldCode) {
         if (value instanceof Collection<?> collection) return collection;
-        throw new ServiceException("FORM_FIELD_REQUIRES_ARRAY:" + fieldCode);
+        throw new ServiceException("表单字段必须是数组：" + fieldCode);
     }
 
     private boolean isEmpty(Object value) {

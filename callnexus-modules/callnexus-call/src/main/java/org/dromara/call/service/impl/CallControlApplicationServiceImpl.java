@@ -42,7 +42,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         AgentActiveCall existingCall = RedisUtils.getCacheObject(key);
         if (existingCall != null) {
             if (telephonyCommandGateway.callExists(endpoint(agent.getNodeId()), existingCall.getCallId())) {
-                throw new ServiceException("AGENT_ALREADY_HAS_ACTIVE_CALL");
+                throw new ServiceException("当前坐席已存在通话，请先挂断");
             }
             RedisUtils.deleteObject(key);
         }
@@ -70,7 +70,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         String key = activeCallKey(agent.getAgentId());
         AgentActiveCall activeCall = RedisUtils.getCacheObject(key);
         if (activeCall == null || !activeCall.getCallId().equals(callId)) {
-            throw new ServiceException("ACTIVE_CALL_NOT_FOUND");
+            throw new ServiceException("当前通话不存在或已结束");
         }
         telephonyCommandGateway.hangup(endpoint(agent.getNodeId()), callId);
         RedisUtils.deleteObject(key);
@@ -80,13 +80,13 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     private CurrentAgentResponse requireSignedInAgent() {
         CurrentAgentResponse agent = agentSessionService.current();
         if (!agent.isConfigured()) {
-            throw new ServiceException("CURRENT_USER_NOT_BOUND_TO_AGENT");
+            throw new ServiceException("当前用户尚未绑定坐席");
         }
         if (agent.getStatus() == AgentPresenceStatus.OFFLINE) {
-            throw new ServiceException("AGENT_NOT_SIGNED_IN");
+            throw new ServiceException("坐席未签入，请先签入");
         }
         if (agent.getNodeId() == null || agent.getExtension() == null || agent.getExtension().isBlank()) {
-            throw new ServiceException("AGENT_SIP_ACCOUNT_NOT_BOUND_OR_DISABLED");
+            throw new ServiceException("坐席未绑定 SIP 分机或分机已停用");
         }
         return agent;
     }
@@ -107,7 +107,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         String tenantId = LoginHelper.getTenantId();
         PhoneNumberOutboundRouteResponse route = phoneNumberQueryService.findDefaultOutboundRoute(tenantId, agent.getNodeId());
         if (route == null) {
-            throw new ServiceException("PHONE_NUMBER_OUTBOUND_ROUTE_NOT_CONFIGURED");
+            throw new ServiceException("未配置默认外呼号码路由");
         }
         return OutboundRoute.external(route.getGatewayCode(), route.getNumber());
     }

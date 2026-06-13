@@ -49,7 +49,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     public CurrentAgentResponse signIn() {
         Agent agent = requireCurrentAgent();
         if (!Boolean.TRUE.equals(agent.getEnabled())) {
-            throw new ServiceException("AGENT_DISABLED");
+            throw new ServiceException("坐席已停用");
         }
         requireEnabledSipAccount(agent.getId());
         LocalDateTime now = LocalDateTime.now();
@@ -65,12 +65,12 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     @Override
     public CurrentAgentResponse changeStatus(AgentPresenceStatus status) {
         if (status == AgentPresenceStatus.OFFLINE) {
-            throw new ServiceException("AGENT_STATUS_OFFLINE_REQUIRES_SIGN_OUT");
+            throw new ServiceException("离线状态请使用签出操作");
         }
         Agent agent = requireCurrentAgent();
         AgentPresence presence = getPresence(agent.getId());
         if (presence == null) {
-            throw new ServiceException("AGENT_NOT_SIGNED_IN");
+            throw new ServiceException("坐席未签入，请先签入");
         }
         presence.setStatus(status);
         presence.setUpdatedAt(LocalDateTime.now());
@@ -92,7 +92,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     private Agent requireCurrentAgent() {
         Agent agent = findCurrentAgent();
         if (agent == null) {
-            throw new ServiceException("CURRENT_USER_NOT_BOUND_TO_AGENT");
+            throw new ServiceException("当前用户尚未绑定坐席");
         }
         return agent;
     }
@@ -100,7 +100,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     private void requireEnabledSipAccount(Long agentId) {
         AgentExtension binding = findExtension(agentId);
         if (binding == null || !sipAccountQueryService.existsEnabled(binding.getSipAccountId())) {
-            throw new ServiceException("AGENT_SIP_ACCOUNT_NOT_BOUND_OR_DISABLED");
+            throw new ServiceException("坐席未绑定 SIP 分机或分机已停用");
         }
         sipAccountQueryService.getRegistrationConfig(binding.getSipAccountId());
     }

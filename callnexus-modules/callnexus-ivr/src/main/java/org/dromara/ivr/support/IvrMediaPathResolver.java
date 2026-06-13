@@ -29,7 +29,7 @@ public class IvrMediaPathResolver {
             .toList();
         for (Long nodeId : nodeIds) {
             if (!syncMapper.exists(successSync(mediaId, media.getLatestVersionId(), nodeId))) {
-                throw new ServiceException("IVR_MEDIA_NOT_SYNCED_TO_ALL_NODES");
+                throw new ServiceException("IVR 提示音尚未同步到所有节点");
             }
         }
     }
@@ -49,7 +49,7 @@ public class IvrMediaPathResolver {
         MediaAsset media = mediaId == null ? null : mediaMapper.selectById(mediaId);
         if (media == null || !"IVR_PROMPT".equals(media.getCategory()) || media.getLatestVersionId() == null
             || !"PUBLISHED".equals(media.getPublishStatus())) {
-            throw new ServiceException("IVR_MEDIA_NOT_PUBLISHED");
+            throw new ServiceException("IVR 提示音尚未发布");
         }
         return media;
     }

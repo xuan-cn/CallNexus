@@ -71,7 +71,7 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
     @Transactional(rollbackFor = Exception.class)
     public Long upload(String assetName, MediaAssetCategory category, String languageCode, String remark, Long durationMs, MultipartFile file) {
         if (category == MediaAssetCategory.CALL_RECORDING) {
-            throw new ServiceException("CALL_RECORDING_MANUAL_UPLOAD_NOT_ALLOWED");
+            throw new ServiceException("通话录音不允许手动上传");
         }
         validateAudio(file);
         MediaAsset asset = store(assetName, category, "UPLOAD", languageCode, remark, durationMs, 0, file);
@@ -94,14 +94,14 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
     public void update(Long id, UpdateMediaAssetRequest request) {
         MediaAsset asset = requireAsset(id);
         if (!asset.getCategory().equals(request.getCategory())) {
-            throw new ServiceException("MEDIA_ASSET_CATEGORY_IMMUTABLE");
+            throw new ServiceException("媒体分类不可修改");
         }
         asset.setAssetName(request.getAssetName());
         asset.setLanguageCode(request.getLanguageCode());
         asset.setRemark(request.getRemark());
         asset.setEnabled(request.getEnabled());
         asset.setVersion(request.getVersion());
-        if (mapper.updateById(asset) != 1) throw new ServiceException("MEDIA_ASSET_UPDATE_CONFLICT");
+        if (mapper.updateById(asset) != 1) throw new ServiceException("声音媒体已被其他用户修改，请刷新后重试");
         log.info("更新声音媒体，mediaId={}，category={}，enabled={}", id, asset.getCategory(), asset.getEnabled());
     }
 
@@ -110,12 +110,12 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
     public void delete(Long id) {
         MediaAsset asset = requireAsset(id);
         if (asset.getReferenceCount() != null && asset.getReferenceCount() > 0) {
-            throw new ServiceException("MEDIA_ASSET_IN_USE");
+            throw new ServiceException("声音媒体正在被使用，无法删除");
         }
         if (asset.getPublishStatus() != null && !List.of("DRAFT", "UNPUBLISHED", "FAILED").contains(asset.getPublishStatus())) {
-            throw new ServiceException("MEDIA_ASSET_IS_PUBLISHED");
+            throw new ServiceException("声音媒体已发布，无法删除");
         }
-        if (mapper.deleteById(id) != 1) throw new ServiceException("MEDIA_ASSET_NOT_FOUND");
+        if (mapper.deleteById(id) != 1) throw new ServiceException("声音媒体不存在");
         sysOssService.deleteWithValidByIds(List.of(asset.getOssId()), false);
         log.info("删除声音媒体，mediaId={}，ossId={}", id, asset.getOssId());
     }
@@ -164,10 +164,10 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
     }
 
     private void validateAudio(MultipartFile file) {
-        if (file == null || file.isEmpty()) throw new ServiceException("MEDIA_FILE_REQUIRED");
+        if (file == null || file.isEmpty()) throw new ServiceException("请上传声音文件");
         String contentType = file.getContentType();
         if (StringUtils.isBlank(contentType) || !contentType.startsWith("audio/")) {
-            throw new ServiceException("MEDIA_FILE_TYPE_INVALID");
+            throw new ServiceException("声音文件格式不支持");
         }
     }
 
@@ -203,7 +203,7 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
 
     private MediaAsset requireAsset(Long id) {
         MediaAsset asset = mapper.selectById(id);
-        if (asset == null) throw new ServiceException("MEDIA_ASSET_NOT_FOUND");
+        if (asset == null) throw new ServiceException("声音媒体不存在");
         return asset;
     }
 

@@ -19,7 +19,7 @@ public class IvrGraphParser {
             JsonNode rawNodes = root.path("nodes");
             JsonNode rawEdges = root.path("edges");
             if (!rawNodes.isArray() || !rawEdges.isArray()) {
-                throw new ServiceException("IVR_GRAPH_JSON_INVALID");
+                throw new ServiceException("IVR 流程图 JSON 不合法");
             }
             List<IvrNodeDefinition> nodes = new ArrayList<>();
             Map<String, IvrNodeDefinition> nodeById = new LinkedHashMap<>();
@@ -31,7 +31,7 @@ public class IvrGraphParser {
                     rawNode.path("config")
                 );
                 if (nodeById.putIfAbsent(node.id(), node) != null) {
-                    throw new ServiceException("IVR_NODE_ID_DUPLICATED");
+                    throw new ServiceException("IVR 节点 ID 重复");
                 }
                 nodes.add(node);
             }
@@ -56,7 +56,7 @@ public class IvrGraphParser {
         } catch (ServiceException exception) {
             throw exception;
         } catch (Exception exception) {
-            throw new ServiceException("IVR_GRAPH_JSON_INVALID");
+            throw new ServiceException("IVR 流程图 JSON 不合法");
         }
     }
 

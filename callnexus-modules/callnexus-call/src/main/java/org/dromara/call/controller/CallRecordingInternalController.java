@@ -32,7 +32,7 @@ public class CallRecordingInternalController {
                           @RequestHeader(value = TOKEN_HEADER, required = false) String headerToken,
                           @RequestParam(value = "token", required = false) String queryToken,
                           @RequestPart("file") MultipartFile file) {
-        if (!validToken(headerToken, queryToken)) return R.fail("FREESWITCH_INTERNAL_TOKEN_INVALID");
+        if (!validToken(headerToken, queryToken)) return R.fail("FreeSWITCH 内部接口令牌无效");
         applicationService.upload(tenantId, businessCallId, file);
         return R.ok();
     }

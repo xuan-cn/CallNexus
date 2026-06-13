@@ -14,7 +14,7 @@ public class ExtensionNodeCompiler implements IvrNodeCompiler {
     @Override
     public void validate(IvrNodeValidationContext context) {
         if (context.node().config().path("extension").asText().isBlank()) {
-            throw new ServiceException("IVR_EXTENSION_REQUIRED");
+            throw new ServiceException("请填写转接分机号");
         }
         context.requireTerminal();
     }
