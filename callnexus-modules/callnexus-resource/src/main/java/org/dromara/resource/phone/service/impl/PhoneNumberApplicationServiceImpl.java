@@ -12,6 +12,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.gateway.domain.FreeSwitchGateway;
 import org.dromara.resource.gateway.mapper.FreeSwitchGatewayMapper;
+import org.dromara.resource.ivr.service.IvrDialplanQueryService;
 import org.dromara.resource.node.domain.FreeSwitchNode;
 import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
 import org.dromara.resource.phone.domain.PhoneNumber;
@@ -34,6 +35,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     private final PhoneNumberMapper mapper;
     private final FreeSwitchNodeMapper nodeMapper;
     private final FreeSwitchGatewayMapper gatewayMapper;
+    private final IvrDialplanQueryService ivrDialplanQueryService;
 
     @Override
     public TableDataInfo<PhoneNumberResponse> page(PhoneNumberPageQuery query, PageQuery pageQuery) {
@@ -62,7 +64,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     public Long create(CreatePhoneNumberRequest request) {
         ensureNodeExists(request.getNodeId());
         ensureGatewayAvailable(request.getNodeId(), request.getGatewayId());
-        ensureRouteValid(request.getRouteType(), request.getRouteTarget());
+        ensureRouteValid(request.getNodeId(), request.getRouteType(), request.getRouteTarget());
         ensureNumberUnique(request.getNumber(), null);
         PhoneNumber number = new PhoneNumber();
         apply(number, request.getNumber(), request.getNumberName(), request.getNumberType(), request.getNodeId(), request.getGatewayId(),
@@ -79,7 +81,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     public void update(Long id, UpdatePhoneNumberRequest request) {
         ensureNodeExists(request.getNodeId());
         ensureGatewayAvailable(request.getNodeId(), request.getGatewayId());
-        ensureRouteValid(request.getRouteType(), request.getRouteTarget());
+        ensureRouteValid(request.getNodeId(), request.getRouteType(), request.getRouteTarget());
         ensureNumberUnique(request.getNumber(), id);
         PhoneNumber number = mapper.selectById(id);
         if (number == null) throw new ServiceException("PHONE_NUMBER_NOT_FOUND");
@@ -123,6 +125,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
             response.setRouteType(number.getRouteType());
             response.setRouteTarget(number.getRouteTarget());
             response.setSipDomain(node.getSipDomain());
+            response.setNodeId(node.getId());
             return response;
         });
     }
@@ -176,6 +179,25 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
         });
     }
 
+    @Override
+    public PhoneNumberOutboundRouteResponse findDefaultOutboundRoute(String tenantId, String domain, String switchIpv4) {
+        return TenantHelper.dynamic(tenantId, () -> {
+            FreeSwitchNode node = findEnabledNodeByDomain(domain);
+            if (node == null && StringUtils.isNotBlank(switchIpv4)) {
+                node = nodeMapper.selectOne(new LambdaQueryWrapper<FreeSwitchNode>()
+                    .eq(FreeSwitchNode::getEslHost, switchIpv4)
+                    .eq(FreeSwitchNode::getEnabled, true)
+                    .last("limit 1"));
+            }
+            if (node == null) {
+                log.warn("动态外呼路由未匹配到 FreeSWITCH 节点，tenantId={}，domain={}，switchIpv4={}",
+                    tenantId, domain, switchIpv4);
+                return null;
+            }
+            return findDefaultOutboundRoute(tenantId, node.getId());
+        });
+    }
+
     private void ensureNodeExists(Long nodeId) {
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
         if (node == null) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND");
@@ -189,9 +211,19 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
         }
     }
 
-    private void ensureRouteValid(String routeType, String routeTarget) {
-        if ("EXTENSION".equals(routeType) && StringUtils.isBlank(routeTarget)) {
+    private void ensureRouteValid(Long nodeId, String routeType, String routeTarget) {
+        if (("EXTENSION".equals(routeType) || "IVR".equals(routeType)) && StringUtils.isBlank(routeTarget)) {
             throw new ServiceException("PHONE_NUMBER_ROUTE_TARGET_REQUIRED");
+        }
+        if ("IVR".equals(routeType)) {
+            try {
+                Long flowId = Long.valueOf(routeTarget);
+                if (!ivrDialplanQueryService.isPublishedFlowAvailable(LoginHelper.getTenantId(), flowId, nodeId)) {
+                    throw new ServiceException("PHONE_NUMBER_IVR_NOT_PUBLISHED_OR_NODE_UNAVAILABLE");
+                }
+            } catch (NumberFormatException exception) {
+                throw new ServiceException("PHONE_NUMBER_IVR_TARGET_INVALID");
+            }
         }
     }
 

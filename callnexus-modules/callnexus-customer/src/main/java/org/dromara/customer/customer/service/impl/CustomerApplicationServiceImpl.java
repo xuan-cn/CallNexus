@@ -21,6 +21,7 @@ import org.dromara.customer.form.service.DynamicFormSubmissionService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.call.service.CallBusinessAssociationService;
 
 import java.time.ZoneId;
 import java.util.List;
@@ -32,6 +33,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     private final CustomerMapper customerMapper;
     private final CustomerFollowUpMapper followUpMapper;
     private final DynamicFormSubmissionService formSubmissionService;
+    private final CallBusinessAssociationService callBusinessAssociationService;
 
     @Override
     public TableDataInfo<CustomerResponse> page(CustomerPageQuery query, PageQuery pageQuery) {
@@ -61,7 +63,10 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     public Long create(CreateCustomerRequest request) {
         String primaryPhone = request.getPrimaryPhone().trim();
         Customer existingCustomer = findByPhone(primaryPhone);
-        if (existingCustomer != null) return existingCustomer.getId();
+        if (existingCustomer != null) {
+            callBusinessAssociationService.associateCustomer(request.getSourceCallId(), existingCustomer.getId());
+            return existingCustomer.getId();
+        }
         Customer customer = new Customer();
         customer.setPrimaryPhone(primaryPhone);
         customer.setCustomerName(request.getCustomerName());
@@ -69,6 +74,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         customer.setSourceCallId(request.getSourceCallId());
         customerMapper.insert(customer);
         formSubmissionService.validateAndSave(request.getTemplateId(), FormBusinessType.CUSTOMER, customer.getId(), request.getFormData());
+        callBusinessAssociationService.associateCustomer(request.getSourceCallId(), customer.getId());
         return customer.getId();
     }
 

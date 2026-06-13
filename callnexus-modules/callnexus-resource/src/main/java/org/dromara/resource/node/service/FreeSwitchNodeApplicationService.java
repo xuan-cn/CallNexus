@@ -13,4 +13,5 @@ public interface FreeSwitchNodeApplicationService {
     Long create(CreateFreeSwitchNodeRequest request);
     void update(Long id, UpdateFreeSwitchNodeRequest request);
     void delete(Long id);
+    String resetAgentToken(Long id);
 }

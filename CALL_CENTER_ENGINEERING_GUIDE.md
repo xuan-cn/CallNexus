@@ -823,8 +823,12 @@ deleted
 - 普通索引支持常用查询
 - 乐观锁保护并发更新
 - Flyway维护所有结构变更
+- 新增表必须为表和全部业务字段、审计字段提供中文 `COMMENT`
+- 枚举代码可以保留英文，字段 `COMMENT` 必须说明对应的中文业务含义
+- 数据库迁移脚本、表结构和索引的说明文字统一使用中文
 
 禁止依赖应用代码保证所有唯一性。
+禁止新增英文数据库说明。
 
 ---
 
@@ -985,3 +989,20 @@ test(agent): cover agent state transitions
 - 是否包含敏感信息？
 - 是否更新接口和架构文档？
 - 是否验证完整业务链路？
+
+## 19. Dialplan 路由与 IVR 节点扩展规范
+
+号码呼入路由必须通过 `DialplanRouteHandler` 扩展，不允许继续在 `DialplanXmlCurlHandler` 中增加路由类型判断。
+
+- 每种号码路由实现独立的 `DialplanRouteHandler`。
+- `routeType()` 必须返回唯一、稳定的大写类型编码。
+- 新增路由类型只新增处理器和业务配置，不修改主路由分发流程。
+- 未支持的路由类型返回 FreeSWITCH `not found`，并记录中文日志。
+
+IVR 节点必须通过 `IvrNodeCompiler` 扩展，不允许在 IVR 主编译流程中增加节点类型 `switch`。
+
+- 每种节点编译器同时负责自身配置校验和 Dialplan 输出。
+- 发布校验与运行时编译必须使用同一个 `IvrNodeCompilerRegistry`。
+- 图结构校验、媒体路径解析和公共 XML 输出必须使用独立公共组件。
+- 前端节点属性通过 `propertySchema` 声明，并由属性编辑器注册表渲染。
+- 新增节点时必须同时实现前端定义、后端编译器、发布校验和真实 FreeSWITCH 验收。

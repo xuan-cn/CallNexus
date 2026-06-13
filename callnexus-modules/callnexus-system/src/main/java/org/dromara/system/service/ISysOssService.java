@@ -53,12 +53,30 @@ public interface ISysOssService {
     SysOssVo upload(MultipartFile file);
 
     /**
+     * 上传 MultipartFile 到指定对象存储配置，并保存文件信息到数据库
+     *
+     * @param file      要上传的 MultipartFile 对象
+     * @param configKey OSS 配置键
+     * @return 上传成功后的 SysOssVo 对象，包含文件信息
+     */
+    SysOssVo upload(MultipartFile file, String configKey);
+
+    /**
      * 上传文件到对象存储服务，并保存文件信息到数据库
      *
      * @param file 要上传的文件对象
      * @return 上传成功后的 SysOssVo 对象，包含文件信息
      */
     SysOssVo upload(File file);
+
+    /**
+     * 上传文件到指定对象存储配置，并保存文件信息到数据库
+     *
+     * @param file      要上传的文件对象
+     * @param configKey OSS 配置键
+     * @return 上传成功后的 SysOssVo 对象，包含文件信息
+     */
+    SysOssVo upload(File file, String configKey);
 
     /**
      * 文件下载方法，支持一次性下载完整文件

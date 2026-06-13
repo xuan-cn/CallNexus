@@ -52,6 +52,10 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             log.error("通话记录事件落库失败，不影响实时通话状态处理，nodeId={}，eventName={}，uuid={}",
                 event.nodeId(), event.eventName(), event.uuid(), exception);
         }
+        if (EslEventNames.isTerminalEvent(event.eventName())
+            && !EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
+            return;
+        }
         if (!EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName()) && isEndedCallEvent(event)) {
             return;
         }

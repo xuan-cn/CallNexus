@@ -9,4 +9,5 @@ public class PhoneNumberDialplanRouteResponse {
     private String routeType;
     private String routeTarget;
     private String sipDomain;
+    private Long nodeId;
 }

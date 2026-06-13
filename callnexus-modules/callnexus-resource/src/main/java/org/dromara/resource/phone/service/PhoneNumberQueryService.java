@@ -7,4 +7,6 @@ public interface PhoneNumberQueryService {
     PhoneNumberDialplanRouteResponse findDialplanRoute(String tenantId, String domain, String destinationNumber);
 
     PhoneNumberOutboundRouteResponse findDefaultOutboundRoute(String tenantId, Long nodeId);
+
+    PhoneNumberOutboundRouteResponse findDefaultOutboundRoute(String tenantId, String domain, String switchIpv4);
 }

@@ -78,9 +78,9 @@ spring:
   servlet:
     multipart:
       # 单个文件大小
-      max-file-size: 10MB
+      max-file-size: 200MB
       # 设置总上传的文件大小
-      max-request-size: 20MB
+      max-request-size: 220MB
   mvc:
     # 设置静态资源路径 防止所有请求都去查静态资源
     static-path-pattern: /static/**
@@ -258,6 +258,12 @@ websocket:
 
 --- # FreeSWITCH dynamic directory for mod_xml_curl
 callnexus:
+  audio-storage:
+    call-recording-config-key: ${CALLNEXUS_AUDIO_CALL_RECORDING_CONFIG_KEY:call-recording}
+    ringback-tone-config-key: ${CALLNEXUS_AUDIO_RINGBACK_TONE_CONFIG_KEY:ringback-tone}
+    queue-wait-music-config-key: ${CALLNEXUS_AUDIO_QUEUE_WAIT_MUSIC_CONFIG_KEY:queue-wait-music}
+    ivr-prompt-config-key: ${CALLNEXUS_AUDIO_IVR_PROMPT_CONFIG_KEY:ivr-prompt}
+    user-music-config-key: ${CALLNEXUS_AUDIO_USER_MUSIC_CONFIG_KEY:user-music}
   freeswitch:
     directory:
       secret: ${CALLNEXUS_FREESWITCH_DIRECTORY_SECRET:cnx_fs_dir_8f3d9c2b7a1e4f6a9c0d5b2e}

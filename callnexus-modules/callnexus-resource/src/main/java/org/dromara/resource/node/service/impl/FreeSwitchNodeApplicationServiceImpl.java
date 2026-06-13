@@ -21,10 +21,16 @@ import org.dromara.resource.gateway.domain.FreeSwitchGateway;
 import org.dromara.resource.gateway.mapper.FreeSwitchGatewayMapper;
 import org.dromara.resource.sip.domain.SipAccount;
 import org.dromara.resource.sip.mapper.SipAccountMapper;
+import org.dromara.resource.node.group.domain.FreeSwitchNodeGroupMember;
+import org.dromara.resource.node.group.mapper.FreeSwitchNodeGroupMemberMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -32,6 +38,7 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
     private final FreeSwitchNodeMapper mapper;
     private final SipAccountMapper sipAccountMapper;
     private final FreeSwitchGatewayMapper gatewayMapper;
+    private final FreeSwitchNodeGroupMemberMapper groupMemberMapper;
 
     @Override
     public TableDataInfo<FreeSwitchNodeResponse> page(FreeSwitchNodePageQuery query, PageQuery pageQuery) {
@@ -92,6 +99,8 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         apply(node, request.getNodeCode(), request.getNodeName(), request.getSipDomain(), request.getWssUrl(), request.getEslHost(), request.getEslPort());
         node.setEslPassword(request.getEslPassword());
         node.setEnabled(true);
+        node.setAgentEnabled(false);
+        node.setMediaRootPath("/var/lib/freeswitch/sounds/callnexus");
         mapper.insert(node);
         return node.getId();
     }
@@ -105,6 +114,8 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         apply(node, request.getNodeCode(), request.getNodeName(), request.getSipDomain(), request.getWssUrl(), request.getEslHost(), request.getEslPort());
         if (request.getEslPassword() != null && !request.getEslPassword().isBlank()) node.setEslPassword(request.getEslPassword());
         node.setEnabled(request.getEnabled());
+        node.setAgentEnabled(request.getAgentEnabled());
+        node.setMediaRootPath(request.getMediaRootPath());
         node.setVersion(request.getVersion());
         if (mapper.updateById(node) != 1) throw new ServiceException("FREESWITCH_NODE_UPDATE_CONFLICT");
     }
@@ -117,7 +128,27 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         if (gatewayMapper.exists(new LambdaQueryWrapper<FreeSwitchGateway>().eq(FreeSwitchGateway::getNodeId, id))) {
             throw new ServiceException("FREESWITCH_NODE_IN_USE");
         }
+        if (groupMemberMapper.exists(new LambdaQueryWrapper<FreeSwitchNodeGroupMember>().eq(FreeSwitchNodeGroupMember::getNodeId, id))) {
+            throw new ServiceException("FREESWITCH_NODE_IN_GROUP");
+        }
         if (mapper.deleteById(id) != 1) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND");
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String resetAgentToken(Long id) {
+        FreeSwitchNode node = mapper.selectById(id);
+        if (node == null) throw new ServiceException("FREESWITCH_NODE_NOT_FOUND");
+        String token = UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", "");
+        try {
+            node.setAgentTokenHash(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(token.getBytes(StandardCharsets.UTF_8))));
+        } catch (Exception exception) {
+            throw new ServiceException("MEDIA_AGENT_TOKEN_HASH_FAILED");
+        }
+        node.setAgentEnabled(true);
+        mapper.updateById(node);
+        return token;
     }
 
     private void ensureNodeCodeUnique(String nodeCode, Long excludedId) {
@@ -147,6 +178,10 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         response.setEslHost(node.getEslHost());
         response.setEslPort(node.getEslPort());
         response.setEnabled(node.getEnabled());
+        response.setAgentEnabled(node.getAgentEnabled());
+        response.setAgentLastHeartbeat(node.getAgentLastHeartbeat());
+        response.setAgentVersion(node.getAgentVersion());
+        response.setMediaRootPath(node.getMediaRootPath());
         response.setVersion(node.getVersion());
         response.setCreateTime(node.getCreateTime());
         return response;

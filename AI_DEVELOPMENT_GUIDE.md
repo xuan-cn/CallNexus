@@ -41,12 +41,14 @@ CallNexus-UI/src/components/CallCenterBusinessDetail/
 
 - FreeSWITCH 节点管理：`org.dromara.resource.node`
 - SIP 账号管理：`org.dromara.resource.sip`
+- 声音媒体管理：`org.dromara.resource.media`
 - FreeSWITCH 内部 XML Curl 接口：`org.dromara.resource.freeswitch`
 - FreeSWITCH XML 渲染：`org.dromara.resource.freeswitch.xml`
 
 适合放这里的功能：
 
 - SIP 分机、线路、中继、网关、号码资源。
+- IVR 提示音、等待音乐、振铃音、用户音乐和统一媒体资产。
 - FreeSWITCH 节点连接配置。
 - `mod_xml_curl` 的 directory、dialplan、acl、gateway XML 输出。
 - 资源查询服务，供 `callnexus-call`、`callnexus-agent` 调用。
@@ -57,6 +59,14 @@ CallNexus-UI/src/components/CallCenterBusinessDetail/
 - 当前通话状态。
 - 客户、工单、跟进记录。
 - ESL 连接监听逻辑。
+
+声音媒体开发规则：
+
+- `cc_media_asset` 保存稳定媒体业务 ID，`sys_oss` 和 MinIO 保存实际文件。
+- IVR、队列、录音和 AI 派生结果必须引用 `mediaId`，禁止保存会过期的预签名 URL。
+- 媒体分类决定 OSS 配置键和 MinIO 桶，上传后禁止直接修改分类。
+- 私有桶前端访问统一通过 `OssService.selectUrlById(ossId, ttl)` 生成预签名 URL。
+- AI 转写、摘要、质检和 TTS 必须异步执行，不能阻塞普通媒体上传接口。
 
 ### `callnexus-esl`
 
@@ -387,6 +397,9 @@ CallNexus/callnexus-admin/src/main/resources/db/migration/V*_*.sql
 - 多租户唯一索引一般包含 `tenant_id` 和 `deleted`。
 - Flyway 文件只新增，不修改已执行版本。
 - 如果用户说自己执行 SQL，仍要提供迁移文件。
+- 新增表必须为表和全部业务字段、审计字段提供中文 `COMMENT`。
+- 枚举代码可以保留英文，但字段 `COMMENT` 必须写明对应的中文业务含义。
+- 数据库迁移脚本、表结构和索引的说明文字统一使用中文，禁止生成英文数据库说明。
 
 已存在关键迁移：
 
@@ -1049,3 +1062,18 @@ OpenCallHub_Front/src/views/System
 - 过早拆成大量微服务。
 - 在 common 模块放业务工具。
 - 为所有 CRUD 过度设计复杂领域模型。
+
+## 14. 路由和 IVR 扩展入口
+
+后续 AI 开发号码路由时：
+
+- 新增号码路由类型必须实现 `DialplanRouteHandler`，禁止修改 `DialplanXmlCurlHandler` 增加 `if` 或 `switch`。
+- 号码直接转 AI 属于号码路由处理器；IVR 节点转 AI 属于 IVR 节点编译器，两者可复用同一个 AI Dialplan 渲染服务。
+
+后续 AI 开发 IVR 节点时：
+
+- 后端新增独立 `IvrNodeCompiler`，并通过注册中心参与发布校验和运行时编译。
+- 前端在 `IvrFlowDesigner/nodeRegistry.ts` 声明节点和属性 Schema。
+- 新属性控件必须加入属性编辑器注册表，未知编辑器不得静默忽略。
+- 不修改已有流程 JSON 通用结构，节点业务参数继续放在 `config` 中。
+- 队列、AI、会议、工作时间和 HTTP 节点均按上述扩展方式实现。

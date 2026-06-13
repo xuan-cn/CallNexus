@@ -22,7 +22,7 @@ public class CreatePhoneNumberRequest {
     private Long nodeId;
     private Long gatewayId;
     @NotBlank
-    @Pattern(regexp = "^(EXTENSION|NONE)$")
+    @Pattern(regexp = "^(EXTENSION|IVR|NONE)$")
     private String routeType;
     @Size(max = 64)
     private String routeTarget;

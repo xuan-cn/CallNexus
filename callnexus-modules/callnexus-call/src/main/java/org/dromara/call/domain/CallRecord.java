@@ -15,6 +15,7 @@ import java.time.LocalDateTime;
 public class CallRecord extends TenantEntity {
     @TableId
     private Long id;
+    private Long sessionId;
     private Long nodeId;
     private String channelUuid;
     private String callUuid;

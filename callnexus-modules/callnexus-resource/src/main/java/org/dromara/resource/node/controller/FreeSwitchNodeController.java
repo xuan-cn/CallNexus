@@ -57,4 +57,10 @@ public class FreeSwitchNodeController {
         applicationService.delete(id);
         return R.ok();
     }
+
+    @PostMapping("/{id}/agent-token")
+    @SaCheckPermission("callcenter:freeswitch-node:agent-token")
+    public R<String> resetAgentToken(@PathVariable Long id) {
+        return R.ok("创建agent token",applicationService.resetAgentToken(id));
+    }
 }

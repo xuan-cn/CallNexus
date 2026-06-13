@@ -15,6 +15,7 @@ import org.dromara.customer.ticket.domain.request.TicketPageQuery;
 import org.dromara.customer.ticket.domain.response.TicketResponse;
 import org.dromara.customer.ticket.mapper.TicketMapper;
 import org.dromara.customer.ticket.service.TicketApplicationService;
+import org.dromara.call.service.CallBusinessAssociationService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,6 +31,7 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
 
     private final TicketMapper ticketMapper;
     private final DynamicFormSubmissionService formSubmissionService;
+    private final CallBusinessAssociationService callBusinessAssociationService;
 
     @Override
     public TableDataInfo<TicketResponse> page(TicketPageQuery query, PageQuery pageQuery) {
@@ -62,6 +64,7 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         ticket.setTemplateId(request.getTemplateId());
         ticketMapper.insert(ticket);
         formSubmissionService.validateAndSave(request.getTemplateId(), FormBusinessType.TICKET, ticket.getId(), request.getFormData());
+        callBusinessAssociationService.associateTicket(request.getSourceCallId(), ticket.getId(), request.getCustomerId());
         return ticket.getId();
     }
 

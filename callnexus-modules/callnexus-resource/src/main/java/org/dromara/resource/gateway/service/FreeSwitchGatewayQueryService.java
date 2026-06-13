@@ -5,5 +5,5 @@ import org.dromara.resource.gateway.domain.response.FreeSwitchGatewayDirectoryRe
 import java.util.List;
 
 public interface FreeSwitchGatewayQueryService {
-    List<FreeSwitchGatewayDirectoryResponse> findEnabledDirectoryGateways(String tenantId, String domain);
+    List<FreeSwitchGatewayDirectoryResponse> findEnabledDirectoryGateways(String tenantId, String domain, String switchIpv4, String hostname);
 }

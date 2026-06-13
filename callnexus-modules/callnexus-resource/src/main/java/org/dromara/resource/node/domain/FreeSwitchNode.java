@@ -24,6 +24,11 @@ public class FreeSwitchNode extends TenantEntity {
     @EncryptField
     private String eslPassword;
     private Boolean enabled;
+    private Boolean agentEnabled;
+    private String agentTokenHash;
+    private java.time.LocalDateTime agentLastHeartbeat;
+    private String agentVersion;
+    private String mediaRootPath;
     @Version
     private Integer version;
     @TableLogic

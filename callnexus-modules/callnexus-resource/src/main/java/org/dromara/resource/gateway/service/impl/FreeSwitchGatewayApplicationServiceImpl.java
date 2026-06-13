@@ -108,20 +108,46 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
     }
 
     @Override
-    public List<FreeSwitchGatewayDirectoryResponse> findEnabledDirectoryGateways(String tenantId, String domain) {
+    public List<FreeSwitchGatewayDirectoryResponse> findEnabledDirectoryGateways(String tenantId, String domain, String switchIpv4, String hostname) {
         return TenantHelper.dynamic(tenantId, () -> {
             List<FreeSwitchNode> nodes = nodeMapper.selectList(new LambdaQueryWrapper<FreeSwitchNode>()
-                .eq(FreeSwitchNode::getEnabled, true)
-                .eq(domain != null && !domain.isBlank(), FreeSwitchNode::getSipDomain, domain));
-            if (nodes.isEmpty()) return List.of();
-            Map<Long, FreeSwitchNode> nodeById = nodes.stream()
+                .eq(FreeSwitchNode::getEnabled, true));
+            List<FreeSwitchNode> matchedNodes = matchRequestNodes(nodes, domain, switchIpv4, hostname);
+            if (matchedNodes.isEmpty()) {
+                log.warn("FreeSWITCH 网关目录请求未匹配到节点，tenantId={}，domain={}，switchIpv4={}，hostname={}，enabledNodeCount={}",
+                    tenantId, domain, switchIpv4, hostname, nodes.size());
+                return List.of();
+            }
+            Map<Long, FreeSwitchNode> nodeById = matchedNodes.stream()
                 .collect(Collectors.toMap(FreeSwitchNode::getId, Function.identity()));
             List<FreeSwitchGateway> gateways = mapper.selectList(new LambdaQueryWrapper<FreeSwitchGateway>()
                 .in(FreeSwitchGateway::getNodeId, nodeById.keySet())
                 .eq(FreeSwitchGateway::getEnabled, true)
                 .orderByAsc(FreeSwitchGateway::getGatewayCode));
+            log.info("FreeSWITCH 网关目录已匹配节点，tenantId={}，nodeIds={}，gatewayCount={}",
+                tenantId, nodeById.keySet(), gateways.size());
             return gateways.stream().map(gateway -> toDirectoryResponse(gateway, nodeById.get(gateway.getNodeId()))).toList();
         });
+    }
+
+    private List<FreeSwitchNode> matchRequestNodes(List<FreeSwitchNode> nodes, String domain, String switchIpv4, String hostname) {
+        if (domain != null && !domain.isBlank()) {
+            List<FreeSwitchNode> matches = nodes.stream().filter(node -> domain.equalsIgnoreCase(node.getSipDomain())).toList();
+            if (!matches.isEmpty()) return matches;
+        }
+        if (switchIpv4 != null && !switchIpv4.isBlank()) {
+            List<FreeSwitchNode> matches = nodes.stream().filter(node -> switchIpv4.equalsIgnoreCase(node.getEslHost())).toList();
+            if (!matches.isEmpty()) return matches;
+        }
+        if (hostname != null && !hostname.isBlank()) {
+            List<FreeSwitchNode> matches = nodes.stream()
+                .filter(node -> hostname.equalsIgnoreCase(node.getEslHost())
+                    || hostname.equalsIgnoreCase(node.getNodeCode())
+                    || hostname.equalsIgnoreCase(node.getNodeName()))
+                .toList();
+            if (!matches.isEmpty()) return matches;
+        }
+        return nodes.size() == 1 ? nodes : List.of();
     }
 
     private void ensureNodeExists(Long nodeId) {
@@ -265,7 +291,13 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
             log.warn("未找到 FreeSWITCH 网关运行态同步服务，跳过删除同步，nodeId={}，gatewayCode={}", nodeId, gatewayCode);
             return;
         }
-        syncService.removeGateway(nodeId, gatewayCode);
+        try {
+            syncService.removeGateway(nodeId, gatewayCode);
+        } catch (RuntimeException exception) {
+            // Database state is authoritative; FreeSWITCH runtime cleanup is best-effort.
+            log.warn("FreeSWITCH 网关运行态删除失败，数据库记录已删除，nodeId={}，gatewayCode={}",
+                nodeId, gatewayCode, exception);
+        }
     }
 
     private void afterCommit(Runnable action) {

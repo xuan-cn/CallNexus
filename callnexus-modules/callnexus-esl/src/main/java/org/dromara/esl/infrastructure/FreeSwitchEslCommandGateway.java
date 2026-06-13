@@ -31,8 +31,15 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         String callerIdNumber = outboundRoute != null && outboundRoute.isExternal() ? outboundRoute.getCallerIdNumber() : agentExtension;
         requireDialValue(callerIdNumber);
         String variables = "{origination_uuid=" + callId
+            + ",callnexus_business_call_id=" + callId
+            + ",callnexus_direction=" + (outboundRoute != null && outboundRoute.isExternal() ? "OUTBOUND" : "INTERNAL")
+            + ",callnexus_original_caller=" + agentExtension
+            + ",callnexus_original_called=" + destination
             + ",origination_caller_id_number=" + callerIdNumber
             + ",origination_caller_id_name=" + callerIdNumber
+            + ",execute_on_answer=record_session::/var/lib/freeswitch/recordings/" + callId + ".wav"
+            + ",api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh " + callId
+            + " /var/lib/freeswitch/recordings/" + callId + ".wav"
             + ",hangup_after_bridge=true}";
         String destinationDialString = destinationDialString(destination, endpoint.sipDomain(), outboundRoute);
         String command = "bgapi originate " + variables + userDialString(agentExtension, endpoint.sipDomain())

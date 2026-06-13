@@ -34,5 +34,9 @@ public class UpdateFreeSwitchNodeRequest {
     @NotNull
     private Boolean enabled;
     @NotNull
+    private Boolean agentEnabled;
+    @Size(max = 255)
+    private String mediaRootPath;
+    @NotNull
     private Integer version;
 }

@@ -14,6 +14,10 @@ public final class EslHeaders {
     public static final String BRIDGE_B_UNIQUE_ID = "Bridge-B-Unique-ID";
     public static final String VARIABLE_ORIGINATION_UUID = "variable_origination_uuid";
     public static final String VARIABLE_BRIDGE_UUID = "variable_bridge_uuid";
+    public static final String VARIABLE_CALLNEXUS_BUSINESS_CALL_ID = "variable_callnexus_business_call_id";
+    public static final String VARIABLE_CALLNEXUS_DIRECTION = "variable_callnexus_direction";
+    public static final String VARIABLE_CALLNEXUS_ORIGINAL_CALLER = "variable_callnexus_original_caller";
+    public static final String VARIABLE_CALLNEXUS_ORIGINAL_CALLED = "variable_callnexus_original_called";
 
     private EslHeaders() {
     }

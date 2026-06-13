@@ -53,6 +53,8 @@ import java.util.Map;
 @Service
 public class SysOssServiceImpl implements ISysOssService, OssService {
 
+    private static final Duration DEFAULT_PRESIGNED_TTL = Duration.ofSeconds(120);
+
     private final SysOssMapper baseMapper;
 
     /**
@@ -117,6 +119,22 @@ public class SysOssServiceImpl implements ISysOssService, OssService {
             }
         }
         return StringUtils.joinComma(list);
+    }
+
+    @Override
+    public String selectUrlById(Long ossId, Duration ttl) {
+        if (ossId == null) {
+            return null;
+        }
+        SysOssVo oss = SpringUtils.getAopProxy(this).getById(ossId);
+        if (ObjectUtil.isNull(oss)) {
+            return null;
+        }
+        try {
+            return resolveAccessibleUrl(oss, ttl);
+        } catch (Exception exception) {
+            return oss.getUrl();
+        }
     }
 
     @Override
@@ -192,12 +210,17 @@ public class SysOssServiceImpl implements ISysOssService, OssService {
      */
     @Override
     public SysOssVo upload(MultipartFile file) {
+        return upload(file, null);
+    }
+
+    @Override
+    public SysOssVo upload(MultipartFile file, String configKey) {
         if (ObjectUtil.isNull(file) || file.isEmpty()) {
             throw new ServiceException("上传文件不能为空");
         }
         String originalfileName = file.getOriginalFilename();
         String suffix = StringUtils.substring(originalfileName, originalfileName.lastIndexOf("."), originalfileName.length());
-        OssClient storage = OssFactory.instance();
+        OssClient storage = getStorage(configKey);
         UploadResult uploadResult;
         try {
             uploadResult = storage.uploadSuffix(file.getBytes(), suffix, file.getContentType());
@@ -219,18 +242,27 @@ public class SysOssServiceImpl implements ISysOssService, OssService {
      */
     @Override
     public SysOssVo upload(File file) {
+        return upload(file, null);
+    }
+
+    @Override
+    public SysOssVo upload(File file, String configKey) {
         if (ObjectUtil.isNull(file) || !file.isFile() || file.length() <= 0) {
             throw new ServiceException("上传文件不能为空");
         }
         String originalfileName = file.getName();
         String suffix = StringUtils.substring(originalfileName, originalfileName.lastIndexOf("."), originalfileName.length());
-        OssClient storage = OssFactory.instance();
+        OssClient storage = getStorage(configKey);
         long length = file.length();
         UploadResult uploadResult = storage.uploadSuffix(file, suffix);
         SysOssExt ext1 = new SysOssExt();
         ext1.setFileSize(length);
         // 保存文件信息
         return buildResultEntity(originalfileName, suffix, storage.getConfigKey(), uploadResult, ext1);
+    }
+
+    private OssClient getStorage(String configKey) {
+        return StringUtils.isBlank(configKey) ? OssFactory.instance() : OssFactory.instance(configKey);
     }
 
     @NotNull
@@ -274,11 +306,17 @@ public class SysOssServiceImpl implements ISysOssService, OssService {
      * @return oss 匹配Url的OSS对象
      */
     private SysOssVo matchingUrl(SysOssVo oss) {
-        OssClient storage = OssFactory.instance(oss.getService());
-        // 仅修改桶类型为 private 的URL，临时URL时长为120s
-        if (AccessPolicyType.PRIVATE == storage.getAccessPolicy()) {
-            oss.setUrl(storage.createPresignedGetUrl(oss.getFileName(), Duration.ofSeconds(120)));
-        }
+        oss.setUrl(resolveAccessibleUrl(oss, DEFAULT_PRESIGNED_TTL));
         return oss;
+    }
+
+    private String resolveAccessibleUrl(SysOssVo oss, Duration ttl) {
+        OssClient storage = OssFactory.instance(oss.getService());
+        // 私有桶生成临时 URL，公有桶继续返回持久 URL
+        if (AccessPolicyType.PRIVATE == storage.getAccessPolicy()) {
+            Duration effectiveTtl = ttl == null || ttl.isZero() || ttl.isNegative() ? DEFAULT_PRESIGNED_TTL : ttl;
+            return storage.createPresignedGetUrl(oss.getFileName(), effectiveTtl);
+        }
+        return oss.getUrl();
     }
 }

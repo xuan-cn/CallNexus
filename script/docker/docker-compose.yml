@@ -91,9 +91,9 @@ services:
       MINIO_COMPRESS_MIME_TYPES: ""
     volumes:
       # 映射当前目录下的data目录至容器内/data目录
-      - /docker/minio/data:/data
+      - ./docker/minio/data:/data
       # 映射配置目录
-      - /docker/minio/config:/root/.minio/
+      - ./docker/minio/config:/root/.minio/
     command: server --address ':9000' --console-address ':9001' /data  # 指定容器中的目录 /data
     privileged: true
     network_mode: "host"
