@@ -33,7 +33,7 @@ import java.util.concurrent.RejectedExecutionException;
 public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
     private static final int CONNECT_TIMEOUT_MILLIS = 5000;
     private static final long RECONNECT_DELAY_MILLIS = 5000;
-    private static final String EVENT_COMMAND = "event plain " + String.join(" ", EslEventNames.subscribedChannelEvents());
+    private static final String EVENT_COMMAND = "event plain " + String.join(" ", EslEventNames.subscribedEvents());
 
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final EslEventDispatcher eventDispatcher;

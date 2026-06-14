@@ -18,6 +18,7 @@ import org.dromara.agent.mapper.SkillGroupMemberMapper;
 import org.dromara.agent.runtime.AgentQueueRuntimeStatus;
 import org.dromara.agent.service.CallQueueRuntimeSyncService;
 import org.dromara.agent.service.CurrentAgentSessionService;
+import org.dromara.agent.service.HandlingQueueResolver;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
@@ -45,6 +46,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     private final CallQueueMapper callQueueMapper;
     private final SipAccountQueryService sipAccountQueryService;
     private final CallQueueRuntimeSyncService queueRuntimeSyncService;
+    private final HandlingQueueResolver handlingQueueResolver;
 
     @Override
     public CurrentAgentResponse current() {
@@ -190,12 +192,18 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
             return null;
         }
         long elapsedSeconds = Math.max(0, ChronoUnit.SECONDS.between(presence.getUpdatedAt(), LocalDateTime.now()));
-        return Math.max(0, wrapUpSeconds(agent.getId()) - elapsedSeconds);
+        return Math.max(0, wrapUpSeconds(agent, presence) - elapsedSeconds);
     }
 
-    private long wrapUpSeconds(Long agentId) {
+    private long wrapUpSeconds(Agent agent, AgentPresence presence) {
+        // 优先按本次实际接听队列计算话后整理时长，替代旧的“所属启用队列最长时间”规则。
+        // 非队列来电（如直拨分机、IVR 转分机）查不到 handling_queue 时，回退到旧规则。
+        Integer handlingWrapUp = resolveHandlingQueueWrapUpSeconds(presence);
+        if (handlingWrapUp != null) {
+            return handlingWrapUp;
+        }
         List<Long> skillGroupIds = skillGroupMemberMapper.selectList(new LambdaQueryWrapper<SkillGroupMember>()
-                .eq(SkillGroupMember::getAgentId, agentId))
+                .eq(SkillGroupMember::getAgentId, agent.getId()))
             .stream().map(SkillGroupMember::getSkillGroupId).distinct().toList();
         if (skillGroupIds.isEmpty()) return 0;
         return callQueueMapper.selectList(new LambdaQueryWrapper<CallQueue>()
@@ -205,6 +213,17 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
             .filter(seconds -> seconds != null && seconds > 0)
             .mapToLong(Integer::longValue)
             .max().orElse(0);
+    }
+
+    private Integer resolveHandlingQueueWrapUpSeconds(AgentPresence presence) {
+        if (presence == null || presence.getHandlingCallId() == null) return null;
+        try {
+            return handlingQueueResolver.resolveWrapUpSeconds(presence.getHandlingCallId());
+        } catch (Exception exception) {
+            log.warn("查询本次接听队列话后整理时长失败，回退到默认规则，agentId={}，handlingCallId={}，error={}",
+                presence.getAgentId(), presence.getHandlingCallId(), exception.getMessage());
+            return null;
+        }
     }
 
     private String activeCallKey(Long agentId) {

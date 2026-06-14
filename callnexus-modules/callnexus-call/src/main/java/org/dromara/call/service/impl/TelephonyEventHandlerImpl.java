@@ -15,6 +15,7 @@ import org.dromara.call.domain.TelephonyEvent;
 import org.dromara.call.domain.response.CallRealtimeMessage;
 import org.dromara.call.service.TelephonyEventHandler;
 import org.dromara.call.service.CallRecordApplicationService;
+import org.dromara.call.service.QueueEventApplicationService;
 import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
@@ -47,9 +48,23 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private final AgentRealtimeQueryService agentQueryService;
     private final CallQueueRuntimeSyncService queueRuntimeSyncService;
     private final CallRecordApplicationService callRecordApplicationService;
+    private final QueueEventApplicationService queueEventApplicationService;
 
     @Override
     public void onEvent(TelephonyEvent event) {
+        // mod_callcenter 队列事件走独立的队列事件处理服务，不参与坐席实时状态机和 WebSocket 推送。
+        if (EslEventNames.CUSTOM.equals(event.eventName())) {
+            if (!EslEventNames.isCallCenterQueueEvent(event.eventName(), event.eventSubclass())) {
+                return;
+            }
+            try {
+                queueEventApplicationService.handleQueueEvent(event);
+            } catch (Exception exception) {
+                log.error("队列事件落库失败，不影响坐席实时状态处理，nodeId={}，subclass={}，uuid={}",
+                    event.nodeId(), event.eventSubclass(), event.uuid(), exception);
+            }
+            return;
+        }
         try {
             callRecordApplicationService.handleEvent(event);
         } catch (Exception exception) {
@@ -91,10 +106,22 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private void updateTargetState(TelephonyEvent event, AgentRealtimeTargetResponse target) {
         if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             RedisUtils.deleteObject(activeCallKey(target));
-            updatePresence(target, wasAnswered(event, target) ? AgentPresenceStatus.AFTER_CALL : AgentPresenceStatus.IDLE);
+            // 已接听的坐席挂断后进入话后整理，把本次通话 channel UUID 记录到 presence，
+            // 供话后整理时长按实际接听队列计算；整理结束恢复 IDLE 时清空。
+            String handlingCallId = wasAnswered(event, target) ? event.uuid() : null;
+            updatePresence(target, wasAnswered(event, target) ? AgentPresenceStatus.AFTER_CALL : AgentPresenceStatus.IDLE, handlingCallId);
         } else if (isConnectedEvent(event)) {
             saveActiveCallIfAbsent(event, target);
-            updatePresence(target, AgentPresenceStatus.BUSY);
+            updatePresence(target, AgentPresenceStatus.BUSY, null);
+            // CHANNEL_BRIDGE 时记录队列接听节点（仅对队列来电生效，非队列来电直接返回 null）。
+            // 触发时机放在坐席状态流转之后，避免阻塞实时状态推送。
+            if (EslEventNames.CHANNEL_BRIDGE.equals(event.eventName())) {
+                try {
+                    queueEventApplicationService.recordAgentAnswerOnBridge(event.uuid());
+                } catch (Exception exception) {
+                    log.warn("记录队列坐席接听事件失败，不影响实时通话状态，uuid={}", event.uuid(), exception);
+                }
+            }
         }
     }
 
@@ -261,12 +288,14 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         RedisUtils.setCacheObject(key, call, ACTIVE_CALL_TTL);
     }
 
-    private void updatePresence(AgentRealtimeTargetResponse target, AgentPresenceStatus status) {
+    private void updatePresence(AgentRealtimeTargetResponse target, AgentPresenceStatus status, String handlingCallId) {
         String key = PRESENCE_KEY_PREFIX + target.getTenantId() + ":" + target.getAgentId();
         AgentPresence presence = RedisUtils.getCacheObject(key);
         if (presence == null) return;
         presence.setStatus(status);
         presence.setUpdatedAt(LocalDateTime.now());
+        // AFTER_CALL 记录本次通话 channel UUID 用于话后整理时长计算；其余状态清空，避免残留。
+        presence.setHandlingCallId(AgentPresenceStatus.AFTER_CALL.equals(status) ? handlingCallId : null);
         RedisUtils.setCacheObject(key, presence, PRESENCE_TTL);
         syncQueueStatus(target, status);
     }

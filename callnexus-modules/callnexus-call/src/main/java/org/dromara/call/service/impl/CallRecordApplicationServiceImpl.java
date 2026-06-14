@@ -21,6 +21,7 @@ import org.dromara.call.mapper.CallEventMapper;
 import org.dromara.call.mapper.CallRecordMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.service.CallRecordApplicationService;
+import org.dromara.call.service.QueueEventApplicationService;
 import org.dromara.call.service.CallBusinessAssociationService;
 import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.exception.ServiceException;
@@ -50,6 +51,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private final AgentRealtimeQueryService agentQueryService;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final OssService ossService;
+    private final QueueEventApplicationService queueEventApplicationService;
 
     /**
      * 通话录音回放预签名链接默认有效期：2 小时。
@@ -337,6 +339,15 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             session.setHangupCause(hangupCause);
         }
         sessionMapper.updateById(session);
+        // 业务通话聚合结束：若为队列来电且未被接听，按挂断原因推断队列超时或主叫放弃节点。
+        if ("ENDED".equals(session.getCallStatus())) {
+            try {
+                queueEventApplicationService.recordQueueTerminationIfUnanswered(
+                    session.getId(), session.getBusinessCallId(), session.getHangupCause());
+            } catch (Exception exception) {
+                log.warn("记录队列未接听终止事件失败，不影响通话聚合，sessionId={}", session.getId(), exception);
+            }
+        }
     }
 
     private String aggregateStatus(List<CallRecord> legs) {
@@ -494,6 +505,8 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         response.setCalledNumber(session.getCalledNumber());
         response.setAgentId(session.getAgentId());
         response.setAgentExtension(session.getAgentExtension());
+        response.setHandlingQueueId(session.getHandlingQueueId());
+        response.setHandlingQueueName(session.getHandlingQueueName());
         response.setCustomerId(session.getCustomerId());
         response.setTicketId(session.getTicketId());
         response.setCallStatus(session.getCallStatus());

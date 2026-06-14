@@ -19,6 +19,22 @@ public final class EslHeaders {
     public static final String VARIABLE_CALLNEXUS_ORIGINAL_CALLER = "variable_callnexus_original_caller";
     public static final String VARIABLE_CALLNEXUS_ORIGINAL_CALLED = "variable_callnexus_original_called";
 
+    /**
+     * CUSTOM 事件的子类标识头，mod_callcenter 队列事件形如 callcenter::call-coming。
+     */
+    public static final String EVENT_SUBCLASS = "Event-Subclass";
+
+    /**
+     * mod_callcenter 队列事件公共头。
+     */
+    public static final String CC_QUEUE = "CC-Queue";
+    public static final String CC_CALLER_UUID = "CC-Caller-UUID";
+    public static final String CC_AGENT = "CC-Agent";
+    public static final String CC_CAUSE = "CC-Cause";
+    public static final String CC_QUEUE_POSITION = "CC-Queue-Position";
+    public static final String CC_CALLER_CID_NUMBER = "CC-Caller-CID-Number";
+    public static final String CC_MEMBER_UUID = "CC-Member-UUID";
+
     private EslHeaders() {
     }
 }

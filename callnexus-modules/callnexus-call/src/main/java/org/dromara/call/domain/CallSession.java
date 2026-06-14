@@ -22,6 +22,8 @@ public class CallSession extends TenantEntity {
     private String calledNumber;
     private Long agentId;
     private String agentExtension;
+    private Long handlingQueueId;
+    private String handlingQueueName;
     private Long customerId;
     private Long ticketId;
     private String callStatus;
