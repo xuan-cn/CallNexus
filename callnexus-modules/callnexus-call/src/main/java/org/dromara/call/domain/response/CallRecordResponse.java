@@ -21,6 +21,8 @@ public class CallRecordResponse {
     private String handlingQueueName;
     private Long customerId;
     private Long ticketId;
+    private Long outboundTaskId;
+    private Long outboundMemberId;
     private String callStatus;
     private LocalDateTime startedAt;
     private LocalDateTime ringingAt;

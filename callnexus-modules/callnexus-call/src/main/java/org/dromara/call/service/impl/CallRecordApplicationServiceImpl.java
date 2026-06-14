@@ -432,6 +432,9 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         String direction = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_DIRECTION);
         String caller = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER);
         String called = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLED);
+        Long customerId = parseLong(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CUSTOMER_ID));
+        Long outboundTaskId = parseLong(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_OUTBOUND_TASK_ID));
+        Long outboundMemberId = parseLong(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_OUTBOUND_MEMBER_ID));
         if (StringUtils.isNotBlank(direction) && !direction.equals(session.getDirection())) {
             session.setDirection(direction);
             changed = true;
@@ -444,7 +447,28 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             session.setCalledNumber(called);
             changed = true;
         }
+        if (customerId != null && !customerId.equals(session.getCustomerId())) {
+            session.setCustomerId(customerId);
+            changed = true;
+        }
+        if (outboundTaskId != null && !outboundTaskId.equals(session.getOutboundTaskId())) {
+            session.setOutboundTaskId(outboundTaskId);
+            changed = true;
+        }
+        if (outboundMemberId != null && !outboundMemberId.equals(session.getOutboundMemberId())) {
+            session.setOutboundMemberId(outboundMemberId);
+            changed = true;
+        }
         if (changed) sessionMapper.updateById(session);
+    }
+
+    private Long parseLong(String value) {
+        if (StringUtils.isBlank(value) || !value.matches("^\\d+$")) return null;
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private String originalCaller(TelephonyEvent event) {
@@ -511,6 +535,8 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         response.setHandlingQueueName(session.getHandlingQueueName());
         response.setCustomerId(session.getCustomerId());
         response.setTicketId(session.getTicketId());
+        response.setOutboundTaskId(session.getOutboundTaskId());
+        response.setOutboundMemberId(session.getOutboundMemberId());
         // 详情查询时，显式关联为空则按号码回查历史客户/工单，避免队列来电未创建客户工单时详情空白。
         // 列表查询不做回查，避免 N+1 查询。
         if (includeDetails) {

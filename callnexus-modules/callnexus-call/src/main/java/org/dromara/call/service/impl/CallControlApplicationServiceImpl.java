@@ -6,6 +6,7 @@ import org.dromara.agent.domain.response.CurrentAgentResponse;
 import org.dromara.agent.service.CurrentAgentSessionService;
 import org.dromara.agent.domain.AgentActiveCall;
 import org.dromara.call.domain.EslEndpoint;
+import org.dromara.call.domain.CallOriginateContext;
 import org.dromara.call.domain.OutboundRoute;
 import org.dromara.call.domain.response.CallControlResponse;
 import org.dromara.call.service.CallControlApplicationService;
@@ -37,6 +38,11 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
     @Override
     public CallControlResponse originate(String destination) {
+        return originate(destination, CallOriginateContext.empty());
+    }
+
+    @Override
+    public CallControlResponse originate(String destination, CallOriginateContext context) {
         CurrentAgentResponse agent = requireSignedInAgent();
         String key = activeCallKey(agent.getAgentId());
         AgentActiveCall existingCall = RedisUtils.getCacheObject(key);
@@ -49,7 +55,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
         String callId = UUID.randomUUID().toString();
         OutboundRoute outboundRoute = resolveOutboundRoute(agent, destination);
-        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), destination, outboundRoute);
+        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), destination, outboundRoute,
+            context == null ? CallOriginateContext.empty() : context);
 
         AgentActiveCall activeCall = new AgentActiveCall();
         activeCall.setCallId(callId);

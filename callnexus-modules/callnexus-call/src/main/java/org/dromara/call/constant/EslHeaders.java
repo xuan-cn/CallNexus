@@ -18,6 +18,9 @@ public final class EslHeaders {
     public static final String VARIABLE_CALLNEXUS_DIRECTION = "variable_callnexus_direction";
     public static final String VARIABLE_CALLNEXUS_ORIGINAL_CALLER = "variable_callnexus_original_caller";
     public static final String VARIABLE_CALLNEXUS_ORIGINAL_CALLED = "variable_callnexus_original_called";
+    public static final String VARIABLE_CALLNEXUS_CUSTOMER_ID = "variable_callnexus_customer_id";
+    public static final String VARIABLE_CALLNEXUS_OUTBOUND_TASK_ID = "variable_callnexus_outbound_task_id";
+    public static final String VARIABLE_CALLNEXUS_OUTBOUND_MEMBER_ID = "variable_callnexus_outbound_member_id";
 
     /**
      * CUSTOM 事件的子类标识头，mod_callcenter 队列事件形如 callcenter::call-coming。

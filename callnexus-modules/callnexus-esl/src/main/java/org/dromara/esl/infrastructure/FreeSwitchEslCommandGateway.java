@@ -3,6 +3,7 @@ package org.dromara.esl.infrastructure;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.call.domain.EslEndpoint;
 import org.dromara.call.domain.OutboundRoute;
+import org.dromara.call.domain.CallOriginateContext;
 import org.dromara.call.service.TelephonyCommandGateway;
 import org.dromara.common.core.exception.ServiceException;
 import org.springframework.stereotype.Component;
@@ -24,7 +25,8 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     private static final int READ_TIMEOUT_MILLIS = 5000;
 
     @Override
-    public void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination, OutboundRoute outboundRoute) {
+    public void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination, OutboundRoute outboundRoute,
+                          CallOriginateContext context) {
         requireDialValue(agentExtension);
         requireDialValue(destination);
         requireDialValue(endpoint.sipDomain());
@@ -35,19 +37,23 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + ",callnexus_direction=" + (outboundRoute != null && outboundRoute.isExternal() ? "OUTBOUND" : "INTERNAL")
             + ",callnexus_original_caller=" + agentExtension
             + ",callnexus_original_called=" + destination
+            + optionalVariable("callnexus_customer_id", context.customerId())
+            + optionalVariable("callnexus_outbound_task_id", context.outboundTaskId())
+            + optionalVariable("callnexus_outbound_member_id", context.outboundMemberId())
             + ",origination_caller_id_number=" + callerIdNumber
             + ",origination_caller_id_name=" + callerIdNumber
             + ",execute_on_answer=record_session::/var/lib/freeswitch/recordings/" + callId + ".wav"
-            + ",api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh " + callId
-            + " /var/lib/freeswitch/recordings/" + callId + ".wav"
+            + ",api_hangup_hook='bg_system /opt/callnexus/bin/upload-recording.sh " + callId
+            + " /var/lib/freeswitch/recordings/" + callId + ".wav'"
             + ",hangup_after_bridge=true}";
         String destinationDialString = destinationDialString(destination, endpoint.sipDomain(), outboundRoute);
         String command = "bgapi originate " + variables + userDialString(agentExtension, endpoint.sipDomain())
             + " &bridge(" + destinationDialString + ")";
         sendCommand(endpoint, command);
-        log.info("FreeSWITCH 发起呼叫命令已提交，callId={}，agentExtension={}，destination={}，external={}，gatewayCode={}，callerIdNumber={}",
+        log.info("FreeSWITCH 发起呼叫命令已提交，callId={}，agentExtension={}，destination={}，external={}，gatewayCode={}，callerIdNumber={}，customerId={}，outboundTaskId={}，outboundMemberId={}",
             callId, agentExtension, destination, outboundRoute != null && outboundRoute.isExternal(),
-            outboundRoute == null ? null : outboundRoute.getGatewayCode(), callerIdNumber);
+            outboundRoute == null ? null : outboundRoute.getGatewayCode(), callerIdNumber,
+            context.customerId(), context.outboundTaskId(), context.outboundMemberId());
     }
 
     @Override
@@ -140,7 +146,17 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             return userDialString(destination, domain);
         }
         requireDialValue(outboundRoute.getGatewayCode());
-        return "sofia/gateway/" + outboundRoute.getGatewayCode() + "/" + destination;
+        requireDialValue(outboundRoute.getCallerIdNumber());
+        String callerIdNumber = outboundRoute.getCallerIdNumber();
+        String legVariables = "[origination_caller_id_number=" + callerIdNumber
+            + ",origination_caller_id_name=" + callerIdNumber
+            + ",effective_caller_id_number=" + callerIdNumber
+            + ",effective_caller_id_name=" + callerIdNumber + "]";
+        return legVariables + "sofia/gateway/" + outboundRoute.getGatewayCode() + "/" + destination;
+    }
+
+    private String optionalVariable(String name, Long value) {
+        return value == null ? "" : "," + name + "=" + value;
     }
 
     private void write(BufferedOutputStream output, String command) throws IOException {
