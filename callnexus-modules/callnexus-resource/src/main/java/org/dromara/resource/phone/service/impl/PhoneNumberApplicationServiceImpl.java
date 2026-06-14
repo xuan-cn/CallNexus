@@ -25,6 +25,7 @@ import org.dromara.resource.phone.domain.response.PhoneNumberResponse;
 import org.dromara.resource.phone.mapper.PhoneNumberMapper;
 import org.dromara.resource.phone.service.PhoneNumberApplicationService;
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
+import org.dromara.resource.queue.service.CallQueueQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,6 +37,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     private final FreeSwitchNodeMapper nodeMapper;
     private final FreeSwitchGatewayMapper gatewayMapper;
     private final IvrDialplanQueryService ivrDialplanQueryService;
+    private final CallQueueQueryService callQueueQueryService;
 
     @Override
     public TableDataInfo<PhoneNumberResponse> page(PhoneNumberPageQuery query, PageQuery pageQuery) {
@@ -212,7 +214,8 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     }
 
     private void ensureRouteValid(Long nodeId, String routeType, String routeTarget) {
-        if (("EXTENSION".equals(routeType) || "IVR".equals(routeType)) && StringUtils.isBlank(routeTarget)) {
+        if (("EXTENSION".equals(routeType) || "IVR".equals(routeType) || "QUEUE".equals(routeType))
+            && StringUtils.isBlank(routeTarget)) {
             throw new ServiceException("请填写号码呼入路由目标");
         }
         if ("IVR".equals(routeType)) {
@@ -223,6 +226,16 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
                 }
             } catch (NumberFormatException exception) {
                 throw new ServiceException("号码呼入路由目标 IVR 不合法");
+            }
+        }
+        if ("QUEUE".equals(routeType)) {
+            try {
+                Long queueId = Long.valueOf(routeTarget);
+                if (callQueueQueryService.findAvailableQueue(LoginHelper.getTenantId(), queueId, nodeId) == null) {
+                    throw new ServiceException("关联的呼叫队列未启用、未同步或不属于目标节点");
+                }
+            } catch (NumberFormatException exception) {
+                throw new ServiceException("号码呼入路由目标队列不合法");
             }
         }
     }

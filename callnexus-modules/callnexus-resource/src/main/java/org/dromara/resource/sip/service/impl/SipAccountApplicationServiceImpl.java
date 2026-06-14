@@ -114,7 +114,9 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
             SipAccountRealtimeResponse response = new SipAccountRealtimeResponse();
             response.setSipAccountId(account.getId());
             response.setTenantId(account.getTenantId());
+            response.setNodeId(account.getNodeId());
             response.setExtension(account.getExtension());
+            response.setDomain(account.getDomain());
             return response;
         });
     }

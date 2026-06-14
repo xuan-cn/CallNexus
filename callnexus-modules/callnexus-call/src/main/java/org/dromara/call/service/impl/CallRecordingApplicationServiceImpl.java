@@ -1,6 +1,7 @@
 package org.dromara.call.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.call.domain.CallSession;
@@ -32,22 +33,31 @@ public class CallRecordingApplicationServiceImpl implements CallRecordingApplica
                 .last("limit 1"));
             if (session == null) throw new ServiceException("通话记录不存在");
             try {
-                session.setRecordingStatus("PENDING");
-                sessionMapper.updateById(session);
+                updateRecordingStatus(businessCallId, "PENDING");
                 MediaAssetResponse media = mediaAssetService.storeRecording(businessCallId, recordingDurationMs(session), file);
-                session.setRecordingOssId(media.getOssId());
-                session.setRecordingMediaId(media.getId());
-                session.setRecordingFileName(file.getOriginalFilename());
-                session.setRecordingStatus("UPLOADED");
-                sessionMapper.updateById(session);
+                int updated = sessionMapper.update(null, new LambdaUpdateWrapper<CallSession>()
+                    .eq(CallSession::getBusinessCallId, businessCallId)
+                    .set(CallSession::getRecordingOssId, media.getOssId())
+                    .set(CallSession::getRecordingMediaId, media.getId())
+                    .set(CallSession::getRecordingFileName, file.getOriginalFilename())
+                    .set(CallSession::getRecordingStatus, "UPLOADED"));
+                if (updated != 1) {
+                    throw new ServiceException("录音文件已上传，但关联通话记录失败");
+                }
                 log.info("通话录音已上传并关联业务通话，tenantId={}，businessCallId={}，mediaId={}，ossId={}",
                     tenantId, businessCallId, media.getId(), media.getOssId());
             } catch (RuntimeException exception) {
-                session.setRecordingStatus("FAILED");
-                sessionMapper.updateById(session);
+                updateRecordingStatus(businessCallId, "FAILED");
                 throw exception;
             }
         });
+    }
+
+    private void updateRecordingStatus(String businessCallId, String status) {
+        sessionMapper.update(null, new LambdaUpdateWrapper<CallSession>()
+            .eq(CallSession::getBusinessCallId, businessCallId)
+            .ne(CallSession::getRecordingStatus, "UPLOADED")
+            .set(CallSession::getRecordingStatus, status));
     }
 
     private Long recordingDurationMs(CallSession session) {

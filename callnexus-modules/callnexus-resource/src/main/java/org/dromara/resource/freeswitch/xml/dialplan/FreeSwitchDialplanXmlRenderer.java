@@ -3,6 +3,7 @@ package org.dromara.resource.freeswitch.xml.dialplan;
 import org.dromara.resource.freeswitch.xml.FreeSwitchXmlRenderer;
 import org.dromara.resource.phone.domain.response.PhoneNumberDialplanRouteResponse;
 import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
+import org.dromara.resource.queue.domain.response.CallQueueDialplanResponse;
 import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
 import org.springframework.stereotype.Component;
 
@@ -39,6 +40,38 @@ public class FreeSwitchDialplanXmlRenderer {
               </section>
             </document>
             """.formatted(dialplanContext, number, number, route.getId(), number, number, domain, extension, domain);
+    }
+
+    public String renderQueueRoute(PhoneNumberDialplanRouteResponse route, CallQueueDialplanResponse queue, String context) {
+        String number = FreeSwitchXmlRenderer.escape(route.getNumber());
+        String queueName = FreeSwitchXmlRenderer.escape(queue.getQueueCode() + "@default");
+        String dialplanContext = FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "public" : context);
+        return """
+            <document type="freeswitch/xml">
+              <section name="dialplan" description="CallNexus Dynamic Dialplan">
+                <context name="%s">
+                  <extension name="callnexus_inbound_queue_%s" continue="false">
+                    <condition field="destination_number" expression="^%s$">
+                      <action application="set" data="callnexus_route_id=%s"/>
+                      <action application="set" data="callnexus_route_type=QUEUE"/>
+                      <action application="set" data="callnexus_queue_id=%s"/>
+                      <action application="set" data="callnexus_queue_code=%s"/>
+                      <action application="export" data="callnexus_business_call_id=${uuid}"/>
+                      <action application="export" data="callnexus_direction=INBOUND"/>
+                      <action application="export" data="callnexus_original_caller=${caller_id_number}"/>
+                      <action application="export" data="callnexus_original_called=%s"/>
+                      <action application="set" data="callnexus_recording_path=/var/lib/freeswitch/recordings/${callnexus_business_call_id}.wav"/>
+                      <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
+                      <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
+                      <action application="record_session" data="${callnexus_recording_path}"/>
+                      <action application="answer"/>
+                      <action application="callcenter" data="%s"/>
+                    </condition>
+                  </extension>
+                </context>
+              </section>
+            </document>
+            """.formatted(dialplanContext, number, number, route.getId(), queue.getId(), queueName, number, queueName);
     }
 
     public String renderOutboundRoute(PhoneNumberOutboundRouteResponse route, String context, String destinationNumber) {

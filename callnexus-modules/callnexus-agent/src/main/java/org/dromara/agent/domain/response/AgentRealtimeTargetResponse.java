@@ -9,5 +9,7 @@ public class AgentRealtimeTargetResponse implements Serializable {
     private String tenantId;
     private Long agentId;
     private Long userId;
+    private Long nodeId;
     private String extension;
+    private String sipDomain;
 }

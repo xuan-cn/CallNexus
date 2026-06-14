@@ -21,6 +21,7 @@ public class CurrentAgentResponse {
     private String activeCallId;
     private String activeCallNumber;
     private AgentPresenceStatus status;
+    private Long afterCallRemainingSeconds;
     private LocalDateTime signedInAt;
     private LocalDateTime updatedAt;
 }

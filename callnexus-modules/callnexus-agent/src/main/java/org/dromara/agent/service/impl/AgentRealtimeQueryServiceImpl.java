@@ -38,7 +38,9 @@ public class AgentRealtimeQueryServiceImpl implements AgentRealtimeQueryService 
         response.setTenantId(agent.getTenantId());
         response.setAgentId(agent.getId());
         response.setUserId(agent.getUserId());
+        response.setNodeId(sipAccount.getNodeId());
         response.setExtension(sipAccount.getExtension());
+        response.setSipDomain(sipAccount.getDomain());
         return response;
     }
 }

@@ -27,6 +27,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Objects;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
@@ -89,6 +90,69 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
             FreeSwitchNode node = mapper.selectById(nodeId);
             return node == null ? null : node.getTenantId();
         });
+    }
+
+    @Override
+    public Long resolveEnabledNodeIdByAgentToken(String tenantId, String nodeCode, String nodeToken) {
+        if (nodeCode == null || nodeCode.isBlank() || nodeToken == null || nodeToken.isBlank()) {
+            return null;
+        }
+        String tokenHash = sha256(nodeToken);
+        return TenantHelper.dynamic(tenantId, () -> {
+            FreeSwitchNode node = mapper.selectOne(new LambdaQueryWrapper<FreeSwitchNode>()
+                .eq(FreeSwitchNode::getTenantId, tenantId)
+                .eq(FreeSwitchNode::getNodeCode, nodeCode)
+                .eq(FreeSwitchNode::getAgentTokenHash, tokenHash)
+                .eq(FreeSwitchNode::getAgentEnabled, true)
+                .eq(FreeSwitchNode::getEnabled, true)
+                .last("limit 1"));
+            return node == null ? null : node.getId();
+        });
+    }
+
+    @Override
+    public Long resolveEnabledNodeId(String tenantId, String remoteAddress, String switchIpv4, String hostname, String fallbackNodeId) {
+        return TenantHelper.dynamic(tenantId, () -> {
+            List<FreeSwitchNode> automaticMatches = mapper.selectList(new LambdaQueryWrapper<FreeSwitchNode>()
+                    .eq(FreeSwitchNode::getTenantId, tenantId)
+                    .eq(FreeSwitchNode::getEnabled, true))
+                .stream()
+                .filter(node -> matchesNode(node, remoteAddress, switchIpv4, hostname))
+                .toList();
+            if (automaticMatches.size() > 1) {
+                throw new ServiceException("FreeSWITCH 主机信息匹配到多个启用节点，请检查节点 ESL 主机和节点编码");
+            }
+            if (automaticMatches.size() == 1) {
+                return automaticMatches.get(0).getId();
+            }
+            if (fallbackNodeId == null || !fallbackNodeId.matches("^\\d+$")) {
+                return null;
+            }
+            FreeSwitchNode fallback = mapper.selectById(Long.valueOf(fallbackNodeId));
+            return fallback != null && Objects.equals(tenantId, fallback.getTenantId())
+                && Boolean.TRUE.equals(fallback.getEnabled()) ? fallback.getId() : null;
+        });
+    }
+
+    private boolean matchesNode(FreeSwitchNode node, String remoteAddress, String switchIpv4, String hostname) {
+        return equalsIgnoreCase(node.getEslHost(), remoteAddress)
+            || equalsIgnoreCase(node.getEslHost(), switchIpv4)
+            || equalsIgnoreCase(node.getEslHost(), hostname)
+            || equalsIgnoreCase(node.getNodeCode(), hostname);
+    }
+
+    private boolean equalsIgnoreCase(String left, String right) {
+        return left != null && right != null && !left.isBlank() && !right.isBlank()
+            && left.trim().equalsIgnoreCase(right.trim());
+    }
+
+    private String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception exception) {
+            throw new ServiceException("生成节点 Token 摘要失败");
+        }
     }
 
     @Override

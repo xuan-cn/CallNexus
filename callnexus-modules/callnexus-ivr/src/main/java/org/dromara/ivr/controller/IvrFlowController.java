@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.ivr.domain.IvrFlowRequest;
 import org.dromara.ivr.domain.IvrFlowResponse;
+import org.dromara.ivr.domain.IvrFlowVersionResponse;
 import org.dromara.ivr.service.IvrFlowService;
 import org.springframework.web.bind.annotation.*;
 
@@ -29,6 +30,18 @@ public class IvrFlowController {
         return R.ok(service.get(id));
     }
 
+    @GetMapping("/{id}/versions")
+    @SaCheckPermission("callcenter:ivr-flow:query")
+    public R<List<IvrFlowVersionResponse>> versions(@PathVariable Long id) {
+        return R.ok(service.versions(id));
+    }
+
+    @GetMapping("/{id}/versions/{versionNo}")
+    @SaCheckPermission("callcenter:ivr-flow:query")
+    public R<IvrFlowVersionResponse> version(@PathVariable Long id, @PathVariable Integer versionNo) {
+        return R.ok(service.version(id, versionNo));
+    }
+
     @PostMapping
     @SaCheckPermission("callcenter:ivr-flow:create")
     public R<Long> create(@Valid @RequestBody IvrFlowRequest request) {
@@ -46,6 +59,20 @@ public class IvrFlowController {
     @SaCheckPermission("callcenter:ivr-flow:publish")
     public R<Void> publish(@PathVariable Long id) {
         service.publish(id);
+        return R.ok();
+    }
+
+    @PostMapping("/{id}/unpublish")
+    @SaCheckPermission("callcenter:ivr-flow:publish")
+    public R<Void> unpublish(@PathVariable Long id) {
+        service.unpublish(id);
+        return R.ok();
+    }
+
+    @PostMapping("/{id}/versions/{versionNo}/rollback")
+    @SaCheckPermission("callcenter:ivr-flow:publish")
+    public R<Void> rollback(@PathVariable Long id, @PathVariable Integer versionNo) {
+        service.rollback(id, versionNo);
         return R.ok();
     }
 

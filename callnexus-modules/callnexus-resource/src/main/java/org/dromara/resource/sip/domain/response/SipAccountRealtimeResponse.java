@@ -6,5 +6,7 @@ import lombok.Data;
 public class SipAccountRealtimeResponse {
     private Long sipAccountId;
     private String tenantId;
+    private Long nodeId;
     private String extension;
+    private String domain;
 }

@@ -6,6 +6,8 @@ import org.dromara.agent.domain.AgentPresence;
 import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
 import org.dromara.agent.service.AgentRealtimeQueryService;
+import org.dromara.agent.runtime.AgentQueueRuntimeStatus;
+import org.dromara.agent.service.CallQueueRuntimeSyncService;
 import org.dromara.call.constant.EslEventNames;
 import org.dromara.call.constant.EslHeaders;
 import org.dromara.agent.domain.AgentActiveCall;
@@ -35,6 +37,7 @@ import java.util.Set;
 public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private static final String ACTIVE_CALL_KEY_PREFIX = "callnexus:agent:active-call:";
     private static final String CALL_UUID_TARGETS_KEY_PREFIX = "callnexus:call:uuid-targets-v2:";
+    private static final String CALL_UUID_ANSWERED_TARGETS_KEY_PREFIX = "callnexus:call:uuid-answered-targets:";
     private static final String ENDED_CALL_UUID_KEY_PREFIX = "callnexus:call:ended-uuid:";
     private static final String PRESENCE_KEY_PREFIX = "callnexus:agent:presence:";
     private static final Duration ACTIVE_CALL_TTL = Duration.ofHours(4);
@@ -42,6 +45,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private static final Duration ENDED_CALL_TTL = Duration.ofSeconds(30);
 
     private final AgentRealtimeQueryService agentQueryService;
+    private final CallQueueRuntimeSyncService queueRuntimeSyncService;
     private final CallRecordApplicationService callRecordApplicationService;
 
     @Override
@@ -61,6 +65,9 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         }
         Map<Long, AgentRealtimeTargetResponse> targets = resolveTargets(event);
         mergeMappedTargets(event, targets);
+        if (isConnectedEvent(event)) {
+            saveAnsweredTargets(event, targets.values());
+        }
         if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             log.info("Processing FreeSWITCH hangup event, uuid={}, relatedUuids={}, matchedAgents={}, cause={}",
                 event.uuid(), relatedUuids(event), targets.keySet(), event.hangupCause());
@@ -75,6 +82,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             markCallEnded(event);
             deleteUuidMappings(event);
+            deleteAnsweredTargetMappings(event);
         } else if (!targets.isEmpty()) {
             saveUuidMappings(event, targets.values());
         }
@@ -83,11 +91,16 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private void updateTargetState(TelephonyEvent event, AgentRealtimeTargetResponse target) {
         if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             RedisUtils.deleteObject(activeCallKey(target));
-            updatePresence(target, AgentPresenceStatus.AFTER_CALL);
-        } else {
+            updatePresence(target, wasAnswered(event, target) ? AgentPresenceStatus.AFTER_CALL : AgentPresenceStatus.IDLE);
+        } else if (isConnectedEvent(event)) {
             saveActiveCallIfAbsent(event, target);
             updatePresence(target, AgentPresenceStatus.BUSY);
         }
+    }
+
+    private boolean isConnectedEvent(TelephonyEvent event) {
+        return EslEventNames.CHANNEL_ANSWER.equals(event.eventName())
+            || EslEventNames.CHANNEL_BRIDGE.equals(event.eventName());
     }
 
     private Map<Long, AgentRealtimeTargetResponse> resolveTargets(TelephonyEvent event) {
@@ -145,6 +158,40 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
 
     private void deleteUuidMappings(TelephonyEvent event) {
         relatedUuids(event).forEach(uuid -> RedisUtils.deleteObject(uuidTargetsKey(uuid)));
+    }
+
+    private void saveAnsweredTargets(TelephonyEvent event, Collection<AgentRealtimeTargetResponse> targets) {
+        List<AgentRealtimeTargetResponse> snapshot = List.copyOf(targets);
+        for (String uuid : relatedUuids(event)) {
+            List<AgentRealtimeTargetResponse> existing = readAnsweredTargets(uuid);
+            Map<Long, AgentRealtimeTargetResponse> merged = new LinkedHashMap<>();
+            if (existing != null) existing.forEach(target -> merged.put(target.getAgentId(), target));
+            snapshot.forEach(target -> merged.put(target.getAgentId(), target));
+            RedisUtils.setCacheObject(answeredTargetsKey(uuid), JsonUtils.toJsonString(merged.values()), ACTIVE_CALL_TTL);
+        }
+    }
+
+    private List<AgentRealtimeTargetResponse> readAnsweredTargets(String uuid) {
+        String json = RedisUtils.getCacheObject(answeredTargetsKey(uuid));
+        return json == null ? null : JsonUtils.parseArray(json, AgentRealtimeTargetResponse.class);
+    }
+
+    private boolean wasAnswered(TelephonyEvent event, AgentRealtimeTargetResponse target) {
+        for (String uuid : relatedUuids(event)) {
+            List<AgentRealtimeTargetResponse> answeredTargets = readAnsweredTargets(uuid);
+            if (answeredTargets != null && answeredTargets.stream().anyMatch(item -> item.getAgentId().equals(target.getAgentId()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void deleteAnsweredTargetMappings(TelephonyEvent event) {
+        relatedUuids(event).forEach(uuid -> RedisUtils.deleteObject(answeredTargetsKey(uuid)));
+    }
+
+    private String answeredTargetsKey(String uuid) {
+        return CALL_UUID_ANSWERED_TARGETS_KEY_PREFIX + uuid;
     }
 
     private Set<String> relatedUuids(TelephonyEvent event) {
@@ -221,5 +268,17 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         presence.setStatus(status);
         presence.setUpdatedAt(LocalDateTime.now());
         RedisUtils.setCacheObject(key, presence, PRESENCE_TTL);
+        syncQueueStatus(target, status);
+    }
+
+    private void syncQueueStatus(AgentRealtimeTargetResponse target, AgentPresenceStatus status) {
+        try {
+            if (target.getNodeId() == null || target.getSipDomain() == null || target.getSipDomain().isBlank()) return;
+            queueRuntimeSyncService.syncAgentStatus(new AgentQueueRuntimeStatus(
+                target.getNodeId(), target.getExtension(), target.getSipDomain(), status));
+        } catch (Exception exception) {
+            log.warn("通话事件同步 FreeSWITCH 队列坐席状态失败，不影响本地坐席状态，agentId={}，status={}，error={}",
+                target.getAgentId(), status, exception.getMessage());
+        }
     }
 }

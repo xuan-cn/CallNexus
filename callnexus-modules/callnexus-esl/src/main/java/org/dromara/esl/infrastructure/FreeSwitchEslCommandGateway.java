@@ -68,6 +68,11 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         requireSuccess(executeCommand(endpoint, command), "FREESWITCH_ESL_COMMAND_FAILED", command);
     }
 
+    void executeApiCommandIgnoringApplicationError(EslEndpoint endpoint, String command) {
+        EslFrame response = executeCommand(endpoint, command);
+        log.debug("FreeSWITCH ESL 幂等命令已执行，忽略应用层返回，command={}，response={}", command, response.body());
+    }
+
     private void sendCommand(EslEndpoint endpoint, String command) {
         requireSuccess(executeCommand(endpoint, command), "FREESWITCH_ESL_COMMAND_FAILED", command);
     }
@@ -150,9 +155,26 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         }
         if (!isSuccessResponse(response)) {
             log.warn("FreeSWITCH ESL 命令执行失败，command={}，response={}", command, response);
-            throw new ServiceException(errorCode);
+            throw new ServiceException("FreeSWITCH ESL 命令执行失败，命令=" + safeCommandSummary(command)
+                + "，响应=" + errorSummary(response, errorCode));
         }
         log.info("FreeSWITCH ESL 命令执行成功，command={}，response={}", command, response);
+    }
+
+    private String safeCommandSummary(String command) {
+        if (command == null || command.isBlank()) {
+            return "未知命令";
+        }
+        String summary = command.replace('\r', ' ').replace('\n', ' ').trim();
+        return summary.length() <= 300 ? summary : summary.substring(0, 300);
+    }
+
+    private String errorSummary(String response, String fallback) {
+        if (response == null || response.isBlank()) {
+            return fallback;
+        }
+        String summary = response.replace('\r', ' ').replace('\n', ' ').trim();
+        return summary.length() <= 500 ? summary : summary.substring(0, 500);
     }
 
     private boolean isSuccessResponse(String response) {

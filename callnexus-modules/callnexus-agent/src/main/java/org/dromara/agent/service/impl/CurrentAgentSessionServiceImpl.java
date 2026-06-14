@@ -2,14 +2,21 @@ package org.dromara.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.dromara.agent.domain.AgentActiveCall;
 import org.dromara.agent.domain.Agent;
 import org.dromara.agent.domain.AgentExtension;
 import org.dromara.agent.domain.AgentPresence;
 import org.dromara.agent.domain.AgentPresenceStatus;
-import org.dromara.agent.domain.AgentActiveCall;
+import org.dromara.agent.domain.CallQueue;
+import org.dromara.agent.domain.SkillGroupMember;
 import org.dromara.agent.domain.response.CurrentAgentResponse;
 import org.dromara.agent.mapper.AgentExtensionMapper;
 import org.dromara.agent.mapper.AgentMapper;
+import org.dromara.agent.mapper.CallQueueMapper;
+import org.dromara.agent.mapper.SkillGroupMemberMapper;
+import org.dromara.agent.runtime.AgentQueueRuntimeStatus;
+import org.dromara.agent.service.CallQueueRuntimeSyncService;
 import org.dromara.agent.service.CurrentAgentSessionService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.redis.utils.RedisUtils;
@@ -21,9 +28,12 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionService {
     private static final String PRESENCE_KEY_PREFIX = "callnexus:agent:presence:";
     private static final String ACTIVE_CALL_KEY_PREFIX = "callnexus:agent:active-call:";
@@ -31,7 +41,10 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
 
     private final AgentMapper agentMapper;
     private final AgentExtensionMapper extensionMapper;
+    private final SkillGroupMemberMapper skillGroupMemberMapper;
+    private final CallQueueMapper callQueueMapper;
     private final SipAccountQueryService sipAccountQueryService;
+    private final CallQueueRuntimeSyncService queueRuntimeSyncService;
 
     @Override
     public CurrentAgentResponse current() {
@@ -42,7 +55,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
             response.setStatus(AgentPresenceStatus.OFFLINE);
             return response;
         }
-        return buildResponse(agent, getPresence(agent.getId()));
+        return buildResponse(agent, normalizeAfterCallStatus(agent, getPresence(agent.getId())));
     }
 
     @Override
@@ -59,6 +72,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
         presence.setSignedInAt(now);
         presence.setUpdatedAt(now);
         savePresence(agent.getId(), presence);
+        syncQueueStatus(agent, AgentPresenceStatus.IDLE);
         return buildResponse(agent, presence);
     }
 
@@ -75,12 +89,14 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
         presence.setStatus(status);
         presence.setUpdatedAt(LocalDateTime.now());
         savePresence(agent.getId(), presence);
+        syncQueueStatus(agent, status);
         return buildResponse(agent, presence);
     }
 
     @Override
     public void signOut() {
         Agent agent = requireCurrentAgent();
+        syncQueueStatus(agent, AgentPresenceStatus.OFFLINE);
         RedisUtils.deleteObject(presenceKey(agent.getId()));
     }
 
@@ -145,6 +161,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
             }
         }
         response.setStatus(presence == null ? AgentPresenceStatus.OFFLINE : presence.getStatus());
+        response.setAfterCallRemainingSeconds(afterCallRemainingSeconds(agent, presence));
         AgentActiveCall activeCall = RedisUtils.getCacheObject(activeCallKey(agent.getId()));
         if (activeCall != null) {
             response.setActiveCallId(activeCall.getCallId());
@@ -157,7 +174,57 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
         return response;
     }
 
+    private AgentPresence normalizeAfterCallStatus(Agent agent, AgentPresence presence) {
+        if (presence == null || presence.getStatus() != AgentPresenceStatus.AFTER_CALL) return presence;
+        if (afterCallRemainingSeconds(agent, presence) > 0) return presence;
+        presence.setStatus(AgentPresenceStatus.IDLE);
+        presence.setUpdatedAt(LocalDateTime.now());
+        savePresence(agent.getId(), presence);
+        syncQueueStatus(agent, AgentPresenceStatus.IDLE);
+        log.info("坐席话后整理计时结束，已自动恢复示闲，agentId={}", agent.getId());
+        return presence;
+    }
+
+    private Long afterCallRemainingSeconds(Agent agent, AgentPresence presence) {
+        if (presence == null || presence.getStatus() != AgentPresenceStatus.AFTER_CALL || presence.getUpdatedAt() == null) {
+            return null;
+        }
+        long elapsedSeconds = Math.max(0, ChronoUnit.SECONDS.between(presence.getUpdatedAt(), LocalDateTime.now()));
+        return Math.max(0, wrapUpSeconds(agent.getId()) - elapsedSeconds);
+    }
+
+    private long wrapUpSeconds(Long agentId) {
+        List<Long> skillGroupIds = skillGroupMemberMapper.selectList(new LambdaQueryWrapper<SkillGroupMember>()
+                .eq(SkillGroupMember::getAgentId, agentId))
+            .stream().map(SkillGroupMember::getSkillGroupId).distinct().toList();
+        if (skillGroupIds.isEmpty()) return 0;
+        return callQueueMapper.selectList(new LambdaQueryWrapper<CallQueue>()
+                .in(CallQueue::getSkillGroupId, skillGroupIds)
+                .eq(CallQueue::getEnabled, true))
+            .stream().map(CallQueue::getWrapUpSeconds)
+            .filter(seconds -> seconds != null && seconds > 0)
+            .mapToLong(Integer::longValue)
+            .max().orElse(0);
+    }
+
     private String activeCallKey(Long agentId) {
         return ACTIVE_CALL_KEY_PREFIX + LoginHelper.getTenantId() + ":" + agentId;
+    }
+
+    private void syncQueueStatus(Agent agent, AgentPresenceStatus status) {
+        try {
+            if (!skillGroupMemberMapper.exists(new LambdaQueryWrapper<SkillGroupMember>().eq(SkillGroupMember::getAgentId, agent.getId()))) {
+                return;
+            }
+            AgentExtension binding = findExtension(agent.getId());
+            if (binding == null) return;
+            SipAccountResponse sipAccount = sipAccountQueryService.get(binding.getSipAccountId());
+            if (sipAccount == null || sipAccount.getNodeId() == null || sipAccount.getDomain() == null) return;
+            queueRuntimeSyncService.syncAgentStatus(new AgentQueueRuntimeStatus(
+                sipAccount.getNodeId(), sipAccount.getExtension(), sipAccount.getDomain(), status));
+        } catch (Exception exception) {
+            log.warn("同步 FreeSWITCH 队列坐席状态失败，不影响坐席本地状态，agentId={}，status={}，error={}",
+                agent.getId(), status, exception.getMessage());
+        }
     }
 }

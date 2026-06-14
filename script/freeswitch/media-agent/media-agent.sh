@@ -55,9 +55,21 @@ process_task() {
     return
   fi
 
-  mkdir -p "${target_dir}"
-  mv -f "${temp_wav}" "${target_path}"
-  chmod 0644 "${target_path}"
+  if ! mkdir -p "${target_dir}" 2>"${error_file}"; then
+    report "${task_id}" "${lease_token}" false "创建目标目录失败：$(cat "${error_file}")"
+    rm -f "${source_file}" "${temp_wav}" "${error_file}"
+    return
+  fi
+  if ! mv -f "${temp_wav}" "${target_path}" 2>"${error_file}"; then
+    report "${task_id}" "${lease_token}" false "写入目标文件失败：$(cat "${error_file}")"
+    rm -f "${source_file}" "${temp_wav}" "${error_file}"
+    return
+  fi
+  if ! chmod 0644 "${target_path}" 2>"${error_file}"; then
+    report "${task_id}" "${lease_token}" false "设置目标文件权限失败：$(cat "${error_file}")"
+    rm -f "${source_file}" "${error_file}"
+    return
+  fi
   rm -f "${source_file}" "${error_file}"
   report "${task_id}" "${lease_token}" true ""
 }

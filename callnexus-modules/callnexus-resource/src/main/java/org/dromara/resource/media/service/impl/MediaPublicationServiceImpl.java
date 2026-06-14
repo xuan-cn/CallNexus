@@ -40,7 +40,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -113,6 +115,7 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
         MediaAsset asset = requirePublishableAsset(mediaId);
         MediaAssetVersion version = versionMapper.selectById(asset.getLatestVersionId());
         if (version == null) throw new ServiceException("声音媒体版本不存在");
+        Map<Long, List<Long>> groupNodeIds = validatePublicationTargets(groupIds);
         List<MediaPublication> previous = publicationMapper.selectList(new LambdaQueryWrapper<MediaPublication>()
             .eq(MediaPublication::getMediaId, mediaId).ne(MediaPublication::getStatus, "UNPUBLISHED"));
         for (MediaPublication old : previous) {
@@ -120,9 +123,8 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
             old.setUnpublishedAt(LocalDateTime.now());
             publicationMapper.updateById(old);
         }
-        for (Long groupId : groupIds.stream().distinct().toList()) {
-            FreeSwitchNodeGroup group = groupMapper.selectById(groupId);
-            if (group == null || !Boolean.TRUE.equals(group.getEnabled())) throw new ServiceException("节点分组不存在或已停用");
+        for (Map.Entry<Long, List<Long>> entry : groupNodeIds.entrySet()) {
+            Long groupId = entry.getKey();
             MediaPublication publication = new MediaPublication();
             publication.setMediaId(mediaId);
             publication.setVersionId(version.getId());
@@ -132,15 +134,44 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
             publication.setFailedCount(0);
             publication.setTargetCount(0);
             publicationMapper.insert(publication);
-            List<Long> nodeIds = memberMapper.selectList(new LambdaQueryWrapper<FreeSwitchNodeGroupMember>()
-                .eq(FreeSwitchNodeGroupMember::getGroupId, groupId)).stream().map(FreeSwitchNodeGroupMember::getNodeId).toList();
-            createTasks(publication, asset, version, nodeIds);
+            createTasks(publication, asset, version, entry.getValue());
             asset.setCurrentPublicationId(publication.getId());
         }
         version.setStatus("PUBLISHED");
         versionMapper.updateById(version);
         asset.setPublishStatus("PUBLISHING");
         assetMapper.updateById(asset);
+    }
+
+    private Map<Long, List<Long>> validatePublicationTargets(List<Long> groupIds) {
+        if (groupIds == null || groupIds.isEmpty()) {
+            throw new ServiceException("请选择至少一个目标节点组");
+        }
+        Map<Long, List<Long>> targets = new LinkedHashMap<>();
+        for (Long groupId : groupIds.stream().distinct().toList()) {
+            FreeSwitchNodeGroup group = groupMapper.selectById(groupId);
+            if (group == null || !Boolean.TRUE.equals(group.getEnabled())) {
+                throw new ServiceException("目标节点组不存在或已停用，节点组ID：" + groupId);
+            }
+            List<Long> nodeIds = memberMapper.selectList(new LambdaQueryWrapper<FreeSwitchNodeGroupMember>()
+                .eq(FreeSwitchNodeGroupMember::getGroupId, groupId)).stream()
+                .map(FreeSwitchNodeGroupMember::getNodeId)
+                .distinct()
+                .toList();
+            if (nodeIds.isEmpty()) {
+                throw new ServiceException("目标节点组未配置成员：" + group.getGroupName());
+            }
+            List<String> unavailableNodes = nodeIds.stream()
+                .map(nodeMapper::selectById)
+                .filter(node -> node == null || !Boolean.TRUE.equals(node.getEnabled()) || !Boolean.TRUE.equals(node.getAgentEnabled()))
+                .map(node -> node == null ? "已删除节点" : node.getNodeName())
+                .toList();
+            if (!unavailableNodes.isEmpty()) {
+                throw new ServiceException("目标节点未启用或媒体 Agent 未启用：" + String.join("、", unavailableNodes));
+            }
+            targets.put(groupId, nodeIds);
+        }
+        return targets;
     }
 
     @Override

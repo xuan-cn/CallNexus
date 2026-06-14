@@ -5,10 +5,14 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.dromara.agent.domain.Agent;
 import org.dromara.agent.domain.AgentExtension;
+import org.dromara.agent.domain.CallQueue;
+import org.dromara.agent.domain.SkillGroupMember;
 import org.dromara.agent.domain.request.*;
 import org.dromara.agent.domain.response.AgentResponse;
 import org.dromara.agent.mapper.AgentExtensionMapper;
 import org.dromara.agent.mapper.AgentMapper;
+import org.dromara.agent.mapper.CallQueueMapper;
+import org.dromara.agent.mapper.SkillGroupMemberMapper;
 import org.dromara.agent.service.AgentApplicationService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
@@ -27,6 +31,8 @@ import java.util.stream.Collectors;
 public class AgentApplicationServiceImpl implements AgentApplicationService {
     private final AgentMapper agentMapper;
     private final AgentExtensionMapper extensionMapper;
+    private final SkillGroupMemberMapper skillGroupMemberMapper;
+    private final CallQueueMapper callQueueMapper;
     private final SipAccountQueryService sipAccountQueryService;
 
     @Override
@@ -74,11 +80,15 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         agent.setEnabled(request.getEnabled());
         agent.setVersion(request.getVersion());
         if (agentMapper.updateById(agent) != 1) throw new ServiceException("坐席信息已被其他用户修改，请刷新后重试");
+        markQueuesNotSynced(id);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
+        if (skillGroupMemberMapper.exists(new LambdaQueryWrapper<SkillGroupMember>().eq(SkillGroupMember::getAgentId, id))) {
+            throw new ServiceException("坐席已加入技能组，无法删除");
+        }
         extensionMapper.delete(new LambdaQueryWrapper<AgentExtension>().eq(AgentExtension::getAgentId, id));
         if (agentMapper.deleteById(id) != 1) throw new ServiceException("坐席不存在");
     }
@@ -97,11 +107,13 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         binding.setAgentId(agentId);
         binding.setSipAccountId(request.getSipAccountId());
         extensionMapper.insert(binding);
+        markQueuesNotSynced(agentId);
     }
 
     @Override
     public void unbindExtension(Long agentId) {
         extensionMapper.delete(new LambdaQueryWrapper<AgentExtension>().eq(AgentExtension::getAgentId, agentId));
+        markQueuesNotSynced(agentId);
     }
 
     private void ensureAgentCodeUnique(String agentCode, Long excludedId) {
@@ -136,5 +148,17 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         response.setVersion(agent.getVersion());
         response.setCreateTime(agent.getCreateTime());
         return response;
+    }
+
+    private void markQueuesNotSynced(Long agentId) {
+        List<Long> skillGroupIds = skillGroupMemberMapper.selectList(new LambdaQueryWrapper<SkillGroupMember>()
+                .eq(SkillGroupMember::getAgentId, agentId))
+            .stream().map(SkillGroupMember::getSkillGroupId).distinct().toList();
+        if (skillGroupIds.isEmpty()) return;
+        for (CallQueue queue : callQueueMapper.selectList(new LambdaQueryWrapper<CallQueue>().in(CallQueue::getSkillGroupId, skillGroupIds))) {
+            queue.setSyncStatus("NOT_SYNCED");
+            queue.setSyncError(null);
+            callQueueMapper.updateById(queue);
+        }
     }
 }

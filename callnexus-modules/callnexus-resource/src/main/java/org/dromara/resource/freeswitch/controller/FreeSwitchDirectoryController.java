@@ -1,5 +1,6 @@
 package org.dromara.resource.freeswitch.controller;
 
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.utils.StringUtils;
@@ -11,6 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.MultiValueMap;
+import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Base64;
 
 @RestController
 @RequestMapping("/api/internal/freeswitch")
@@ -58,6 +61,17 @@ public class FreeSwitchDirectoryController {
         return dispatchXmlCurl(params, token, "dialplan", null, "拨号计划");
     }
 
+    @PostMapping(value = "/configuration/callcenter", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE, produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> callCenterConfiguration(@RequestParam MultiValueMap<String, String> params,
+                                                          @RequestHeader(value = TOKEN_HEADER, required = false) String token,
+                                                          @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+                                                          HttpServletRequest servletRequest) {
+        MultiValueMap<String, String> requestParams = new LinkedMultiValueMap<>(params);
+        requestParams.set("_remoteAddress", clientAddress(servletRequest));
+        applyNodeCredentials(requestParams, authorization);
+        return dispatchXmlCurl(requestParams, token, "configuration", "callcenter", "呼叫队列配置");
+    }
+
     private ResponseEntity<String> dispatchXmlCurl(MultiValueMap<String, String> params, String token, String section, String purpose, String requestType) {
         if (!validToken(token, firstValue(params, "token"))) {
             log.warn("FreeSWITCH 动态 XML 配置请求鉴权失败，类型={}，section={}，purpose={}，domain={}",
@@ -87,5 +101,28 @@ public class FreeSwitchDirectoryController {
     private String firstValue(MultiValueMap<String, String> request, String key) {
         String value = request.getFirst(key);
         return value == null ? null : value.trim();
+    }
+
+    private String clientAddress(HttpServletRequest request) {
+        String remoteAddress = request.getRemoteAddr();
+        return remoteAddress != null && remoteAddress.startsWith("::ffff:")
+            ? remoteAddress.substring("::ffff:".length())
+            : remoteAddress;
+    }
+
+    private void applyNodeCredentials(MultiValueMap<String, String> params, String authorization) {
+        if (StringUtils.isBlank(authorization) || !authorization.startsWith("Basic ")) {
+            return;
+        }
+        try {
+            String credentials = new String(Base64.getDecoder().decode(authorization.substring(6)), StandardCharsets.UTF_8);
+            int separator = credentials.indexOf(':');
+            if (separator > 0 && separator < credentials.length() - 1) {
+                params.set("_nodeCode", credentials.substring(0, separator));
+                params.set("_nodeToken", credentials.substring(separator + 1));
+            }
+        } catch (IllegalArgumentException exception) {
+            log.warn("FreeSWITCH 呼叫队列动态配置请求 Basic 鉴权格式错误");
+        }
     }
 }
