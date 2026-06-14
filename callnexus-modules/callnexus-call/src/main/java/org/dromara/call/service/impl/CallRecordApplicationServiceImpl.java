@@ -21,6 +21,7 @@ import org.dromara.call.mapper.CallEventMapper;
 import org.dromara.call.mapper.CallRecordMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.service.CallRecordApplicationService;
+import org.dromara.call.service.BusinessAssociationQueryService;
 import org.dromara.call.service.QueueEventApplicationService;
 import org.dromara.call.service.CallBusinessAssociationService;
 import org.dromara.common.core.service.OssService;
@@ -52,6 +53,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final OssService ossService;
     private final QueueEventApplicationService queueEventApplicationService;
+    private final BusinessAssociationQueryService businessAssociationQueryService;
 
     /**
      * 通话录音回放预签名链接默认有效期：2 小时。
@@ -509,6 +511,11 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         response.setHandlingQueueName(session.getHandlingQueueName());
         response.setCustomerId(session.getCustomerId());
         response.setTicketId(session.getTicketId());
+        // 详情查询时，显式关联为空则按号码回查历史客户/工单，避免队列来电未创建客户工单时详情空白。
+        // 列表查询不做回查，避免 N+1 查询。
+        if (includeDetails) {
+            applyAssociationFallback(response, session);
+        }
         response.setCallStatus(session.getCallStatus());
         response.setStartedAt(session.getStartedAt());
         response.setRingingAt(session.getRingingAt());
@@ -535,6 +542,32 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
                 .stream().map(this::toEventResponse).toList());
         }
         return response;
+    }
+
+    /**
+     * 详情查询时，显式关联为空则按号码回查历史客户和工单。
+     *
+     * <p>优先用主叫号码查客户（队列来电的主叫通常是客户号码）；
+     * 工单按主叫号码匹配工单的 callerNumber 字段，取最新一条。
+     * 回查失败不影响详情展示，仅记录 WARN。
+     */
+    private void applyAssociationFallback(CallRecordResponse response, CallSession session) {
+        if (response.getCustomerId() == null && StringUtils.isNotBlank(session.getCallerNumber())) {
+            try {
+                Long customerId = businessAssociationQueryService.findCustomerIdByPhone(session.getCallerNumber());
+                if (customerId != null) response.setCustomerId(customerId);
+            } catch (Exception exception) {
+                log.warn("按号码回查历史客户失败，不影响详情展示，callerNumber={}", session.getCallerNumber(), exception);
+            }
+        }
+        if (response.getTicketId() == null && StringUtils.isNotBlank(session.getCallerNumber())) {
+            try {
+                Long ticketId = businessAssociationQueryService.findLatestTicketIdByCallerNumber(session.getCallerNumber());
+                if (ticketId != null) response.setTicketId(ticketId);
+            } catch (Exception exception) {
+                log.warn("按号码回查历史工单失败，不影响详情展示，callerNumber={}", session.getCallerNumber(), exception);
+            }
+        }
     }
 
     private CallLegResponse toLegResponse(CallRecord record) {
