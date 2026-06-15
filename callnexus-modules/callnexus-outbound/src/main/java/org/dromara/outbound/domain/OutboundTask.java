@@ -15,6 +15,10 @@ public class OutboundTask extends TenantEntity {
     private String taskType;
     private String status;
     private String description;
+    private Boolean autoRetryEnabled;
+    private Integer maxRetryCount;
+    private Integer retryIntervalMinutes;
+    private String retryResultCodes;
     @Version private Integer version;
     @TableLogic private Boolean deleted;
 }

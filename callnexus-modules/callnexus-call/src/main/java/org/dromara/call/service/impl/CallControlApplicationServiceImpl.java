@@ -53,7 +53,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             RedisUtils.deleteObject(key);
         }
 
-        String callId = UUID.randomUUID().toString();
+        String callId = context != null && context.businessCallId() != null && !context.businessCallId().isBlank()
+            ? context.businessCallId() : UUID.randomUUID().toString();
         OutboundRoute outboundRoute = resolveOutboundRoute(agent, destination);
         telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), destination, outboundRoute,
             context == null ? CallOriginateContext.empty() : context);

@@ -31,5 +31,9 @@
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-common-job</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.dromara</groupId>
+            <artifactId>callnexus-common-excel</artifactId>
+        </dependency>
     </dependencies>
 </project>

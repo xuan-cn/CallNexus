@@ -1,6 +1,8 @@
 package org.dromara.outbound.domain.request;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -15,5 +17,15 @@ public class OutboundTaskRequest {
     private String taskName;
     @Size(max = 500)
     private String description;
+    private Boolean autoRetryEnabled;
+    @Min(0)
+    @Max(10)
+    private Integer maxRetryCount;
+    @Min(1)
+    @Max(10080)
+    private Integer retryIntervalMinutes;
+    @Pattern(regexp = "^(|NO_ANSWER|BUSY|OTHER)(,(NO_ANSWER|BUSY|OTHER))*$",
+        message = "自动重呼结果配置不合法")
+    private String retryResultCodes;
     private Integer version;
 }

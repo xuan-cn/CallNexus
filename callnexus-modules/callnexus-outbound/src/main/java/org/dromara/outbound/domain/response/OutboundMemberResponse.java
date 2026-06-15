@@ -11,6 +11,8 @@ public class OutboundMemberResponse {
     private Long customerId;
     private String customerName;
     private String phoneNumber;
+    private String sourceType;
+    private Long importBatchId;
     private String status;
     private Long claimedAgentId;
     private LocalDateTime claimedAt;
@@ -21,4 +23,5 @@ public class OutboundMemberResponse {
     private String resultRemark;
     private LocalDateTime nextFollowUpAt;
     private LocalDateTime completedAt;
+    private String completionReason;
 }

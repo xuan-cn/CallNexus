@@ -14,9 +14,14 @@ public class OutboundTaskStatisticsResponse {
     private long dialingCount;
     private long completedCount;
     private long retryCount;
+    private long waitingRetryCount;
+    private long retryLimitReachedCount;
     private long dialedCount;
     private long connectedCount;
+    private long totalAttemptCount;
+    private long answeredAttemptCount;
     private double completionRate;
     private double connectionRate;
+    private double attemptConnectionRate;
     private Map<String, Long> resultDistribution = new LinkedHashMap<>();
 }

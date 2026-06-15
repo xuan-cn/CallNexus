@@ -12,6 +12,10 @@ public class OutboundTaskResponse {
     private String taskType;
     private String status;
     private String description;
+    private Boolean autoRetryEnabled;
+    private Integer maxRetryCount;
+    private Integer retryIntervalMinutes;
+    private String retryResultCodes;
     private long totalCount;
     private long pendingCount;
     private long completedCount;

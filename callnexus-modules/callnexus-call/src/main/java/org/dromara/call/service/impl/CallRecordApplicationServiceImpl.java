@@ -12,6 +12,7 @@ import org.dromara.call.constant.EslHeaders;
 import org.dromara.call.domain.CallEvent;
 import org.dromara.call.domain.CallRecord;
 import org.dromara.call.domain.CallSession;
+import org.dromara.call.domain.CallSessionCompletedEvent;
 import org.dromara.call.domain.TelephonyEvent;
 import org.dromara.call.domain.request.CallRecordPageQuery;
 import org.dromara.call.domain.response.CallEventResponse;
@@ -21,6 +22,7 @@ import org.dromara.call.mapper.CallEventMapper;
 import org.dromara.call.mapper.CallRecordMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.service.CallRecordApplicationService;
+import org.dromara.call.service.CallSessionCompletedListener;
 import org.dromara.call.service.BusinessAssociationQueryService;
 import org.dromara.call.service.QueueEventApplicationService;
 import org.dromara.call.service.CallBusinessAssociationService;
@@ -54,6 +56,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private final OssService ossService;
     private final QueueEventApplicationService queueEventApplicationService;
     private final BusinessAssociationQueryService businessAssociationQueryService;
+    private final List<CallSessionCompletedListener> sessionCompletedListeners;
 
     /**
      * 通话录音回放预签名链接默认有效期：2 小时。
@@ -349,7 +352,35 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             } catch (Exception exception) {
                 log.warn("记录队列未接听终止事件失败，不影响通话聚合，sessionId={}", session.getId(), exception);
             }
+            notifySessionCompleted(session);
         }
+    }
+
+    private void notifySessionCompleted(CallSession session) {
+        CallRecord destinationLeg = destinationLeg(session);
+        CallSessionCompletedEvent event = new CallSessionCompletedEvent(
+            session.getTenantId(), session.getId(), session.getBusinessCallId(), session.getOutboundTaskId(),
+            session.getOutboundMemberId(), session.getStartedAt(), session.getAnsweredAt(), session.getEndedAt(),
+            destinationLeg == null ? null : destinationLeg.getAnsweredAt(), session.getDurationSeconds(),
+            session.getBillableSeconds(), destinationLeg == null || destinationLeg.getBillableSeconds() == null
+                ? 0 : destinationLeg.getBillableSeconds(), session.getHangupCause());
+        for (CallSessionCompletedListener listener : sessionCompletedListeners) {
+            try {
+                listener.onCompleted(event);
+            } catch (Exception exception) {
+                log.warn("通话结束业务监听器执行失败，不影响通话记录聚合，listener={}，sessionId={}",
+                    listener.getClass().getSimpleName(), session.getId(), exception);
+            }
+        }
+    }
+
+    private CallRecord destinationLeg(CallSession session) {
+        if (StringUtils.isBlank(session.getCalledNumber())) return null;
+        return recordMapper.selectOne(new LambdaQueryWrapper<CallRecord>()
+            .eq(CallRecord::getSessionId, session.getId())
+            .eq(CallRecord::getCalledNumber, session.getCalledNumber())
+            .orderByDesc(CallRecord::getAnsweredAt)
+            .last("limit 1"));
     }
 
     private String aggregateStatus(List<CallRecord> legs) {

@@ -2,6 +2,7 @@ package org.dromara.outbound.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.agent.domain.AgentPresenceStatus;
@@ -11,19 +12,32 @@ import org.dromara.call.domain.response.CallControlResponse;
 import org.dromara.call.domain.CallOriginateContext;
 import org.dromara.call.service.CallBusinessAssociationService;
 import org.dromara.call.service.CallControlApplicationService;
+import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.customer.customer.domain.response.CustomerResponse;
 import org.dromara.customer.customer.service.CustomerApplicationService;
 import org.dromara.outbound.domain.OutboundMember;
+import org.dromara.outbound.domain.OutboundAttempt;
 import org.dromara.outbound.domain.OutboundTask;
 import org.dromara.outbound.domain.request.CompleteOutboundMemberRequest;
+import org.dromara.outbound.domain.request.OutboundAttemptPageQuery;
 import org.dromara.outbound.domain.request.OutboundTaskRequest;
 import org.dromara.outbound.domain.response.OutboundMemberResponse;
+import org.dromara.outbound.domain.response.OutboundAttemptResponse;
 import org.dromara.outbound.domain.response.OutboundTaskStatisticsResponse;
 import org.dromara.outbound.domain.response.OutboundTaskResponse;
 import org.dromara.outbound.mapper.OutboundMemberMapper;
+import org.dromara.outbound.mapper.OutboundAttemptMapper;
+import org.dromara.outbound.mapper.OutboundImportBatchMapper;
+import org.dromara.outbound.mapper.OutboundImportRowMapper;
 import org.dromara.outbound.mapper.OutboundTaskMapper;
+import org.dromara.outbound.domain.OutboundImportBatch;
+import org.dromara.outbound.domain.OutboundImportRow;
+import org.dromara.outbound.service.OutboundAutomaticRetryService;
+import org.dromara.outbound.service.OutboundResultSuggestionService;
 import org.dromara.outbound.service.OutboundTaskService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -34,6 +48,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
@@ -44,13 +59,21 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     private static final DateTimeFormatter FOLLOW_UP_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final int CLAIM_LEASE_MINUTES = 15;
     private static final int DIALING_LEASE_HOURS = 2;
+    private static final int DEFAULT_MAX_RETRY_COUNT = 2;
+    private static final int DEFAULT_RETRY_INTERVAL_MINUTES = 30;
+    private static final String DEFAULT_RETRY_RESULT_CODES = "NO_ANSWER,BUSY,OTHER";
 
     private final OutboundTaskMapper taskMapper;
     private final OutboundMemberMapper memberMapper;
+    private final OutboundAttemptMapper attemptMapper;
+    private final OutboundImportBatchMapper importBatchMapper;
+    private final OutboundImportRowMapper importRowMapper;
     private final CustomerApplicationService customerService;
     private final CurrentAgentSessionService agentSessionService;
     private final CallControlApplicationService callControlService;
     private final CallBusinessAssociationService callBusinessAssociationService;
+    private final OutboundResultSuggestionService resultSuggestionService;
+    private final OutboundAutomaticRetryService automaticRetryService;
 
     @Override
     public List<OutboundTaskResponse> list() {
@@ -98,7 +121,15 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     public void delete(Long id) {
         OutboundTask task = requireTask(id);
         if ("RUNNING".equals(task.getStatus())) throw new ServiceException("执行中的外呼任务不能删除");
+        attemptMapper.delete(new LambdaQueryWrapper<OutboundAttempt>().eq(OutboundAttempt::getTaskId, id));
         memberMapper.delete(new LambdaQueryWrapper<OutboundMember>().eq(OutboundMember::getTaskId, id));
+        List<Long> batchIds = importBatchMapper.selectList(new LambdaQueryWrapper<OutboundImportBatch>()
+                .eq(OutboundImportBatch::getTaskId, id))
+            .stream().map(OutboundImportBatch::getId).toList();
+        if (!batchIds.isEmpty()) {
+            importRowMapper.delete(new LambdaQueryWrapper<OutboundImportRow>().in(OutboundImportRow::getBatchId, batchIds));
+            importBatchMapper.delete(new LambdaQueryWrapper<OutboundImportBatch>().in(OutboundImportBatch::getId, batchIds));
+        }
         taskMapper.deleteById(task.getId());
     }
 
@@ -131,6 +162,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             member.setCustomerId(customerId);
             member.setCustomerName(customer.getCustomerName());
             member.setPhoneNumber(customer.getPrimaryPhone());
+            member.setSourceType("MANUAL");
             member.setStatus("PENDING");
             member.setAttemptCount(0);
             try {
@@ -152,6 +184,31 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     }
 
     @Override
+    public List<OutboundAttemptResponse> listAttempts(Long memberId) {
+        requireMember(memberId);
+        return attemptMapper.selectList(new LambdaQueryWrapper<OutboundAttempt>()
+                .eq(OutboundAttempt::getMemberId, memberId)
+                .orderByDesc(OutboundAttempt::getAttemptNo))
+            .stream().map(this::toAttemptResponse).toList();
+    }
+
+    @Override
+    public TableDataInfo<OutboundAttemptResponse> pageAttempts(OutboundAttemptPageQuery query, PageQuery pageQuery) {
+        LambdaQueryWrapper<OutboundAttempt> wrapper = new LambdaQueryWrapper<OutboundAttempt>()
+            .eq(query.getTaskId() != null, OutboundAttempt::getTaskId, query.getTaskId())
+            .eq(query.getAgentId() != null, OutboundAttempt::getAgentId, query.getAgentId())
+            .like(StringUtils.isNotBlank(query.getPhoneNumber()), OutboundAttempt::getPhoneNumber, query.getPhoneNumber())
+            .eq(StringUtils.isNotBlank(query.getResultCode()), OutboundAttempt::getResultCode, query.getResultCode())
+            .eq(StringUtils.isNotBlank(query.getSuggestedResultCode()), OutboundAttempt::getSuggestedResultCode, query.getSuggestedResultCode())
+            .eq(StringUtils.isNotBlank(query.getHangupCause()), OutboundAttempt::getHangupCause, query.getHangupCause())
+            .ge(query.getStartedAtBegin() != null, OutboundAttempt::getStartedAt, query.getStartedAtBegin())
+            .le(query.getStartedAtEnd() != null, OutboundAttempt::getStartedAt, query.getStartedAtEnd())
+            .orderByDesc(OutboundAttempt::getStartedAt);
+        Page<OutboundAttempt> page = attemptMapper.selectPage(pageQuery.build(), wrapper);
+        return new TableDataInfo<>(page.getRecords().stream().map(this::toAttemptResponse).toList(), page.getTotal());
+    }
+
+    @Override
     public OutboundTaskStatisticsResponse statistics(Long taskId) {
         requireTask(taskId);
         recoverExpired(taskId);
@@ -165,16 +222,28 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setDialingCount(countByStatus(members, "DIALING"));
         response.setCompletedCount(countByStatus(members, "COMPLETED") + countByStatus(members, "SKIPPED"));
         response.setRetryCount(countByStatus(members, "RETRY"));
-        response.setDialedCount(members.stream()
-            .filter(member -> member.getAttemptCount() != null && member.getAttemptCount() > 0).count());
+        response.setWaitingRetryCount(members.stream()
+            .filter(member -> "RETRY".equals(member.getStatus()))
+            .filter(member -> member.getNextFollowUpAt() != null && member.getNextFollowUpAt().isAfter(LocalDateTime.now()))
+            .count());
+        response.setRetryLimitReachedCount(members.stream()
+            .filter(member -> "RETRY_LIMIT_REACHED".equals(member.getCompletionReason()))
+            .count());
+        List<OutboundAttempt> attempts = attemptMapper.selectList(new LambdaQueryWrapper<OutboundAttempt>()
+            .eq(OutboundAttempt::getTaskId, taskId));
+        response.setDialedCount(attempts.stream().map(OutboundAttempt::getMemberId).distinct().count());
         response.setConnectedCount(members.stream()
             .filter(member -> "CONNECTED".equals(member.getResultCode())).count());
+        response.setTotalAttemptCount(attempts.size());
+        response.setAnsweredAttemptCount(attempts.stream()
+            .filter(attempt -> attempt.getAnsweredAt() != null).count());
         Map<String, Long> distribution = members.stream()
             .filter(member -> member.getResultCode() != null && !member.getResultCode().isBlank())
             .collect(Collectors.groupingBy(OutboundMember::getResultCode, java.util.LinkedHashMap::new, Collectors.counting()));
         response.setResultDistribution(distribution);
         response.setCompletionRate(rate(response.getCompletedCount(), response.getTotalCount()));
         response.setConnectionRate(rate(response.getConnectedCount(), response.getDialedCount()));
+        response.setAttemptConnectionRate(rate(response.getAnsweredAttemptCount(), response.getTotalAttemptCount()));
         return response;
     }
 
@@ -208,6 +277,16 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             .set(OutboundMember::getClaimedUserId, null)
             .set(OutboundMember::getClaimedAt, null)
             .set(OutboundMember::getLeaseExpiresAt, null));
+        if (dialing > 0) {
+            attemptMapper.update(null, new LambdaUpdateWrapper<OutboundAttempt>()
+                .eq(OutboundAttempt::getTaskId, taskId)
+                .eq(OutboundAttempt::getStatus, "DIALING")
+                .le(OutboundAttempt::getStartedAt, now.minusHours(DIALING_LEASE_HOURS))
+                .set(OutboundAttempt::getStatus, "ENDED")
+                .set(OutboundAttempt::getEndedAt, now)
+                .set(OutboundAttempt::getSuggestedResultCode, "OTHER")
+                .set(OutboundAttempt::getHangupCause, "SYSTEM_RECOVERED"));
+        }
         if (claimed + dialing > 0) {
             log.info("外呼任务异常名单恢复完成，taskId={}，释放已领取名单={}，恢复拨打中名单={}", taskId, claimed, dialing);
         }
@@ -219,7 +298,18 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     public OutboundMemberResponse claimNext(Long taskId) {
         OutboundTask task = requireTask(taskId);
         recoverExpired(taskId);
-        if (!"RUNNING".equals(task.getStatus())) throw new ServiceException("外呼任务未开始或已暂停");
+        if (!"RUNNING".equals(task.getStatus())) {
+            long dueRetryCount = memberMapper.selectCount(new LambdaQueryWrapper<OutboundMember>()
+                .eq(OutboundMember::getTaskId, taskId)
+                .eq(OutboundMember::getStatus, "RETRY")
+                .and(time -> time.isNull(OutboundMember::getNextFollowUpAt)
+                    .or().le(OutboundMember::getNextFollowUpAt, LocalDateTime.now())));
+            if ("COMPLETED".equals(task.getStatus()) && dueRetryCount > 0) {
+                updateTaskStatus(taskId, "RUNNING");
+            } else {
+                throw new ServiceException("外呼任务未开始、已暂停或尚未到达重呼时间");
+            }
+        }
         CurrentAgentResponse agent = requireAvailableAgent();
         Long userId = LoginHelper.getUserId();
         OutboundMember existing = memberMapper.selectOne(new LambdaQueryWrapper<OutboundMember>()
@@ -278,14 +368,50 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         if (!EXECUTABLE_MEMBER_STATUSES.contains(member.getStatus())) {
             throw new ServiceException("当前名单状态不能拨打");
         }
-        CallControlResponse call = callControlService.originate(member.getPhoneNumber(),
-            new CallOriginateContext(member.getCustomerId(), member.getTaskId(), member.getId()));
+        int attemptNo = Math.toIntExact(attemptMapper.selectCount(new LambdaQueryWrapper<OutboundAttempt>()
+            .eq(OutboundAttempt::getMemberId, memberId)) + 1);
+        String businessCallId = UUID.randomUUID().toString();
+        OutboundAttempt attempt = new OutboundAttempt();
+        attempt.setTaskId(member.getTaskId());
+        attempt.setMemberId(member.getId());
+        attempt.setCustomerId(member.getCustomerId());
+        attempt.setTaskName(requireTask(member.getTaskId()).getTaskName());
+        attempt.setCustomerName(member.getCustomerName());
+        attempt.setPhoneNumber(member.getPhoneNumber());
+        attempt.setAgentId(member.getClaimedAgentId());
+        attempt.setUserId(member.getClaimedUserId());
+        attempt.setAttemptNo(attemptNo);
+        attempt.setBusinessCallId(businessCallId);
+        attempt.setStatus("DIALING");
+        attempt.setStartedAt(LocalDateTime.now());
+        attempt.setDurationSeconds(0);
+        attempt.setBillableSeconds(0);
+        attemptMapper.insert(attempt);
+        CallControlResponse call;
+        try {
+            call = callControlService.originate(member.getPhoneNumber(),
+                new CallOriginateContext(businessCallId, member.getCustomerId(), member.getTaskId(), member.getId()));
+        } catch (RuntimeException exception) {
+            attemptMapper.update(null, new LambdaUpdateWrapper<OutboundAttempt>()
+                .eq(OutboundAttempt::getId, attempt.getId())
+                .set(OutboundAttempt::getStatus, "ENDED")
+                .set(OutboundAttempt::getEndedAt, LocalDateTime.now())
+                .set(OutboundAttempt::getSuggestedResultCode, "OTHER")
+                .set(OutboundAttempt::getHangupCause, "ORIGINATE_FAILED"));
+            memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
+                .eq(OutboundMember::getId, memberId)
+                .set(OutboundMember::getStatus, "DIALING")
+                .set(OutboundMember::getBusinessCallId, businessCallId)
+                .set(OutboundMember::getAttemptCount, attemptNo));
+            automaticRetryService.applySystemSuggestion(memberId, businessCallId, "OTHER");
+            throw exception;
+        }
         memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
             .eq(OutboundMember::getId, memberId)
             .eq(OutboundMember::getClaimedUserId, LoginHelper.getUserId())
             .set(OutboundMember::getStatus, "DIALING")
             .set(OutboundMember::getBusinessCallId, call.getCallId())
-            .set(OutboundMember::getAttemptCount, member.getAttemptCount() + 1)
+            .set(OutboundMember::getAttemptCount, attemptNo)
             .set(OutboundMember::getLeaseExpiresAt, LocalDateTime.now().plusHours(DIALING_LEASE_HOURS)));
         callBusinessAssociationService.associateCustomer(call.getCallId(), member.getCustomerId());
         return toMemberResponse(requireMember(memberId));
@@ -295,8 +421,19 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     @Transactional(rollbackFor = Exception.class)
     public void complete(Long memberId, CompleteOutboundMemberRequest request) {
         OutboundMember member = requireOwnedMember(memberId);
-        boolean retry = Boolean.TRUE.equals(request.getRetry());
-        validateCompletionRequest(request, retry);
+        OutboundTask task = requireTask(member.getTaskId());
+        boolean manualRetry = Boolean.TRUE.equals(request.getRetry());
+        validateCompletionRequest(request, manualRetry);
+        boolean automaticRetryResult = Boolean.TRUE.equals(task.getAutoRetryEnabled())
+            && retryResultCodes(task).contains(request.getResultCode());
+        int maxRetryCount = task.getMaxRetryCount() == null ? DEFAULT_MAX_RETRY_COUNT : task.getMaxRetryCount();
+        boolean retryLimitReached = automaticRetryResult && member.getAttemptCount() != null
+            && member.getAttemptCount() > maxRetryCount;
+        boolean retry = manualRetry || automaticRetryResult && !retryLimitReached;
+        LocalDateTime nextRetryAt = manualRetry ? request.getNextFollowUpAt()
+            : automaticRetryResult && member.getNextFollowUpAt() != null ? member.getNextFollowUpAt()
+            : retry ? LocalDateTime.now().plusMinutes(task.getRetryIntervalMinutes() == null
+                ? DEFAULT_RETRY_INTERVAL_MINUTES : task.getRetryIntervalMinutes()) : null;
         String nextStatus = retry ? "RETRY" : "COMPLETED";
         int updated = memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
             .eq(OutboundMember::getId, memberId)
@@ -304,14 +441,20 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             .set(OutboundMember::getStatus, nextStatus)
             .set(OutboundMember::getResultCode, request.getResultCode())
             .set(OutboundMember::getResultRemark, request.getResultRemark())
-            .set(OutboundMember::getNextFollowUpAt, request.getNextFollowUpAt())
+            .set(OutboundMember::getNextFollowUpAt, nextRetryAt)
             .set(OutboundMember::getLeaseExpiresAt, null)
-            .set(OutboundMember::getCompletedAt, retry ? null : LocalDateTime.now()));
+            .set(OutboundMember::getCompletedAt, retry ? null : LocalDateTime.now())
+            .set(OutboundMember::getCompletionReason, retry ? null : retryLimitReached ? "RETRY_LIMIT_REACHED" : "MANUAL"));
         if (updated == 0) {
             throw new ServiceException("外呼名单状态已发生变化，请刷新后重试");
         }
-        customerService.addFollowUp(member.getCustomerId(), buildFollowUpContent(request, retry));
+        attemptMapper.update(null, new LambdaUpdateWrapper<OutboundAttempt>()
+            .eq(OutboundAttempt::getBusinessCallId, member.getBusinessCallId())
+            .set(OutboundAttempt::getResultCode, request.getResultCode())
+            .set(OutboundAttempt::getResultRemark, request.getResultRemark()));
+        customerService.addFollowUp(member.getCustomerId(), buildFollowUpContent(request, retry, nextRetryAt));
         callBusinessAssociationService.associateCustomer(member.getBusinessCallId(), member.getCustomerId());
+        if (retry) updateTaskStatus(member.getTaskId(), "RUNNING");
         completeTaskIfFinished(member.getTaskId());
     }
 
@@ -327,13 +470,13 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         }
     }
 
-    private String buildFollowUpContent(CompleteOutboundMemberRequest request, boolean retry) {
+    private String buildFollowUpContent(CompleteOutboundMemberRequest request, boolean retry, LocalDateTime nextRetryAt) {
         StringBuilder content = new StringBuilder("预览式外呼结果：").append(resultLabel(request.getResultCode()));
         if (request.getResultRemark() != null && !request.getResultRemark().isBlank()) {
             content.append("\n结果备注：").append(request.getResultRemark().trim());
         }
         if (retry) {
-            content.append("\n下次跟进：").append(request.getNextFollowUpAt().format(FOLLOW_UP_TIME_FORMATTER));
+            content.append("\n下次重呼：").append(nextRetryAt.format(FOLLOW_UP_TIME_FORMATTER));
         }
         return content.toString();
     }
@@ -381,6 +524,21 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         task.setTaskCode(request.getTaskCode().trim());
         task.setTaskName(request.getTaskName().trim());
         task.setDescription(request.getDescription());
+        task.setAutoRetryEnabled(request.getAutoRetryEnabled() == null || request.getAutoRetryEnabled());
+        task.setMaxRetryCount(request.getMaxRetryCount() == null ? DEFAULT_MAX_RETRY_COUNT : request.getMaxRetryCount());
+        task.setRetryIntervalMinutes(request.getRetryIntervalMinutes() == null
+            ? DEFAULT_RETRY_INTERVAL_MINUTES : request.getRetryIntervalMinutes());
+        task.setRetryResultCodes(StringUtils.isBlank(request.getRetryResultCodes())
+            ? DEFAULT_RETRY_RESULT_CODES : request.getRetryResultCodes());
+    }
+
+    private Set<String> retryResultCodes(OutboundTask task) {
+        String configured = StringUtils.isBlank(task.getRetryResultCodes())
+            ? DEFAULT_RETRY_RESULT_CODES : task.getRetryResultCodes();
+        return java.util.Arrays.stream(configured.split(","))
+            .map(String::trim)
+            .filter(value -> !value.isEmpty())
+            .collect(Collectors.toSet());
     }
 
     private void updateTaskStatus(Long id, String status) {
@@ -404,6 +562,10 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setTaskType(task.getTaskType());
         response.setStatus(task.getStatus());
         response.setDescription(task.getDescription());
+        response.setAutoRetryEnabled(task.getAutoRetryEnabled());
+        response.setMaxRetryCount(task.getMaxRetryCount());
+        response.setRetryIntervalMinutes(task.getRetryIntervalMinutes());
+        response.setRetryResultCodes(task.getRetryResultCodes());
         response.setTotalCount(countMembers(task.getId(), null));
         response.setPendingCount(countMembers(task.getId(), List.of("PENDING", "RETRY", "CLAIMED", "DIALING")));
         response.setCompletedCount(countMembers(task.getId(), List.of("COMPLETED", "SKIPPED")));
@@ -433,6 +595,8 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setCustomerId(member.getCustomerId());
         response.setCustomerName(member.getCustomerName());
         response.setPhoneNumber(member.getPhoneNumber());
+        response.setSourceType(member.getSourceType());
+        response.setImportBatchId(member.getImportBatchId());
         response.setStatus(member.getStatus());
         response.setClaimedAgentId(member.getClaimedAgentId());
         response.setClaimedAt(member.getClaimedAt());
@@ -443,6 +607,35 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setResultRemark(member.getResultRemark());
         response.setNextFollowUpAt(member.getNextFollowUpAt());
         response.setCompletedAt(member.getCompletedAt());
+        response.setCompletionReason(member.getCompletionReason());
+        return response;
+    }
+
+    private OutboundAttemptResponse toAttemptResponse(OutboundAttempt attempt) {
+        OutboundAttemptResponse response = new OutboundAttemptResponse();
+        response.setId(attempt.getId());
+        response.setTaskId(attempt.getTaskId());
+        response.setMemberId(attempt.getMemberId());
+        response.setCustomerId(attempt.getCustomerId());
+        response.setTaskName(attempt.getTaskName());
+        response.setCustomerName(attempt.getCustomerName());
+        response.setPhoneNumber(attempt.getPhoneNumber());
+        response.setAgentId(attempt.getAgentId());
+        response.setUserId(attempt.getUserId());
+        response.setAttemptNo(attempt.getAttemptNo());
+        response.setBusinessCallId(attempt.getBusinessCallId());
+        response.setStatus(attempt.getStatus());
+        response.setResultCode(attempt.getResultCode());
+        response.setResultRemark(attempt.getResultRemark());
+        response.setSuggestedResultCode(attempt.getSuggestedResultCode());
+        response.setSuggestedResultLabel(resultSuggestionService.resultLabel(attempt.getSuggestedResultCode()));
+        response.setStartedAt(attempt.getStartedAt());
+        response.setAnsweredAt(attempt.getAnsweredAt());
+        response.setEndedAt(attempt.getEndedAt());
+        response.setDurationSeconds(attempt.getDurationSeconds());
+        response.setBillableSeconds(attempt.getBillableSeconds());
+        response.setHangupCause(attempt.getHangupCause());
+        response.setHangupCauseLabel(resultSuggestionService.hangupCauseLabel(attempt.getHangupCause()));
         return response;
     }
 }

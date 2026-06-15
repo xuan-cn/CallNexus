@@ -16,6 +16,8 @@ public class OutboundMember extends TenantEntity {
     private Long customerId;
     private String customerName;
     private String phoneNumber;
+    private String sourceType;
+    private Long importBatchId;
     private String status;
     private Long claimedAgentId;
     private Long claimedUserId;
@@ -27,6 +29,7 @@ public class OutboundMember extends TenantEntity {
     private String resultRemark;
     private LocalDateTime nextFollowUpAt;
     private LocalDateTime completedAt;
+    private String completionReason;
     @Version private Integer version;
     @TableLogic private Boolean deleted;
 }
