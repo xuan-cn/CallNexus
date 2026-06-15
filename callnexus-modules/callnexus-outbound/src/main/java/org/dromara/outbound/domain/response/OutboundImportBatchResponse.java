@@ -14,6 +14,7 @@ public class OutboundImportBatchResponse {
     private Integer validCount;
     private Integer invalidCount;
     private Integer duplicateCount;
+    private Integer blacklistedCount;
     private Integer importedCount;
     private List<OutboundImportRowResponse> rows;
 }

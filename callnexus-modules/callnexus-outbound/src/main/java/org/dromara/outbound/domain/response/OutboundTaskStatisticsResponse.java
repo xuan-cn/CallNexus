@@ -16,6 +16,7 @@ public class OutboundTaskStatisticsResponse {
     private long retryCount;
     private long waitingRetryCount;
     private long retryLimitReachedCount;
+    private long blockedCount;
     private long dialedCount;
     private long connectedCount;
     private long totalAttemptCount;

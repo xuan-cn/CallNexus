@@ -9,6 +9,7 @@ import org.dromara.outbound.domain.response.OutboundMemberResponse;
 import org.dromara.outbound.domain.response.OutboundAttemptResponse;
 import org.dromara.outbound.domain.response.OutboundTaskStatisticsResponse;
 import org.dromara.outbound.domain.response.OutboundTaskResponse;
+import org.dromara.outbound.domain.response.AddOutboundMembersResponse;
 
 import java.util.List;
 
@@ -20,7 +21,7 @@ public interface OutboundTaskService {
     void delete(Long id);
     void start(Long id);
     void pause(Long id);
-    void addCustomers(Long id, List<Long> customerIds);
+    AddOutboundMembersResponse addCustomers(Long id, List<Long> customerIds);
     List<OutboundMemberResponse> listMembers(Long taskId);
     List<OutboundAttemptResponse> listAttempts(Long memberId);
     TableDataInfo<OutboundAttemptResponse> pageAttempts(OutboundAttemptPageQuery query, PageQuery pageQuery);

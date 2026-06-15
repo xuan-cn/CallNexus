@@ -30,6 +30,10 @@ public class OutboundMember extends TenantEntity {
     private LocalDateTime nextFollowUpAt;
     private LocalDateTime completedAt;
     private String completionReason;
+    private String blockedReason;
+    private LocalDateTime blockedAt;
+    private Long blockedBlacklistId;
+    private String statusBeforeBlocked;
     @Version private Integer version;
     @TableLogic private Boolean deleted;
 }

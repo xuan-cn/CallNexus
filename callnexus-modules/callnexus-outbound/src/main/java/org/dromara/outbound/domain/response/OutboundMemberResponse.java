@@ -24,4 +24,7 @@ public class OutboundMemberResponse {
     private LocalDateTime nextFollowUpAt;
     private LocalDateTime completedAt;
     private String completionReason;
+    private String blockedReason;
+    private LocalDateTime blockedAt;
+    private Long blockedBlacklistId;
 }

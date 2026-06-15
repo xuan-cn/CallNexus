@@ -16,6 +16,7 @@ import org.dromara.outbound.domain.response.OutboundMemberResponse;
 import org.dromara.outbound.domain.response.OutboundAttemptResponse;
 import org.dromara.outbound.domain.response.OutboundTaskStatisticsResponse;
 import org.dromara.outbound.domain.response.OutboundTaskResponse;
+import org.dromara.outbound.domain.response.AddOutboundMembersResponse;
 import org.dromara.outbound.service.OutboundTaskService;
 import org.dromara.outbound.service.OutboundMemberImportService;
 import org.springframework.http.MediaType;
@@ -80,9 +81,8 @@ public class OutboundTaskController {
 
     @PostMapping("/{id}/members")
     @SaCheckPermission("callcenter:outbound-task:update")
-    public R<Void> addCustomers(@PathVariable Long id, @Valid @RequestBody AddOutboundMembersRequest request) {
-        service.addCustomers(id, request.getCustomerIds());
-        return R.ok();
+    public R<AddOutboundMembersResponse> addCustomers(@PathVariable Long id, @Valid @RequestBody AddOutboundMembersRequest request) {
+        return R.ok(service.addCustomers(id, request.getCustomerIds()));
     }
 
     @GetMapping("/{id}/members")

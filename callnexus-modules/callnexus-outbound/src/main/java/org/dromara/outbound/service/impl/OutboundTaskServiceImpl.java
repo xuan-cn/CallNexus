@@ -29,6 +29,8 @@ import org.dromara.outbound.domain.response.OutboundMemberResponse;
 import org.dromara.outbound.domain.response.OutboundAttemptResponse;
 import org.dromara.outbound.domain.response.OutboundTaskStatisticsResponse;
 import org.dromara.outbound.domain.response.OutboundTaskResponse;
+import org.dromara.outbound.domain.response.AddOutboundMembersResponse;
+import org.dromara.outbound.domain.response.OutboundBlacklistMatch;
 import org.dromara.outbound.mapper.OutboundMemberMapper;
 import org.dromara.outbound.mapper.OutboundAttemptMapper;
 import org.dromara.outbound.mapper.OutboundImportBatchMapper;
@@ -39,6 +41,9 @@ import org.dromara.outbound.domain.OutboundImportRow;
 import org.dromara.outbound.service.OutboundAutomaticRetryService;
 import org.dromara.outbound.service.OutboundResultSuggestionService;
 import org.dromara.outbound.service.OutboundTaskService;
+import org.dromara.outbound.service.OutboundBlacklistChecker;
+import org.dromara.outbound.service.OutboundBlacklistMemberSyncService;
+import org.dromara.outbound.service.PhoneNumberNormalizer;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -74,6 +79,9 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     private final CallBusinessAssociationService callBusinessAssociationService;
     private final OutboundResultSuggestionService resultSuggestionService;
     private final OutboundAutomaticRetryService automaticRetryService;
+    private final OutboundBlacklistChecker blacklistChecker;
+    private final OutboundBlacklistMemberSyncService blacklistMemberSyncService;
+    private final PhoneNumberNormalizer phoneNumberNormalizer;
 
     @Override
     public List<OutboundTaskResponse> list() {
@@ -152,30 +160,46 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void addCustomers(Long id, List<Long> customerIds) {
+    public AddOutboundMembersResponse addCustomers(Long id, List<Long> customerIds) {
         OutboundTask task = requireTask(id);
         if ("RUNNING".equals(task.getStatus())) throw new ServiceException("执行中的外呼任务不能添加名单，请先暂停");
+        AddOutboundMembersResponse response = new AddOutboundMembersResponse();
         for (Long customerId : customerIds.stream().distinct().toList()) {
             CustomerResponse customer = customerService.get(customerId);
+            String normalizedPhone = phoneNumberNormalizer.normalize(customer.getPrimaryPhone());
+            OutboundBlacklistMatch match = blacklistChecker.check(id, normalizedPhone);
+            if (match != null) {
+                AddOutboundMembersResponse.BlockedMemberDetail detail = new AddOutboundMembersResponse.BlockedMemberDetail();
+                detail.setCustomerId(customerId);
+                detail.setCustomerName(customer.getCustomerName());
+                detail.setPhoneNumber(normalizedPhone);
+                detail.setReason(match.getReason());
+                detail.setBlacklistId(match.getBlacklistId());
+                response.getBlocked().add(detail);
+                continue;
+            }
             OutboundMember member = new OutboundMember();
             member.setTaskId(id);
             member.setCustomerId(customerId);
             member.setCustomerName(customer.getCustomerName());
-            member.setPhoneNumber(customer.getPrimaryPhone());
+            member.setPhoneNumber(normalizedPhone);
             member.setSourceType("MANUAL");
             member.setStatus("PENDING");
             member.setAttemptCount(0);
             try {
                 memberMapper.insert(member);
+                response.setAddedCount(response.getAddedCount() + 1);
             } catch (DuplicateKeyException ignored) {
-                // 同一客户只能加入任务一次，重复选择时保持幂等。
+                response.setDuplicateCount(response.getDuplicateCount() + 1);
             }
         }
+        return response;
     }
 
     @Override
     public List<OutboundMemberResponse> listMembers(Long taskId) {
         requireTask(taskId);
+        blacklistMemberSyncService.restoreExpired();
         recoverExpired(taskId);
         return memberMapper.selectList(new LambdaQueryWrapper<OutboundMember>()
                 .eq(OutboundMember::getTaskId, taskId)
@@ -211,6 +235,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     @Override
     public OutboundTaskStatisticsResponse statistics(Long taskId) {
         requireTask(taskId);
+        blacklistMemberSyncService.restoreExpired();
         recoverExpired(taskId);
         List<OutboundMember> members = memberMapper.selectList(new LambdaQueryWrapper<OutboundMember>()
             .eq(OutboundMember::getTaskId, taskId));
@@ -229,6 +254,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setRetryLimitReachedCount(members.stream()
             .filter(member -> "RETRY_LIMIT_REACHED".equals(member.getCompletionReason()))
             .count());
+        response.setBlockedCount(countByStatus(members, "BLOCKED"));
         List<OutboundAttempt> attempts = attemptMapper.selectList(new LambdaQueryWrapper<OutboundAttempt>()
             .eq(OutboundAttempt::getTaskId, taskId));
         response.setDialedCount(attempts.stream().map(OutboundAttempt::getMemberId).distinct().count());
@@ -297,6 +323,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     @Transactional(rollbackFor = Exception.class)
     public OutboundMemberResponse claimNext(Long taskId) {
         OutboundTask task = requireTask(taskId);
+        blacklistMemberSyncService.restoreExpired();
         recoverExpired(taskId);
         if (!"RUNNING".equals(task.getStatus())) {
             long dueRetryCount = memberMapper.selectCount(new LambdaQueryWrapper<OutboundMember>()
@@ -329,6 +356,12 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             .orderByAsc(OutboundMember::getCreateTime)
             .last("LIMIT 1"));
         if (candidate == null) throw new ServiceException("当前任务没有可领取的外呼名单");
+        OutboundBlacklistMatch candidateMatch = blacklistChecker.check(taskId, candidate.getPhoneNumber());
+        if (candidateMatch != null) {
+            blacklistMemberSyncService.blockMember(candidate, candidateMatch);
+            completeTaskIfFinished(taskId);
+            return claimNext(taskId);
+        }
         LocalDateTime now = LocalDateTime.now();
         int updated = memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
             .eq(OutboundMember::getId, candidate.getId())
@@ -367,6 +400,12 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         OutboundMember member = requireOwnedMember(memberId);
         if (!EXECUTABLE_MEMBER_STATUSES.contains(member.getStatus())) {
             throw new ServiceException("当前名单状态不能拨打");
+        }
+        OutboundBlacklistMatch dialMatch = blacklistChecker.check(member.getTaskId(), member.getPhoneNumber());
+        if (dialMatch != null) {
+            blacklistMemberSyncService.blockMember(member, dialMatch);
+            completeTaskIfFinished(member.getTaskId());
+            throw new ServiceException("该电话号码已命中外呼黑名单，已停止拨打");
         }
         int attemptNo = Math.toIntExact(attemptMapper.selectCount(new LambdaQueryWrapper<OutboundAttempt>()
             .eq(OutboundAttempt::getMemberId, memberId)) + 1);
@@ -608,6 +647,9 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setNextFollowUpAt(member.getNextFollowUpAt());
         response.setCompletedAt(member.getCompletedAt());
         response.setCompletionReason(member.getCompletionReason());
+        response.setBlockedReason(member.getBlockedReason());
+        response.setBlockedAt(member.getBlockedAt());
+        response.setBlockedBlacklistId(member.getBlockedBlacklistId());
         return response;
     }
 

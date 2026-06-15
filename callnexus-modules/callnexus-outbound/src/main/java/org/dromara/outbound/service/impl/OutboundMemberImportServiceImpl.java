@@ -14,6 +14,7 @@ import org.dromara.outbound.domain.OutboundMember;
 import org.dromara.outbound.domain.OutboundTask;
 import org.dromara.outbound.domain.response.OutboundImportBatchResponse;
 import org.dromara.outbound.domain.response.OutboundImportRowResponse;
+import org.dromara.outbound.domain.response.OutboundBlacklistMatch;
 import org.dromara.outbound.domain.vo.OutboundMemberImportVo;
 import org.dromara.outbound.domain.vo.OutboundImportErrorExportVo;
 import org.dromara.outbound.mapper.OutboundImportBatchMapper;
@@ -21,6 +22,8 @@ import org.dromara.outbound.mapper.OutboundImportRowMapper;
 import org.dromara.outbound.mapper.OutboundMemberMapper;
 import org.dromara.outbound.mapper.OutboundTaskMapper;
 import org.dromara.outbound.service.OutboundMemberImportService;
+import org.dromara.outbound.service.OutboundBlacklistChecker;
+import org.dromara.outbound.service.PhoneNumberNormalizer;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,19 +34,18 @@ import java.io.IOException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 @Service
 @RequiredArgsConstructor
 public class OutboundMemberImportServiceImpl implements OutboundMemberImportService {
     private static final int MAX_IMPORT_ROWS = 5000;
-    private static final Pattern PHONE_PATTERN = Pattern.compile("^\\+?[0-9]{5,20}$");
-
     private final OutboundTaskMapper taskMapper;
     private final OutboundMemberMapper memberMapper;
     private final OutboundImportBatchMapper batchMapper;
     private final OutboundImportRowMapper rowMapper;
     private final CustomerApplicationService customerService;
+    private final PhoneNumberNormalizer phoneNumberNormalizer;
+    private final OutboundBlacklistChecker blacklistChecker;
 
     @Override
     public void downloadTemplate(HttpServletResponse response) {
@@ -83,7 +85,7 @@ public class OutboundMemberImportServiceImpl implements OutboundMemberImportServ
 
         Set<String> taskPhones = memberMapper.selectList(new LambdaQueryWrapper<OutboundMember>()
                 .eq(OutboundMember::getTaskId, taskId))
-            .stream().map(OutboundMember::getPhoneNumber).map(this::normalizePhone)
+            .stream().map(OutboundMember::getPhoneNumber).map(phoneNumberNormalizer::normalize)
             .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
         Set<String> filePhones = new HashSet<>();
         int validCount = 0;
@@ -91,14 +93,14 @@ public class OutboundMemberImportServiceImpl implements OutboundMemberImportServ
         int duplicateCount = 0;
         for (int index = 0; index < imports.size(); index++) {
             OutboundMemberImportVo item = imports.get(index);
-            String normalizedPhone = normalizePhone(item.getPhoneNumber());
+            String normalizedPhone = phoneNumberNormalizer.normalize(item.getPhoneNumber());
             OutboundImportRow row = new OutboundImportRow();
             row.setBatchId(batch.getId());
             row.setRowNumber(index + 2);
             row.setCustomerName(trimToNull(item.getCustomerName()));
             row.setOriginalPhone(trimToNull(item.getPhoneNumber()));
             row.setNormalizedPhone(normalizedPhone);
-            if (normalizedPhone == null || !PHONE_PATTERN.matcher(normalizedPhone).matches()) {
+            if (!phoneNumberNormalizer.isValid(normalizedPhone)) {
                 row.setStatus("INVALID");
                 row.setErrorMessage("电话号码格式无效，清洗后应为 5 至 20 位数字，可包含开头的加号");
                 invalidCount++;
@@ -110,6 +112,10 @@ public class OutboundMemberImportServiceImpl implements OutboundMemberImportServ
                 row.setStatus("DUPLICATE_TASK");
                 row.setErrorMessage("该电话号码已存在于当前外呼任务");
                 duplicateCount++;
+            } else if (blacklistChecker.check(taskId, normalizedPhone) != null) {
+                OutboundBlacklistMatch match = blacklistChecker.check(taskId, normalizedPhone);
+                row.setStatus("BLACKLISTED");
+                row.setErrorMessage("命中外呼黑名单" + (match.getReason() == null ? "" : "：" + match.getReason()));
             } else {
                 CustomerResponse customer = customerService.getByPhone(normalizedPhone);
                 row.setCustomerId(customer == null ? null : customer.getId());
@@ -151,6 +157,13 @@ public class OutboundMemberImportServiceImpl implements OutboundMemberImportServ
         List<OutboundImportRow> rows = listRows(batchId);
         for (OutboundImportRow row : rows) {
             if (!"VALID".equals(row.getStatus())) {
+                continue;
+            }
+            OutboundBlacklistMatch match = blacklistChecker.check(taskId, row.getNormalizedPhone());
+            if (match != null) {
+                row.setStatus("BLACKLISTED");
+                row.setErrorMessage("确认导入时命中外呼黑名单" + (match.getReason() == null ? "" : "：" + match.getReason()));
+                rowMapper.updateById(row);
                 continue;
             }
             Long customerId = row.getCustomerId();
@@ -245,18 +258,6 @@ public class OutboundMemberImportServiceImpl implements OutboundMemberImportServ
             .orderByAsc(OutboundImportRow::getRowNumber));
     }
 
-    private String normalizePhone(String phone) {
-        String value = trimToNull(phone);
-        if (value == null) {
-            return null;
-        }
-        value = value.replaceAll("[\\s\\-()（）]", "");
-        if (value.startsWith("00")) {
-            value = "+" + value.substring(2);
-        }
-        return value;
-    }
-
     private String trimToNull(String value) {
         if (value == null || value.trim().isEmpty()) {
             return null;
@@ -269,6 +270,7 @@ public class OutboundMemberImportServiceImpl implements OutboundMemberImportServ
             case "INVALID" -> "号码无效";
             case "DUPLICATE_FILE" -> "文件内重复";
             case "DUPLICATE_TASK" -> "任务内重复";
+            case "BLACKLISTED" -> "黑名单拦截";
             default -> status;
         };
     }
@@ -283,6 +285,7 @@ public class OutboundMemberImportServiceImpl implements OutboundMemberImportServ
         response.setValidCount(batch.getValidCount());
         response.setInvalidCount(batch.getInvalidCount());
         response.setDuplicateCount(batch.getDuplicateCount());
+        response.setBlacklistedCount((int) rows.stream().filter(row -> "BLACKLISTED".equals(row.getStatus())).count());
         response.setImportedCount(batch.getImportedCount());
         response.setRows(rows.stream().map(this::toRowResponse).toList());
         return response;
