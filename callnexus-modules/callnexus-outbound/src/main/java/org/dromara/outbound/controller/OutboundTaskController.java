@@ -17,8 +17,11 @@ import org.dromara.outbound.domain.response.OutboundAttemptResponse;
 import org.dromara.outbound.domain.response.OutboundTaskStatisticsResponse;
 import org.dromara.outbound.domain.response.OutboundTaskResponse;
 import org.dromara.outbound.domain.response.AddOutboundMembersResponse;
+import org.dromara.outbound.domain.response.OutboundAgentSummaryResponse;
+import org.dromara.outbound.domain.response.OutboundDailyTrendResponse;
 import org.dromara.outbound.service.OutboundTaskService;
 import org.dromara.outbound.service.OutboundMemberImportService;
+import org.dromara.outbound.service.OutboundReportService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -32,6 +35,7 @@ import java.util.List;
 public class OutboundTaskController {
     private final OutboundTaskService service;
     private final OutboundMemberImportService importService;
+    private final OutboundReportService reportService;
 
     @GetMapping
     @SaCheckPermission("callcenter:outbound-task:list")
@@ -135,6 +139,24 @@ public class OutboundTaskController {
         return service.pageAttempts(query, pageQuery);
     }
 
+    @GetMapping("/attempts/agent-summary")
+    @SaCheckPermission("callcenter:outbound-task:query")
+    public R<List<OutboundAgentSummaryResponse>> agentSummary(OutboundAttemptPageQuery query) {
+        return R.ok(reportService.agentSummary(query));
+    }
+
+    @GetMapping("/attempts/daily-trend")
+    @SaCheckPermission("callcenter:outbound-task:query")
+    public R<List<OutboundDailyTrendResponse>> dailyTrend(OutboundAttemptPageQuery query) {
+        return R.ok(reportService.dailyTrend(query));
+    }
+
+    @PostMapping("/attempts/export")
+    @SaCheckPermission("callcenter:outbound-task:query")
+    public void exportAttempts(OutboundAttemptPageQuery query, HttpServletResponse response) {
+        reportService.export(query, response);
+    }
+
     @GetMapping("/{id}/statistics")
     @SaCheckPermission("callcenter:outbound-task:query")
     public R<OutboundTaskStatisticsResponse> statistics(@PathVariable Long id) {
@@ -151,6 +173,12 @@ public class OutboundTaskController {
     @SaCheckPermission("callcenter:outbound-task:execute")
     public R<OutboundMemberResponse> claimNext(@PathVariable Long id) {
         return R.ok(service.claimNext(id));
+    }
+
+    @GetMapping("/members/current-assigned")
+    @SaCheckPermission("callcenter:outbound-task:execute")
+    public R<OutboundMemberResponse> currentAssigned() {
+        return R.ok(service.currentAssigned());
     }
 
     @PostMapping("/members/{memberId}/renew-lease")

@@ -28,6 +28,7 @@ public interface OutboundTaskService {
     OutboundTaskStatisticsResponse statistics(Long taskId);
     int recoverExpired(Long taskId);
     OutboundMemberResponse claimNext(Long taskId);
+    OutboundMemberResponse currentAssigned();
     OutboundMemberResponse renewLease(Long memberId);
     OutboundMemberResponse dial(Long memberId);
     void complete(Long memberId, CompleteOutboundMemberRequest request);

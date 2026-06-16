@@ -1,6 +1,7 @@
 package org.dromara.resource.phone.domain.response;
 
 import lombok.Data;
+import org.dromara.resource.businesshours.domain.PhoneBusinessHoursRoute;
 
 import java.util.Date;
 
@@ -20,4 +21,5 @@ public class PhoneNumberResponse {
     private Boolean enabled;
     private Integer version;
     private Date createTime;
+    private PhoneBusinessHoursRoute businessHoursRoute;
 }

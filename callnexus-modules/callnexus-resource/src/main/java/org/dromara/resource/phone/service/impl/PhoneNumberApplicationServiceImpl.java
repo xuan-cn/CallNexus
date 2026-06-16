@@ -12,6 +12,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.gateway.domain.FreeSwitchGateway;
 import org.dromara.resource.gateway.mapper.FreeSwitchGatewayMapper;
+import org.dromara.resource.businesshours.service.PhoneBusinessHoursRouteService;
 import org.dromara.resource.ivr.service.IvrDialplanQueryService;
 import org.dromara.resource.node.domain.FreeSwitchNode;
 import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
@@ -38,6 +39,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     private final FreeSwitchGatewayMapper gatewayMapper;
     private final IvrDialplanQueryService ivrDialplanQueryService;
     private final CallQueueQueryService callQueueQueryService;
+    private final PhoneBusinessHoursRouteService businessHoursRouteService;
 
     @Override
     public TableDataInfo<PhoneNumberResponse> page(PhoneNumberPageQuery query, PageQuery pageQuery) {
@@ -73,6 +75,11 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
             request.getRouteType(), request.getRouteTarget(), request.getOutboundDefault());
         number.setEnabled(true);
         mapper.insert(number);
+        if ("BUSINESS_HOURS".equals(request.getRouteType())) {
+            number.setRouteTarget(String.valueOf(businessHoursRouteService.save(
+                number.getId(), request.getNodeId(), request.getBusinessHoursRoute(), LoginHelper.getTenantId())));
+            mapper.updateById(number);
+        }
         log.info("新增号码管理配置，number={}，numberType={}，nodeId={}，gatewayId={}，routeType={}，routeTarget={}",
             number.getNumber(), number.getNumberType(), number.getNodeId(), number.getGatewayId(), number.getRouteType(), number.getRouteTarget());
         return number.getId();
@@ -87,8 +94,14 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
         ensureNumberUnique(request.getNumber(), id);
         PhoneNumber number = mapper.selectById(id);
         if (number == null) throw new ServiceException("号码不存在");
+        String routeTarget = request.getRouteTarget();
+        if ("BUSINESS_HOURS".equals(request.getRouteType())) {
+            routeTarget = String.valueOf(businessHoursRouteService.save(id, request.getNodeId(), request.getBusinessHoursRoute(), LoginHelper.getTenantId()));
+        } else {
+            businessHoursRouteService.removeByPhoneNumberId(id);
+        }
         apply(number, request.getNumber(), request.getNumberName(), request.getNumberType(), request.getNodeId(), request.getGatewayId(),
-            request.getRouteType(), request.getRouteTarget(), request.getOutboundDefault());
+            request.getRouteType(), routeTarget, request.getOutboundDefault());
         number.setEnabled(request.getEnabled());
         number.setVersion(request.getVersion());
         if (mapper.updateById(number) != 1) throw new ServiceException("号码已被其他用户修改，请刷新后重试");
@@ -101,6 +114,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     public void delete(Long id) {
         PhoneNumber number = mapper.selectById(id);
         if (number == null) throw new ServiceException("号码不存在");
+        businessHoursRouteService.removeByPhoneNumberId(id);
         if (mapper.deleteById(id) != 1) throw new ServiceException("号码不存在");
         log.info("删除号码管理配置，id={}，number={}", id, number.getNumber());
     }
@@ -280,6 +294,9 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
         response.setEnabled(number.getEnabled());
         response.setVersion(number.getVersion());
         response.setCreateTime(number.getCreateTime());
+        if ("BUSINESS_HOURS".equals(number.getRouteType())) {
+            response.setBusinessHoursRoute(businessHoursRouteService.findByPhoneNumberId(number.getId()));
+        }
         return response;
     }
 }

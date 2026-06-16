@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.response.CurrentAgentResponse;
 import org.dromara.agent.service.CurrentAgentSessionService;
+import org.dromara.agent.service.AgentAvailabilityQueryService;
+import org.dromara.agent.service.model.AgentAvailability;
 import org.dromara.call.domain.response.CallControlResponse;
 import org.dromara.call.domain.CallOriginateContext;
 import org.dromara.call.service.CallBusinessAssociationService;
@@ -75,6 +77,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     private final OutboundImportRowMapper importRowMapper;
     private final CustomerApplicationService customerService;
     private final CurrentAgentSessionService agentSessionService;
+    private final AgentAvailabilityQueryService agentAvailabilityQueryService;
     private final CallControlApplicationService callControlService;
     private final CallBusinessAssociationService callBusinessAssociationService;
     private final OutboundResultSuggestionService resultSuggestionService;
@@ -396,6 +399,16 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     }
 
     @Override
+    public OutboundMemberResponse currentAssigned() {
+        OutboundMember member = memberMapper.selectOne(new LambdaQueryWrapper<OutboundMember>()
+            .eq(OutboundMember::getClaimedUserId, LoginHelper.getUserId())
+            .in(OutboundMember::getStatus, "CLAIMED", "DIALING")
+            .orderByDesc(OutboundMember::getClaimedAt)
+            .last("LIMIT 1"));
+        return member == null ? null : toMemberResponse(member);
+    }
+
+    @Override
     public OutboundMemberResponse dial(Long memberId) {
         OutboundMember member = requireOwnedMember(memberId);
         if (!EXECUTABLE_MEMBER_STATUSES.contains(member.getStatus())) {
@@ -569,6 +582,18 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             ? DEFAULT_RETRY_INTERVAL_MINUTES : request.getRetryIntervalMinutes());
         task.setRetryResultCodes(StringUtils.isBlank(request.getRetryResultCodes())
             ? DEFAULT_RETRY_RESULT_CODES : request.getRetryResultCodes());
+        task.setAutoAssignDueRetry(Boolean.TRUE.equals(request.getAutoAssignDueRetry()));
+        task.setRetryAssigneeAgentId(Boolean.TRUE.equals(task.getAutoAssignDueRetry())
+            ? request.getRetryAssigneeAgentId() : null);
+        if (Boolean.TRUE.equals(task.getAutoAssignDueRetry()) && task.getRetryAssigneeAgentId() == null) {
+            throw new ServiceException("启用到期重呼自动分配时必须选择指定坐席");
+        }
+        if (Boolean.TRUE.equals(task.getAutoAssignDueRetry())) {
+            AgentAvailability agent = agentAvailabilityQueryService.get(task.getRetryAssigneeAgentId());
+            if (agent == null || !agent.enabled() || agent.userId() == null) {
+                throw new ServiceException("指定坐席不存在、已停用或未绑定系统用户");
+            }
+        }
     }
 
     private Set<String> retryResultCodes(OutboundTask task) {
@@ -605,9 +630,18 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setMaxRetryCount(task.getMaxRetryCount());
         response.setRetryIntervalMinutes(task.getRetryIntervalMinutes());
         response.setRetryResultCodes(task.getRetryResultCodes());
+        response.setAutoAssignDueRetry(task.getAutoAssignDueRetry());
+        response.setRetryAssigneeAgentId(task.getRetryAssigneeAgentId());
         response.setTotalCount(countMembers(task.getId(), null));
         response.setPendingCount(countMembers(task.getId(), List.of("PENDING", "RETRY", "CLAIMED", "DIALING")));
         response.setCompletedCount(countMembers(task.getId(), List.of("COMPLETED", "SKIPPED")));
+        response.setDueRetryCount(memberMapper.selectCount(new LambdaQueryWrapper<OutboundMember>()
+            .eq(OutboundMember::getTaskId, task.getId())
+            .eq(OutboundMember::getStatus, "RETRY")
+            .and(time -> time.isNull(OutboundMember::getNextFollowUpAt)
+                .or().le(OutboundMember::getNextFollowUpAt, LocalDateTime.now()))));
+        response.setLastScheduledAt(task.getLastScheduledAt());
+        response.setLastScheduleSummary(task.getLastScheduleSummary());
         response.setVersion(task.getVersion());
         response.setCreateTime(task.getCreateTime());
         return response;

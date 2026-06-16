@@ -27,5 +27,7 @@ public class OutboundTaskRequest {
     @Pattern(regexp = "^(|NO_ANSWER|BUSY|OTHER)(,(NO_ANSWER|BUSY|OTHER))*$",
         message = "自动重呼结果配置不合法")
     private String retryResultCodes;
+    private Boolean autoAssignDueRetry;
+    private Long retryAssigneeAgentId;
     private Integer version;
 }

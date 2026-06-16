@@ -78,7 +78,7 @@
                 <profiles.active>dev</profiles.active>
                 <logging.level>info</logging.level>
                 <monitor.username>callnexus</monitor.username>
-                <monitor.password>123456</monitor.password>
+                <monitor.password>callnexus</monitor.password>
             </properties>
             <activation>
                 <!-- 默认环境 -->

@@ -5,6 +5,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.tenant.core.TenantEntity;
 
+import java.time.LocalDateTime;
+
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("cc_outbound_task")
@@ -19,6 +21,10 @@ public class OutboundTask extends TenantEntity {
     private Integer maxRetryCount;
     private Integer retryIntervalMinutes;
     private String retryResultCodes;
+    private Boolean autoAssignDueRetry;
+    private Long retryAssigneeAgentId;
+    private LocalDateTime lastScheduledAt;
+    private String lastScheduleSummary;
     @Version private Integer version;
     @TableLogic private Boolean deleted;
 }
