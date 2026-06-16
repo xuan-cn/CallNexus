@@ -17,6 +17,8 @@ public interface MediaAssetApplicationService {
 
     MediaAssetResponse storeRecording(String businessCallId, Long durationMs, MultipartFile file);
 
+    MediaAssetResponse storeVoicemail(String businessCallId, Long durationMs, MultipartFile file);
+
     void update(Long id, UpdateMediaAssetRequest request);
 
     void delete(Long id);

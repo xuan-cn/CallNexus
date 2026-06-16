@@ -30,7 +30,9 @@ import org.springframework.web.multipart.MultipartFile;
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.HexFormat;
@@ -52,7 +54,7 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
     @Override
     public TableDataInfo<MediaAssetResponse> page(MediaAssetPageQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<MediaAsset> wrapper = new LambdaQueryWrapper<MediaAsset>()
-            .ne(MediaAsset::getCategory, MediaAssetCategory.CALL_RECORDING.name())
+            .notIn(MediaAsset::getCategory, MediaAssetCategory.CALL_RECORDING.name(), MediaAssetCategory.VOICEMAIL_RECORDING.name())
             .like(StringUtils.isNotBlank(query.getAssetName()), MediaAsset::getAssetName, query.getAssetName())
             .eq(StringUtils.isNotBlank(query.getCategory()), MediaAsset::getCategory, query.getCategory())
             .eq(StringUtils.isNotBlank(query.getSourceType()), MediaAsset::getSourceType, query.getSourceType())
@@ -70,8 +72,8 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long upload(String assetName, MediaAssetCategory category, String languageCode, String remark, Long durationMs, MultipartFile file) {
-        if (category == MediaAssetCategory.CALL_RECORDING) {
-            throw new ServiceException("通话录音不允许手动上传");
+        if (category == MediaAssetCategory.CALL_RECORDING || category == MediaAssetCategory.VOICEMAIL_RECORDING) {
+            throw new ServiceException("录音类媒体不允许手动上传");
         }
         validateAudio(file);
         MediaAsset asset = store(assetName, category, "UPLOAD", languageCode, remark, durationMs, 0, file);
@@ -85,6 +87,15 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
     public MediaAssetResponse storeRecording(String businessCallId, Long durationMs, MultipartFile file) {
         validateAudio(file);
         MediaAsset asset = store("通话录音-" + businessCallId, MediaAssetCategory.CALL_RECORDING, "RECORDING",
+            null, businessCallId, durationMs, 1, file);
+        return toResponse(asset, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public MediaAssetResponse storeVoicemail(String businessCallId, Long durationMs, MultipartFile file) {
+        validateAudio(file);
+        MediaAsset asset = store("语音留言-" + businessCallId, MediaAssetCategory.VOICEMAIL_RECORDING, "VOICEMAIL",
             null, businessCallId, durationMs, 1, file);
         return toResponse(asset, false);
     }
@@ -134,13 +145,16 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
         asset.setFileSuffix(oss.getFileSuffix());
         asset.setFileSize(file.getSize());
         populateAudioMetadata(asset, durationMs, file);
+        if (asset.getDurationMs() == null) {
+            populateWavDuration(asset, file);
+        }
         asset.setLanguageCode(languageCode);
         asset.setEnabled(true);
         asset.setReferenceCount(referenceCount);
         asset.setTranscriptStatus("NONE");
         asset.setRemark(remark);
         mapper.insert(asset);
-        if (category != MediaAssetCategory.CALL_RECORDING) {
+        if (category != MediaAssetCategory.CALL_RECORDING && category != MediaAssetCategory.VOICEMAIL_RECORDING) {
             MediaAssetVersion mediaVersion = new MediaAssetVersion();
             mediaVersion.setMediaId(asset.getId());
             mediaVersion.setVersionNo(1);
@@ -186,6 +200,55 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
             log.debug("无法从音频文件提取元数据，使用上传参数，fileName={}，error={}",
                 file.getOriginalFilename(), ex.getMessage());
         }
+    }
+
+    private void populateWavDuration(MediaAsset asset, MultipartFile file) {
+        try (InputStream inputStream = file.getInputStream();
+             ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+            inputStream.transferTo(outputStream);
+            byte[] bytes = outputStream.toByteArray();
+            if (bytes.length < 44 || !"RIFF".equals(ascii(bytes, 0, 4)) || !"WAVE".equals(ascii(bytes, 8, 4))) {
+                return;
+            }
+            int offset = 12;
+            Integer byteRate = null;
+            Integer dataSize = null;
+            while (offset + 8 <= bytes.length) {
+                String chunkId = ascii(bytes, offset, 4);
+                int chunkSize = littleEndianInt(bytes, offset + 4);
+                int chunkDataStart = offset + 8;
+                if ("fmt ".equals(chunkId) && chunkDataStart + 16 <= bytes.length) {
+                    asset.setChannels(littleEndianShort(bytes, chunkDataStart + 2));
+                    asset.setSampleRate(littleEndianInt(bytes, chunkDataStart + 4));
+                    byteRate = littleEndianInt(bytes, chunkDataStart + 8);
+                    asset.setCodec("PCM");
+                } else if ("data".equals(chunkId)) {
+                    dataSize = chunkSize;
+                    break;
+                }
+                offset = chunkDataStart + chunkSize + (chunkSize % 2);
+            }
+            if (byteRate != null && byteRate > 0 && dataSize != null && dataSize > 0) {
+                asset.setDurationMs(Math.round(dataSize * 1000D / byteRate));
+            }
+        } catch (Exception ex) {
+            log.debug("无法从 WAV 文件头解析时长，fileName={}，error={}", file.getOriginalFilename(), ex.getMessage());
+        }
+    }
+
+    private String ascii(byte[] bytes, int offset, int length) {
+        return new String(bytes, offset, length, StandardCharsets.US_ASCII);
+    }
+
+    private int littleEndianShort(byte[] bytes, int offset) {
+        return (bytes[offset] & 0xff) | ((bytes[offset + 1] & 0xff) << 8);
+    }
+
+    private int littleEndianInt(byte[] bytes, int offset) {
+        return (bytes[offset] & 0xff)
+            | ((bytes[offset + 1] & 0xff) << 8)
+            | ((bytes[offset + 2] & 0xff) << 16)
+            | ((bytes[offset + 3] & 0xff) << 24);
     }
 
     private String checksum(MultipartFile file) {

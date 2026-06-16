@@ -23,7 +23,7 @@ public class UpdatePhoneNumberRequest {
     private Long nodeId;
     private Long gatewayId;
     @NotBlank
-    @Pattern(regexp = "^(EXTENSION|IVR|QUEUE|BUSINESS_HOURS|NONE)$")
+    @Pattern(regexp = "^(EXTENSION|IVR|QUEUE|VOICEMAIL|BUSINESS_HOURS|NONE)$")
     private String routeType;
     @Size(max = 64)
     private String routeTarget;

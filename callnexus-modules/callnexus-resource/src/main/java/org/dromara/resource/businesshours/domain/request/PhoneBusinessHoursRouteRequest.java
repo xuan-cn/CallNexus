@@ -11,12 +11,12 @@ public class PhoneBusinessHoursRouteRequest {
     @NotNull
     private Long planId;
     @NotBlank
-    @Pattern(regexp = "^(EXTENSION|IVR|QUEUE|HANGUP)$")
+    @Pattern(regexp = "^(EXTENSION|IVR|QUEUE|VOICEMAIL|HANGUP)$")
     private String inHoursTargetType;
     @Size(max = 64)
     private String inHoursTarget;
     @NotBlank
-    @Pattern(regexp = "^(EXTENSION|IVR|QUEUE|HANGUP)$")
+    @Pattern(regexp = "^(EXTENSION|IVR|QUEUE|VOICEMAIL|HANGUP)$")
     private String outHoursTargetType;
     @Size(max = 64)
     private String outHoursTarget;

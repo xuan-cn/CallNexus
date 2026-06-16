@@ -27,6 +27,7 @@ import org.dromara.resource.phone.mapper.PhoneNumberMapper;
 import org.dromara.resource.phone.service.PhoneNumberApplicationService;
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
 import org.dromara.resource.queue.service.CallQueueQueryService;
+import org.dromara.resource.voicemail.service.VoiceMailBoxQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,6 +40,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     private final FreeSwitchGatewayMapper gatewayMapper;
     private final IvrDialplanQueryService ivrDialplanQueryService;
     private final CallQueueQueryService callQueueQueryService;
+    private final VoiceMailBoxQueryService voiceMailBoxQueryService;
     private final PhoneBusinessHoursRouteService businessHoursRouteService;
 
     @Override
@@ -228,7 +230,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     }
 
     private void ensureRouteValid(Long nodeId, String routeType, String routeTarget) {
-        if (("EXTENSION".equals(routeType) || "IVR".equals(routeType) || "QUEUE".equals(routeType))
+        if (("EXTENSION".equals(routeType) || "IVR".equals(routeType) || "QUEUE".equals(routeType) || "VOICEMAIL".equals(routeType))
             && StringUtils.isBlank(routeTarget)) {
             throw new ServiceException("请填写号码呼入路由目标");
         }
@@ -250,6 +252,16 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
                 }
             } catch (NumberFormatException exception) {
                 throw new ServiceException("号码呼入路由目标队列不合法");
+            }
+        }
+        if ("VOICEMAIL".equals(routeType)) {
+            try {
+                Long boxId = Long.valueOf(routeTarget);
+                if (!voiceMailBoxQueryService.isAvailable(LoginHelper.getTenantId(), boxId, nodeId)) {
+                    throw new ServiceException("关联的语音留言箱未启用，或提示音未同步到目标节点");
+                }
+            } catch (NumberFormatException exception) {
+                throw new ServiceException("号码呼入路由目标语音留言箱不合法");
             }
         }
     }

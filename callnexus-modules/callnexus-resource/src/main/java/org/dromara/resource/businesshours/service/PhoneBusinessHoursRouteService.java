@@ -9,6 +9,7 @@ import org.dromara.resource.businesshours.domain.request.PhoneBusinessHoursRoute
 import org.dromara.resource.businesshours.mapper.PhoneBusinessHoursRouteMapper;
 import org.dromara.resource.ivr.service.IvrDialplanQueryService;
 import org.dromara.resource.queue.service.CallQueueQueryService;
+import org.dromara.resource.voicemail.service.VoiceMailBoxQueryService;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -18,6 +19,7 @@ public class PhoneBusinessHoursRouteService {
     private final BusinessHoursQueryService businessHoursQueryService;
     private final IvrDialplanQueryService ivrDialplanQueryService;
     private final CallQueueQueryService callQueueQueryService;
+    private final VoiceMailBoxQueryService voiceMailBoxQueryService;
 
     public PhoneBusinessHoursRoute findByPhoneNumberId(Long phoneNumberId) {
         return mapper.selectOne(new LambdaQueryWrapper<PhoneBusinessHoursRoute>()
@@ -65,6 +67,9 @@ public class PhoneBusinessHoursRouteService {
             }
             if ("QUEUE".equals(type) && callQueueQueryService.findAvailableQueue(tenantId, Long.valueOf(target), nodeId) == null) {
                 throw new ServiceException(label + "关联的呼叫队列未启用、未同步或节点不可用");
+            }
+            if ("VOICEMAIL".equals(type) && !voiceMailBoxQueryService.isAvailable(tenantId, Long.valueOf(target), nodeId)) {
+                throw new ServiceException(label + "关联的语音留言箱未启用，或提示音未同步到目标节点");
             }
         } catch (NumberFormatException exception) {
             throw new ServiceException(label + "路由目标格式不合法");

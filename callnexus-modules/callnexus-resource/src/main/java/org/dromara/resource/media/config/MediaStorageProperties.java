@@ -14,6 +14,7 @@ public class MediaStorageProperties {
     private String queueWaitMusicConfigKey = "queue-wait-music";
     private String ivrPromptConfigKey = "ivr-prompt";
     private String userMusicConfigKey = "user-music";
+    private String voicemailRecordingConfigKey = "voicemail-recording";
 
     public String getConfigKey(MediaAssetCategory category) {
         return switch (category) {
@@ -22,6 +23,7 @@ public class MediaStorageProperties {
             case QUEUE_WAIT_MUSIC -> queueWaitMusicConfigKey;
             case IVR_PROMPT -> ivrPromptConfigKey;
             case USER_MUSIC -> userMusicConfigKey;
+            case VOICEMAIL_RECORDING -> voicemailRecordingConfigKey;
         };
     }
 }

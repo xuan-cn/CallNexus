@@ -24,6 +24,7 @@ public class BusinessHoursDialplanRouteHandler implements DialplanRouteHandler {
     private final ExtensionDialplanRouteHandler extensionHandler;
     private final IvrDialplanRouteHandler ivrHandler;
     private final QueueDialplanRouteHandler queueHandler;
+    private final VoiceMailDialplanRouteHandler voiceMailHandler;
     private final ApplicationEventPublisher eventPublisher;
 
     @Override
@@ -51,6 +52,7 @@ public class BusinessHoursDialplanRouteHandler implements DialplanRouteHandler {
                 case "EXTENSION" -> extensionHandler.render(delegated);
                 case "IVR" -> ivrHandler.render(delegated);
                 case "QUEUE" -> queueHandler.render(delegated);
+                case "VOICEMAIL" -> voiceMailHandler.render(delegated);
                 default -> FreeSwitchXmlRenderer.notFound();
             };
         } catch (Exception exception) {

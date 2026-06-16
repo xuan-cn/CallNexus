@@ -327,7 +327,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         session.setEndedAt(legs.stream().allMatch(leg -> "ENDED".equals(leg.getCallStatus()))
             ? latest(legs.stream().map(CallRecord::getEndedAt).toList()) : null);
         session.setCallStatus(aggregateStatus(legs));
-        session.setDirection(aggregateDirection(legs));
+        session.setDirection(aggregateDirection(legs, session.getDirection()));
         CallRecord agentLeg = legs.stream().filter(leg -> leg.getAgentId() != null).reduce((left, right) -> right).orElse(null);
         if (agentLeg != null) {
             session.setAgentId(agentLeg.getAgentId());
@@ -391,10 +391,11 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         return "CREATED";
     }
 
-    private String aggregateDirection(List<CallRecord> legs) {
+    private String aggregateDirection(List<CallRecord> legs, String currentDirection) {
         if (legs.stream().anyMatch(leg -> "INBOUND".equals(leg.getDirection()))) return "INBOUND";
         if (legs.stream().anyMatch(leg -> "OUTBOUND".equals(leg.getDirection()))) return "OUTBOUND";
         if (legs.stream().anyMatch(leg -> "INTERNAL".equals(leg.getDirection()))) return "INTERNAL";
+        if (StringUtils.isNotBlank(currentDirection) && !"UNKNOWN".equals(currentDirection)) return currentDirection;
         return "UNKNOWN";
     }
 
