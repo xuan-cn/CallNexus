@@ -18,6 +18,8 @@ import org.dromara.call.service.CallRecordApplicationService;
 import org.dromara.call.service.QueueEventApplicationService;
 import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.redis.utils.RedisUtils;
+import org.dromara.common.sse.dto.SseMessageDto;
+import org.dromara.common.sse.utils.SseMessageUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.common.websocket.dto.WebSocketMessageDto;
 import org.dromara.common.websocket.utils.WebSocketUtils;
@@ -87,12 +89,14 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             log.info("Processing FreeSWITCH hangup event, uuid={}, relatedUuids={}, matchedAgents={}, cause={}",
                 event.uuid(), relatedUuids(event), targets.keySet(), event.hangupCause());
         }
+        if (targets.isEmpty()) {
+            log.debug("通话实时事件未匹配到坐席，不推送前端，nodeId={}，eventName={}，uuid={}，callerNumber={}，destinationNumber={}",
+                event.nodeId(), event.eventName(), event.uuid(), event.callerNumber(), event.destinationNumber());
+        }
         for (AgentRealtimeTargetResponse target : targets.values()) {
             TenantHelper.dynamic(target.getTenantId(), () -> updateTargetState(event, target));
-            WebSocketMessageDto message = new WebSocketMessageDto();
-            message.setSessionKeys(List.of(target.getUserId()));
-            message.setMessage(JsonUtils.toJsonString(toMessage(event, target)));
-            WebSocketUtils.publishMessage(message);
+            String realtimeMessage = JsonUtils.toJsonString(toMessage(event, target));
+            publishRealtimeMessage(target.getUserId(), realtimeMessage);
         }
         if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             markCallEnded(event);
@@ -101,6 +105,18 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         } else if (!targets.isEmpty()) {
             saveUuidMappings(event, targets.values());
         }
+    }
+
+    private void publishRealtimeMessage(Long userId, String realtimeMessage) {
+        WebSocketMessageDto webSocketMessage = new WebSocketMessageDto();
+        webSocketMessage.setSessionKeys(List.of(userId));
+        webSocketMessage.setMessage(realtimeMessage);
+        WebSocketUtils.publishMessage(webSocketMessage);
+
+        SseMessageDto sseMessage = new SseMessageDto();
+        sseMessage.setUserIds(List.of(userId));
+        sseMessage.setMessage(realtimeMessage);
+        SseMessageUtils.publishMessage(sseMessage);
     }
 
     private void updateTargetState(TelephonyEvent event, AgentRealtimeTargetResponse target) {

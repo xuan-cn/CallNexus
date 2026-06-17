@@ -114,22 +114,6 @@ services:
     privileged: true
     network_mode: "host"
 
-  callnexus-server2:
-    image: callnexus/callnexus-server:5.6.1
-    container_name: callnexus-server2
-    environment:
-      # 时区上海
-      TZ: Asia/Shanghai
-      SERVER_PORT: 8081
-      SNAIL_PORT: 28081
-    volumes:
-      # 配置文件
-      - /docker/server2/logs/:/callnexus/server/logs/
-      # skywalking 探针
-#      - /docker/skywalking/agent/:/callnexus/skywalking/agent
-    privileged: true
-    network_mode: "host"
-
   callnexus-monitor-admin:
     image: callnexus/callnexus-monitor-admin:5.6.1
     container_name: callnexus-monitor-admin

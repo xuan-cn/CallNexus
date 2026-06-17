@@ -14,13 +14,16 @@ import org.dromara.call.domain.CallRecord;
 import org.dromara.call.domain.CallSession;
 import org.dromara.call.domain.CallSessionCompletedEvent;
 import org.dromara.call.domain.TelephonyEvent;
+import org.dromara.call.domain.VoiceMailMessage;
 import org.dromara.call.domain.request.CallRecordPageQuery;
 import org.dromara.call.domain.response.CallEventResponse;
 import org.dromara.call.domain.response.CallLegResponse;
 import org.dromara.call.domain.response.CallRecordResponse;
+import org.dromara.call.domain.response.VoiceMailMessageResponse;
 import org.dromara.call.mapper.CallEventMapper;
 import org.dromara.call.mapper.CallRecordMapper;
 import org.dromara.call.mapper.CallSessionMapper;
+import org.dromara.call.mapper.VoiceMailMessageMapper;
 import org.dromara.call.service.CallRecordApplicationService;
 import org.dromara.call.service.CallSessionCompletedListener;
 import org.dromara.call.service.BusinessAssociationQueryService;
@@ -51,6 +54,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private final CallRecordMapper recordMapper;
     private final CallSessionMapper sessionMapper;
     private final CallEventMapper eventMapper;
+    private final VoiceMailMessageMapper voiceMailMessageMapper;
     private final AgentRealtimeQueryService agentQueryService;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final OssService ossService;
@@ -598,6 +602,37 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
                     .eq(CallEvent::getSessionId, session.getId())
                     .orderByAsc(CallEvent::getOccurredAt))
                 .stream().map(this::toEventResponse).toList());
+            response.setVoicemailMessages(voiceMailMessageMapper.selectList(new LambdaQueryWrapper<VoiceMailMessage>()
+                    .eq(VoiceMailMessage::getCallSessionId, session.getId())
+                    .orderByDesc(VoiceMailMessage::getCreateTime))
+                .stream().map(this::toVoiceMailMessageResponse).toList());
+        }
+        return response;
+    }
+
+    private VoiceMailMessageResponse toVoiceMailMessageResponse(VoiceMailMessage message) {
+        VoiceMailMessageResponse response = new VoiceMailMessageResponse();
+        response.setId(message.getId());
+        response.setVoicemailBoxId(message.getVoicemailBoxId());
+        response.setBusinessCallId(message.getBusinessCallId());
+        response.setCallSessionId(message.getCallSessionId());
+        response.setNodeId(message.getNodeId());
+        response.setCallerNumber(message.getCallerNumber());
+        response.setCalledNumber(message.getCalledNumber());
+        response.setCustomerId(message.getCustomerId());
+        response.setTicketId(message.getTicketId());
+        response.setRecordingOssId(message.getRecordingOssId());
+        response.setRecordingMediaId(message.getRecordingMediaId());
+        response.setRecordingFileName(message.getRecordingFileName());
+        response.setDurationMs(message.getDurationMs());
+        response.setStatus(message.getStatus());
+        response.setHandledBy(message.getHandledBy());
+        response.setHandledAt(message.getHandledAt());
+        response.setHandleRemark(message.getHandleRemark());
+        response.setCreateTime(message.getCreateTime());
+        response.setVersion(message.getVersion());
+        if (message.getRecordingOssId() != null) {
+            response.setPlaybackUrl(ossService.selectUrlById(message.getRecordingOssId(), RECORDING_PRESIGNED_TTL));
         }
         return response;
     }
