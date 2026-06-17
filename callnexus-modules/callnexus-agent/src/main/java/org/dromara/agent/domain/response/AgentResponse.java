@@ -10,6 +10,9 @@ public class AgentResponse {
     private String agentName;
     private Long userId;
     private Long sipAccountId;
+    private String sipExtension;
+    private String sipDisplayName;
+    private String sipDomain;
     private Boolean enabled;
     private Integer version;
     private Date createTime;

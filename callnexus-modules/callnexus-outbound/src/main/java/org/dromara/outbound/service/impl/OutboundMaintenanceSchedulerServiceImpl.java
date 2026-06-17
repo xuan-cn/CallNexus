@@ -16,6 +16,7 @@ import org.dromara.outbound.service.OutboundBlacklistMemberSyncService;
 import org.dromara.outbound.service.OutboundMaintenanceSchedulerService;
 import org.dromara.outbound.service.OutboundTaskService;
 import org.dromara.outbound.service.model.OutboundMaintenanceResult;
+import org.dromara.system.callcenterconfig.service.CallCenterConfigService;
 import org.springframework.stereotype.Service;
 import org.redisson.api.RLock;
 
@@ -28,13 +29,14 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class OutboundMaintenanceSchedulerServiceImpl implements OutboundMaintenanceSchedulerService {
 
-    private static final int CLAIM_LEASE_MINUTES = 15;
+    private static final int DEFAULT_CLAIM_LEASE_MINUTES = 15;
 
     private final OutboundTaskMapper taskMapper;
     private final OutboundMemberMapper memberMapper;
     private final OutboundTaskService taskService;
     private final OutboundBlacklistMemberSyncService blacklistMemberSyncService;
     private final AgentAvailabilityQueryService agentAvailabilityQueryService;
+    private final CallCenterConfigService callCenterConfigService;
 
     @Override
     public OutboundMaintenanceResult execute() {
@@ -136,7 +138,12 @@ public class OutboundMaintenanceSchedulerServiceImpl implements OutboundMaintena
             .set(OutboundMember::getClaimedAgentId, agent.agentId())
             .set(OutboundMember::getClaimedUserId, agent.userId())
             .set(OutboundMember::getClaimedAt, now)
-            .set(OutboundMember::getLeaseExpiresAt, now.plusMinutes(CLAIM_LEASE_MINUTES)));
+            .set(OutboundMember::getLeaseExpiresAt, now.plusMinutes(claimLeaseMinutes())));
+    }
+
+    private int claimLeaseMinutes() {
+        Integer value = callCenterConfigService.getInt("outbound.claimLeaseMinutes");
+        return value == null || value < 1 ? DEFAULT_CLAIM_LEASE_MINUTES : value;
     }
 
     private static final class Counter {

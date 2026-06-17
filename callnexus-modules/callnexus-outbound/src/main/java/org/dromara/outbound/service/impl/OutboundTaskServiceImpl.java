@@ -46,6 +46,7 @@ import org.dromara.outbound.service.OutboundTaskService;
 import org.dromara.outbound.service.OutboundBlacklistChecker;
 import org.dromara.outbound.service.OutboundBlacklistMemberSyncService;
 import org.dromara.outbound.service.PhoneNumberNormalizer;
+import org.dromara.system.callcenterconfig.service.CallCenterConfigService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -64,8 +65,8 @@ import java.util.stream.Collectors;
 public class OutboundTaskServiceImpl implements OutboundTaskService {
     private static final Set<String> EXECUTABLE_MEMBER_STATUSES = Set.of("CLAIMED", "RETRY");
     private static final DateTimeFormatter FOLLOW_UP_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final int CLAIM_LEASE_MINUTES = 15;
-    private static final int DIALING_LEASE_HOURS = 2;
+    private static final int DEFAULT_CLAIM_LEASE_MINUTES = 15;
+    private static final int DEFAULT_DIALING_LEASE_MINUTES = 120;
     private static final int DEFAULT_MAX_RETRY_COUNT = 2;
     private static final int DEFAULT_RETRY_INTERVAL_MINUTES = 30;
     private static final String DEFAULT_RETRY_RESULT_CODES = "NO_ANSWER,BUSY,OTHER";
@@ -85,6 +86,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     private final OutboundBlacklistChecker blacklistChecker;
     private final OutboundBlacklistMemberSyncService blacklistMemberSyncService;
     private final PhoneNumberNormalizer phoneNumberNormalizer;
+    private final CallCenterConfigService callCenterConfigService;
 
     @Override
     public List<OutboundTaskResponse> list() {
@@ -281,12 +283,14 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     public int recoverExpired(Long taskId) {
         requireTask(taskId);
         LocalDateTime now = LocalDateTime.now();
+        int claimLeaseMinutes = claimLeaseMinutes();
+        int dialingLeaseMinutes = dialingLeaseMinutes();
         int claimed = memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
             .eq(OutboundMember::getTaskId, taskId)
             .eq(OutboundMember::getStatus, "CLAIMED")
             .and(expired -> expired.le(OutboundMember::getLeaseExpiresAt, now)
                 .or(legacy -> legacy.isNull(OutboundMember::getLeaseExpiresAt)
-                    .le(OutboundMember::getClaimedAt, now.minusMinutes(CLAIM_LEASE_MINUTES))))
+                    .le(OutboundMember::getClaimedAt, now.minusMinutes(claimLeaseMinutes))))
             .set(OutboundMember::getStatus, "PENDING")
             .set(OutboundMember::getClaimedAgentId, null)
             .set(OutboundMember::getClaimedUserId, null)
@@ -297,7 +301,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             .eq(OutboundMember::getStatus, "DIALING")
             .and(expired -> expired.le(OutboundMember::getLeaseExpiresAt, now)
                 .or(legacy -> legacy.isNull(OutboundMember::getLeaseExpiresAt)
-                    .le(OutboundMember::getClaimedAt, now.minusHours(DIALING_LEASE_HOURS))))
+                    .le(OutboundMember::getClaimedAt, now.minusMinutes(dialingLeaseMinutes))))
             .set(OutboundMember::getStatus, "RETRY")
             .set(OutboundMember::getResultCode, "OTHER")
             .set(OutboundMember::getResultRemark, "系统检测到外呼执行超时，已自动恢复为待重呼")
@@ -310,7 +314,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             attemptMapper.update(null, new LambdaUpdateWrapper<OutboundAttempt>()
                 .eq(OutboundAttempt::getTaskId, taskId)
                 .eq(OutboundAttempt::getStatus, "DIALING")
-                .le(OutboundAttempt::getStartedAt, now.minusHours(DIALING_LEASE_HOURS))
+                .le(OutboundAttempt::getStartedAt, now.minusMinutes(dialingLeaseMinutes))
                 .set(OutboundAttempt::getStatus, "ENDED")
                 .set(OutboundAttempt::getEndedAt, now)
                 .set(OutboundAttempt::getSuggestedResultCode, "OTHER")
@@ -373,7 +377,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             .set(OutboundMember::getClaimedAgentId, agent.getAgentId())
             .set(OutboundMember::getClaimedUserId, userId)
             .set(OutboundMember::getClaimedAt, now)
-            .set(OutboundMember::getLeaseExpiresAt, now.plusMinutes(CLAIM_LEASE_MINUTES)));
+            .set(OutboundMember::getLeaseExpiresAt, now.plusMinutes(claimLeaseMinutes())));
         if (updated == 0) throw new ServiceException("该名单已被其他坐席领取，请重新领取");
         return toMemberResponse(requireMember(candidate.getId()));
     }
@@ -385,8 +389,8 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             throw new ServiceException("当前名单状态不需要续期");
         }
         LocalDateTime expiresAt = "DIALING".equals(member.getStatus())
-            ? LocalDateTime.now().plusHours(DIALING_LEASE_HOURS)
-            : LocalDateTime.now().plusMinutes(CLAIM_LEASE_MINUTES);
+            ? LocalDateTime.now().plusMinutes(dialingLeaseMinutes())
+            : LocalDateTime.now().plusMinutes(claimLeaseMinutes());
         int updated = memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
             .eq(OutboundMember::getId, memberId)
             .eq(OutboundMember::getClaimedUserId, LoginHelper.getUserId())
@@ -400,9 +404,15 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
 
     @Override
     public OutboundMemberResponse currentAssigned() {
+        CurrentAgentResponse agent = agentSessionService.current();
+        if (!agent.isConfigured() || agent.getAgentId() == null) {
+            return null;
+        }
         OutboundMember member = memberMapper.selectOne(new LambdaQueryWrapper<OutboundMember>()
             .eq(OutboundMember::getClaimedUserId, LoginHelper.getUserId())
+            .eq(OutboundMember::getClaimedAgentId, agent.getAgentId())
             .in(OutboundMember::getStatus, "CLAIMED", "DIALING")
+            .gt(OutboundMember::getLeaseExpiresAt, LocalDateTime.now())
             .orderByDesc(OutboundMember::getClaimedAt)
             .last("LIMIT 1"));
         return member == null ? null : toMemberResponse(member);
@@ -464,7 +474,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             .set(OutboundMember::getStatus, "DIALING")
             .set(OutboundMember::getBusinessCallId, call.getCallId())
             .set(OutboundMember::getAttemptCount, attemptNo)
-            .set(OutboundMember::getLeaseExpiresAt, LocalDateTime.now().plusHours(DIALING_LEASE_HOURS)));
+            .set(OutboundMember::getLeaseExpiresAt, LocalDateTime.now().plusMinutes(dialingLeaseMinutes())));
         callBusinessAssociationService.associateCustomer(call.getCallId(), member.getCustomerId());
         return toMemberResponse(requireMember(memberId));
     }
@@ -659,6 +669,19 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
 
     private double rate(long numerator, long denominator) {
         return denominator == 0 ? 0D : Math.round(numerator * 10000D / denominator) / 100D;
+    }
+
+    private int claimLeaseMinutes() {
+        return positiveConfig("outbound.claimLeaseMinutes", DEFAULT_CLAIM_LEASE_MINUTES);
+    }
+
+    private int dialingLeaseMinutes() {
+        return positiveConfig("outbound.dialingLeaseMinutes", DEFAULT_DIALING_LEASE_MINUTES);
+    }
+
+    private int positiveConfig(String configKey, int defaultValue) {
+        Integer value = callCenterConfigService.getInt(configKey);
+        return value == null || value < 1 ? defaultValue : value;
     }
 
     private OutboundMemberResponse toMemberResponse(OutboundMember member) {

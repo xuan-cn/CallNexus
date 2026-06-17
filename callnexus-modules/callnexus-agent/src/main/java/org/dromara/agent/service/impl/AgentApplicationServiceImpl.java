@@ -17,10 +17,13 @@ import org.dromara.agent.service.AgentApplicationService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.resource.sip.domain.SipAccount;
+import org.dromara.resource.sip.mapper.SipAccountMapper;
 import org.dromara.resource.sip.service.SipAccountQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -34,6 +37,7 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
     private final SkillGroupMemberMapper skillGroupMemberMapper;
     private final CallQueueMapper callQueueMapper;
     private final SipAccountQueryService sipAccountQueryService;
+    private final SipAccountMapper sipAccountMapper;
 
     @Override
     public TableDataInfo<AgentResponse> page(AgentPageQuery query, PageQuery pageQuery) {
@@ -44,7 +48,12 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
             .orderByAsc(Agent::getAgentCode);
         Page<Agent> page = agentMapper.selectPage(pageQuery.build(), wrapper);
         Map<Long, Long> extensionBindings = findExtensionBindings(page.getRecords().stream().map(Agent::getId).toList());
-        return new TableDataInfo<>(page.getRecords().stream().map(agent -> toResponse(agent, extensionBindings.get(agent.getId()))).toList(), page.getTotal());
+        Map<Long, SipAccount> sipAccounts = findSipAccounts(extensionBindings.values());
+        return new TableDataInfo<>(page.getRecords().stream()
+            .map(agent -> {
+                Long sipAccountId = extensionBindings.get(agent.getId());
+                return toResponse(agent, sipAccountId, sipAccounts.get(sipAccountId));
+            }).toList(), page.getTotal());
     }
 
     @Override
@@ -52,7 +61,9 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         Agent agent = agentMapper.selectById(id);
         if (agent == null) throw new ServiceException("坐席不存在");
         AgentExtension binding = extensionMapper.selectOne(new LambdaQueryWrapper<AgentExtension>().eq(AgentExtension::getAgentId, id));
-        return toResponse(agent, binding == null ? null : binding.getSipAccountId());
+        Long sipAccountId = binding == null ? null : binding.getSipAccountId();
+        SipAccount sipAccount = sipAccountId == null ? null : sipAccountMapper.selectById(sipAccountId);
+        return toResponse(agent, sipAccountId, sipAccount);
     }
 
     @Override
@@ -137,13 +148,25 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
             .collect(Collectors.toMap(AgentExtension::getAgentId, AgentExtension::getSipAccountId));
     }
 
-    private AgentResponse toResponse(Agent agent, Long sipAccountId) {
+    private Map<Long, SipAccount> findSipAccounts(Collection<Long> sipAccountIds) {
+        List<Long> ids = sipAccountIds.stream().filter(id -> id != null).distinct().toList();
+        if (ids.isEmpty()) return Collections.emptyMap();
+        return sipAccountMapper.selectBatchIds(ids).stream()
+            .collect(Collectors.toMap(SipAccount::getId, account -> account));
+    }
+
+    private AgentResponse toResponse(Agent agent, Long sipAccountId, SipAccount sipAccount) {
         AgentResponse response = new AgentResponse();
         response.setId(agent.getId());
         response.setAgentCode(agent.getAgentCode());
         response.setAgentName(agent.getAgentName());
         response.setUserId(agent.getUserId());
         response.setSipAccountId(sipAccountId);
+        if (sipAccount != null) {
+            response.setSipExtension(sipAccount.getExtension());
+            response.setSipDisplayName(sipAccount.getDisplayName());
+            response.setSipDomain(sipAccount.getDomain());
+        }
         response.setEnabled(agent.getEnabled());
         response.setVersion(agent.getVersion());
         response.setCreateTime(agent.getCreateTime());
