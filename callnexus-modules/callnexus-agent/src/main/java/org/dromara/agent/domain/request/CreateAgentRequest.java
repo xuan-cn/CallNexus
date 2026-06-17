@@ -14,4 +14,5 @@ public class CreateAgentRequest {
     @Size(max = 64)
     private String agentName;
     private Long userId;
+    private Long callerNumberId;
 }

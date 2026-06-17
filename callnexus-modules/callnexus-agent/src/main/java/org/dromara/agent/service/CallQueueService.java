@@ -207,6 +207,7 @@ public class CallQueueService implements CallQueueQueryService {
         queue.setSkillGroupId(request.getSkillGroupId());
         queue.setStrategy(request.getStrategy());
         queue.setWaitMediaId(request.getWaitMediaId());
+        queue.setCallerNumberId(request.getCallerNumberId());
         queue.setMaxWaitSeconds(request.getMaxWaitSeconds());
         queue.setRingTimeoutSeconds(request.getRingTimeoutSeconds());
         queue.setMaxNoAnswer(request.getMaxNoAnswer());
@@ -238,6 +239,7 @@ public class CallQueueService implements CallQueueQueryService {
         response.setSkillGroupName(skillGroup == null ? null : skillGroup.getGroupName());
         response.setStrategy(queue.getStrategy());
         response.setWaitMediaId(queue.getWaitMediaId());
+        response.setCallerNumberId(queue.getCallerNumberId());
         response.setMaxWaitSeconds(queue.getMaxWaitSeconds());
         response.setRingTimeoutSeconds(queue.getRingTimeoutSeconds());
         response.setMaxNoAnswer(queue.getMaxNoAnswer());

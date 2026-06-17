@@ -1,12 +1,12 @@
 package org.dromara.call.service.impl;
 
 import lombok.RequiredArgsConstructor;
+import org.dromara.agent.domain.AgentActiveCall;
 import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.response.CurrentAgentResponse;
 import org.dromara.agent.service.CurrentAgentSessionService;
-import org.dromara.agent.domain.AgentActiveCall;
-import org.dromara.call.domain.EslEndpoint;
 import org.dromara.call.domain.CallOriginateContext;
+import org.dromara.call.domain.EslEndpoint;
 import org.dromara.call.domain.OutboundRoute;
 import org.dromara.call.domain.response.CallControlResponse;
 import org.dromara.call.service.CallControlApplicationService;
@@ -16,9 +16,9 @@ import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionResponse;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
-import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
-import org.dromara.resource.phone.service.PhoneNumberQueryService;
-import org.dromara.resource.sip.service.SipAccountQueryService;
+import org.dromara.resource.outboundauth.domain.OutboundAuthorizationCommand;
+import org.dromara.resource.outboundauth.domain.OutboundAuthorizationResult;
+import org.dromara.resource.outboundauth.service.OutboundAuthorizationService;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -33,8 +33,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     private final CurrentAgentSessionService agentSessionService;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final TelephonyCommandGateway telephonyCommandGateway;
-    private final SipAccountQueryService sipAccountQueryService;
-    private final PhoneNumberQueryService phoneNumberQueryService;
+    private final OutboundAuthorizationService outboundAuthorizationService;
 
     @Override
     public CallControlResponse originate(String destination) {
@@ -55,15 +54,17 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
         String callId = context != null && context.businessCallId() != null && !context.businessCallId().isBlank()
             ? context.businessCallId() : UUID.randomUUID().toString();
-        OutboundRoute outboundRoute = resolveOutboundRoute(agent, destination);
-        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), destination, outboundRoute,
+        OutboundAuthorizationResult authorization = authorizeOutbound(agent, destination, context);
+        OutboundRoute outboundRoute = toOutboundRoute(authorization);
+        String authorizedDestination = authorization.normalizedCallee();
+        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), authorizedDestination, outboundRoute,
             context == null ? CallOriginateContext.empty() : context);
 
         AgentActiveCall activeCall = new AgentActiveCall();
         activeCall.setCallId(callId);
         activeCall.setAgentId(agent.getAgentId());
         activeCall.setAgentExtension(agent.getExtension());
-        activeCall.setDestination(destination);
+        activeCall.setDestination(authorizedDestination);
         activeCall.setExternal(outboundRoute.isExternal());
         activeCall.setGatewayCode(outboundRoute.getGatewayCode());
         activeCall.setCallerIdNumber(outboundRoute.getCallerIdNumber());
@@ -108,16 +109,33 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         return ACTIVE_CALL_KEY_PREFIX + LoginHelper.getTenantId() + ":" + agentId;
     }
 
-    private OutboundRoute resolveOutboundRoute(CurrentAgentResponse agent, String destination) {
-        if (sipAccountQueryService.findEnabledByNodeAndExtension(agent.getNodeId(), destination) != null) {
+    private OutboundAuthorizationResult authorizeOutbound(CurrentAgentResponse agent, String destination, CallOriginateContext context) {
+        OutboundAuthorizationResult result = outboundAuthorizationService.authorize(new OutboundAuthorizationCommand(
+            LoginHelper.getTenantId(),
+            "AGENT_ORIGINATE",
+            agent.getNodeId(),
+            agent.getSipDomain(),
+            null,
+            agent.getAgentId(),
+            LoginHelper.getUserId(),
+            agent.getExtension(),
+            destination,
+            context != null && context.callerNumberId() != null ? context.callerNumberId() : agent.getCallerNumberId(),
+            context == null ? null : context.outboundTaskId(),
+            context == null ? null : context.outboundMemberId(),
+            context == null ? null : context.customerId()
+        ));
+        if (!result.allowed()) {
+            throw new ServiceException(result.rejectMessage());
+        }
+        return result;
+    }
+
+    private OutboundRoute toOutboundRoute(OutboundAuthorizationResult authorization) {
+        if (!authorization.external()) {
             return OutboundRoute.internal();
         }
-        String tenantId = LoginHelper.getTenantId();
-        PhoneNumberOutboundRouteResponse route = phoneNumberQueryService.findDefaultOutboundRoute(tenantId, agent.getNodeId());
-        if (route == null) {
-            throw new ServiceException("未配置默认外呼号码路由");
-        }
-        return OutboundRoute.external(route.getGatewayCode(), route.getNumber());
+        return OutboundRoute.external(authorization.outboundRoute().getGatewayCode(), authorization.outboundRoute().getNumber());
     }
 
     private CallControlResponse toResponse(AgentActiveCall call) {

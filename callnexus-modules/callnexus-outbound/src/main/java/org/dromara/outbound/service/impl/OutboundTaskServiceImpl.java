@@ -437,7 +437,8 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         attempt.setTaskId(member.getTaskId());
         attempt.setMemberId(member.getId());
         attempt.setCustomerId(member.getCustomerId());
-        attempt.setTaskName(requireTask(member.getTaskId()).getTaskName());
+        OutboundTask task = requireTask(member.getTaskId());
+        attempt.setTaskName(task.getTaskName());
         attempt.setCustomerName(member.getCustomerName());
         attempt.setPhoneNumber(member.getPhoneNumber());
         attempt.setAgentId(member.getClaimedAgentId());
@@ -452,7 +453,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         CallControlResponse call;
         try {
             call = callControlService.originate(member.getPhoneNumber(),
-                new CallOriginateContext(businessCallId, member.getCustomerId(), member.getTaskId(), member.getId()));
+                new CallOriginateContext(businessCallId, member.getCustomerId(), member.getTaskId(), member.getId(), task.getCallerNumberId()));
         } catch (RuntimeException exception) {
             attemptMapper.update(null, new LambdaUpdateWrapper<OutboundAttempt>()
                 .eq(OutboundAttempt::getId, attempt.getId())
@@ -586,6 +587,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         task.setTaskCode(request.getTaskCode().trim());
         task.setTaskName(request.getTaskName().trim());
         task.setDescription(request.getDescription());
+        task.setCallerNumberId(request.getCallerNumberId());
         task.setAutoRetryEnabled(request.getAutoRetryEnabled() == null || request.getAutoRetryEnabled());
         task.setMaxRetryCount(request.getMaxRetryCount() == null ? DEFAULT_MAX_RETRY_COUNT : request.getMaxRetryCount());
         task.setRetryIntervalMinutes(request.getRetryIntervalMinutes() == null
@@ -636,6 +638,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setTaskType(task.getTaskType());
         response.setStatus(task.getStatus());
         response.setDescription(task.getDescription());
+        response.setCallerNumberId(task.getCallerNumberId());
         response.setAutoRetryEnabled(task.getAutoRetryEnabled());
         response.setMaxRetryCount(task.getMaxRetryCount());
         response.setRetryIntervalMinutes(task.getRetryIntervalMinutes());

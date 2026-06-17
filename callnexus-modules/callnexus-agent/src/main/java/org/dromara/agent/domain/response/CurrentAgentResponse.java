@@ -12,6 +12,7 @@ public class CurrentAgentResponse {
     private String agentCode;
     private String agentName;
     private Long userId;
+    private Long callerNumberId;
     private Long sipAccountId;
     private Long nodeId;
     private String extension;

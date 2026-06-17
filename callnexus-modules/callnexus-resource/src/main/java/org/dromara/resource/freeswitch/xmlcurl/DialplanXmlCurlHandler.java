@@ -7,12 +7,14 @@ import org.dromara.resource.freeswitch.xml.dialplan.FreeSwitchDialplanXmlRendere
 import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteContext;
 import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteHandler;
 import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteHandlerRegistry;
+import org.dromara.resource.ivr.service.IvrDialplanQueryService;
+import org.dromara.resource.outboundauth.domain.OutboundAuthorizationCommand;
+import org.dromara.resource.outboundauth.domain.OutboundAuthorizationResult;
+import org.dromara.resource.outboundauth.service.OutboundAuthorizationService;
 import org.dromara.resource.phone.domain.response.PhoneNumberDialplanRouteResponse;
-import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
 import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
 import org.dromara.resource.sip.service.SipAccountQueryService;
-import org.dromara.resource.ivr.service.IvrDialplanQueryService;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -24,6 +26,7 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
     private final FreeSwitchDialplanXmlRenderer dialplanXmlRenderer;
     private final IvrDialplanQueryService ivrDialplanQueryService;
     private final DialplanRouteHandlerRegistry routeHandlerRegistry;
+    private final OutboundAuthorizationService outboundAuthorizationService;
 
     @Override
     public boolean supports(FreeSwitchXmlCurlRequest request) {
@@ -40,12 +43,14 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
             String activeFlowId = request.firstValue("variable_callnexus_ivr_flow_id");
             if (activeFlowId == null || activeFlowId.isBlank()) activeFlowId = request.firstValue("callnexus_ivr_flow_id");
             if (!String.valueOf(internalIvrFlowId).equals(activeFlowId)) {
-                log.warn("拒绝未携带有效流程上下文的IVR内部目标，destinationNumber={}，tenantId={}", destinationNumber, request.tenantId());
+                log.warn("拒绝未携带有效流程上下文的 IVR 内部目标，destinationNumber={}，tenantId={}",
+                    destinationNumber, request.tenantId());
                 return FreeSwitchXmlRenderer.notFound();
             }
             return ivrDialplanQueryService.renderPublishedFlow(request.tenantId(), internalIvrFlowId, null,
                 destinationNumber, context, domain);
         }
+
         SipDirectoryAccountResponse internalAccount = findInternalAccount(request, context, domain, destinationNumber);
         if (internalAccount != null) {
             String xml = dialplanXmlRenderer.renderInternalExtensionRoute(internalAccount, context);
@@ -53,20 +58,22 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
                 context, destinationNumber, internalAccount.getDomain(), callerNumber(request), request.tenantId(), xml.length());
             return xml;
         }
+
         PhoneNumberDialplanRouteResponse route = phoneNumberQueryService.findDialplanRoute(request.tenantId(), domain, destinationNumber);
         if (route == null) {
-            PhoneNumberOutboundRouteResponse outboundRoute = findOutboundRoute(request, context);
-            if (outboundRoute != null) {
-                String xml = dialplanXmlRenderer.renderOutboundRoute(outboundRoute, context, destinationNumber);
+            OutboundAuthorizationResult authorization = authorizeOutbound(request, context, domain, destinationNumber);
+            if (authorization.allowed() && authorization.external()) {
+                String xml = dialplanXmlRenderer.renderOutboundRoute(authorization.outboundRoute(), context, authorization.normalizedCallee());
                 log.info("FreeSWITCH 动态拨号计划匹配到默认外呼路由，context={}，destinationNumber={}，callerNumber={}，gatewayCode={}，callerIdNumber={}，tenantId={}，返回XML长度={}",
-                    context, destinationNumber, callerNumber(request), outboundRoute.getGatewayCode(), outboundRoute.getNumber(),
-                    request.tenantId(), xml.length());
+                    context, authorization.normalizedCallee(), callerNumber(request), authorization.outboundRoute().getGatewayCode(),
+                    authorization.outboundRoute().getNumber(), request.tenantId(), xml.length());
                 return xml;
             }
-            log.info("FreeSWITCH 动态拨号计划请求未匹配到号码路由，context={}，domain={}，destinationNumber={}，callerNumber={}，tenantId={}",
-                context, domain, destinationNumber, callerNumber(request), request.tenantId());
+            log.info("FreeSWITCH 动态拨号计划请求未匹配到可用路由，context={}，domain={}，destinationNumber={}，callerNumber={}，tenantId={}，rejectCode={}",
+                context, domain, destinationNumber, callerNumber(request), request.tenantId(), authorization.rejectCode());
             return FreeSwitchXmlRenderer.notFound();
         }
+
         DialplanRouteHandler routeHandler = routeHandlerRegistry.find(route.getRouteType()).orElse(null);
         if (routeHandler == null) {
             log.info("FreeSWITCH 动态拨号计划匹配到暂不支持的路由类型，number={}，routeType={}，tenantId={}",
@@ -82,10 +89,26 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         return sipAccountQueryService.findDirectoryAccount(request.tenantId(), domain, destinationNumber);
     }
 
-    private PhoneNumberOutboundRouteResponse findOutboundRoute(FreeSwitchXmlCurlRequest request, String context) {
-        if (!"default".equalsIgnoreCase(context)) return null;
-        return phoneNumberQueryService.findDefaultOutboundRoute(
-            request.tenantId(), domain(request), request.firstValue("FreeSWITCH-IPv4"));
+    private OutboundAuthorizationResult authorizeOutbound(FreeSwitchXmlCurlRequest request, String context,
+                                                          String domain, String destinationNumber) {
+        if (!"default".equalsIgnoreCase(context)) {
+            return OutboundAuthorizationResult.reject("DIALPLAN_CONTEXT_NOT_ALLOWED", "当前拨号计划上下文不允许默认外呼", destinationNumber);
+        }
+        return outboundAuthorizationService.authorize(new OutboundAuthorizationCommand(
+            request.tenantId(),
+            "FREESWITCH_DIALPLAN",
+            null,
+            domain,
+            request.firstValue("FreeSWITCH-IPv4"),
+            null,
+            null,
+            callerNumber(request),
+            destinationNumber,
+            null,
+            null,
+            null,
+            null
+        ));
     }
 
     private String destinationNumber(FreeSwitchXmlCurlRequest request) {

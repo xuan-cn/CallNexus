@@ -16,6 +16,7 @@ public class CallQueue extends TenantEntity {
     private Long skillGroupId;
     private String strategy;
     private Long waitMediaId;
+    private Long callerNumberId;
     private Integer maxWaitSeconds;
     private Integer ringTimeoutSeconds;
     private Integer maxNoAnswer;

@@ -17,6 +17,7 @@ public class OutboundTaskRequest {
     private String taskName;
     @Size(max = 500)
     private String description;
+    private Long callerNumberId;
     private Boolean autoRetryEnabled;
     @Min(0)
     @Max(10)

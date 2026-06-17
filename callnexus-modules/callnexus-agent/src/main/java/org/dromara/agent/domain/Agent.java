@@ -17,6 +17,7 @@ public class Agent extends TenantEntity {
     private String agentCode;
     private String agentName;
     private Long userId;
+    private Long callerNumberId;
     private Boolean enabled;
     @Version
     private Integer version;

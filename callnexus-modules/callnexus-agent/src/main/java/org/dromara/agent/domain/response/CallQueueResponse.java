@@ -17,6 +17,7 @@ public class CallQueueResponse {
     private String skillGroupName;
     private String strategy;
     private Long waitMediaId;
+    private Long callerNumberId;
     private Integer maxWaitSeconds;
     private Integer ringTimeoutSeconds;
     private Integer maxNoAnswer;

@@ -15,6 +15,7 @@ public class UpdateAgentRequest {
     @Size(max = 64)
     private String agentName;
     private Long userId;
+    private Long callerNumberId;
     @NotNull
     private Boolean enabled;
     @NotNull

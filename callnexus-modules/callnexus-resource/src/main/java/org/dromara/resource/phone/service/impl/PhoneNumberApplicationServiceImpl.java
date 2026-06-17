@@ -198,6 +198,21 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     }
 
     @Override
+    public PhoneNumberOutboundRouteResponse findOutboundRouteByNumberId(String tenantId, Long nodeId, Long numberId) {
+        if (nodeId == null || numberId == null) return null;
+        return TenantHelper.dynamic(tenantId, () -> {
+            PhoneNumber number = mapper.selectOne(new LambdaQueryWrapper<PhoneNumber>()
+                .eq(PhoneNumber::getId, numberId)
+                .eq(PhoneNumber::getNodeId, nodeId)
+                .eq(PhoneNumber::getEnabled, true)
+                .isNotNull(PhoneNumber::getGatewayId)
+                .in(PhoneNumber::getNumberType, "CALLER_ID", "BOTH")
+                .last("limit 1"));
+            return number == null ? null : toOutboundRoute(tenantId, nodeId, number);
+        });
+    }
+
+    @Override
     public PhoneNumberOutboundRouteResponse findDefaultOutboundRoute(String tenantId, String domain, String switchIpv4) {
         return TenantHelper.dynamic(tenantId, () -> {
             FreeSwitchNode node = findEnabledNodeByDomain(domain);
@@ -214,6 +229,23 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
             }
             return findDefaultOutboundRoute(tenantId, node.getId());
         });
+    }
+
+    private PhoneNumberOutboundRouteResponse toOutboundRoute(String tenantId, Long nodeId, PhoneNumber number) {
+        FreeSwitchGateway gateway = gatewayMapper.selectById(number.getGatewayId());
+        if (gateway == null || !Boolean.TRUE.equals(gateway.getEnabled()) || !nodeId.equals(gateway.getNodeId())
+            || !("OUTBOUND".equals(gateway.getDirection()) || "BOTH".equals(gateway.getDirection()))) {
+            log.warn("外呼主叫号码绑定的网关不可用，tenantId={}，nodeId={}，number={}，gatewayId={}",
+                tenantId, nodeId, number.getNumber(), number.getGatewayId());
+            return null;
+        }
+        PhoneNumberOutboundRouteResponse response = new PhoneNumberOutboundRouteResponse();
+        response.setNumberId(number.getId());
+        response.setNumber(number.getNumber());
+        response.setGatewayId(gateway.getId());
+        response.setGatewayCode(gateway.getGatewayCode());
+        response.setGatewayName(gateway.getGatewayName());
+        return response;
     }
 
     private void ensureNodeExists(Long nodeId) {

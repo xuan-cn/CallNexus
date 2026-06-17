@@ -147,6 +147,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
         response.setAgentCode(agent.getAgentCode());
         response.setAgentName(agent.getAgentName());
         response.setUserId(agent.getUserId());
+        response.setCallerNumberId(agent.getCallerNumberId());
         AgentExtension binding = findExtension(agent.getId());
         if (binding != null) {
             response.setSipAccountId(binding.getSipAccountId());

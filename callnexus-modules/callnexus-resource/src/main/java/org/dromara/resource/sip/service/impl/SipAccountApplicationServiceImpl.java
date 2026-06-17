@@ -76,7 +76,10 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         account.setDomain(node.getSipDomain());
         account.setEnabled(request.getEnabled());
         account.setVersion(request.getVersion());
-        if (request.getPassword() != null && !request.getPassword().isBlank()) account.setAuthPassword(request.getPassword());
+        if (request.getPassword() != null && !request.getPassword().isBlank()) {
+            if (request.getPassword().length() < 12) throw new ServiceException("SIP 分机新密码至少 12 位");
+            account.setAuthPassword(request.getPassword());
+        }
         if (mapper.updateById(account) != 1) throw new ServiceException("SIP 分机已被其他用户修改，请刷新后重试");
     }
 

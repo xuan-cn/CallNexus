@@ -19,7 +19,7 @@ public class UpdateSipAccountRequest {
     @NotBlank
     @Size(max = 128)
     private String domain;
-    @Size(min = 12, max = 128)
+    @Size(max = 128)
     private String password;
     @NotNull
     private Boolean enabled;

@@ -11,6 +11,7 @@ public class CallQueueRequest {
     @NotNull private Long skillGroupId;
     @NotBlank private String strategy;
     private Long waitMediaId;
+    private Long callerNumberId;
     @NotNull @Min(10) @Max(86400) private Integer maxWaitSeconds;
     @NotNull @Min(5) @Max(300) private Integer ringTimeoutSeconds;
     @NotNull @Min(0) @Max(100) private Integer maxNoAnswer;

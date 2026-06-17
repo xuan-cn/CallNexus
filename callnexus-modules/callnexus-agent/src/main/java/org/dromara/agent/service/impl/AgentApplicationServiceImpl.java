@@ -74,6 +74,7 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         agent.setAgentCode(request.getAgentCode());
         agent.setAgentName(request.getAgentName());
         agent.setUserId(request.getUserId());
+        agent.setCallerNumberId(request.getCallerNumberId());
         agent.setEnabled(true);
         agentMapper.insert(agent);
         return agent.getId();
@@ -88,6 +89,7 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         agent.setAgentCode(request.getAgentCode());
         agent.setAgentName(request.getAgentName());
         agent.setUserId(request.getUserId());
+        agent.setCallerNumberId(request.getCallerNumberId());
         agent.setEnabled(request.getEnabled());
         agent.setVersion(request.getVersion());
         if (agentMapper.updateById(agent) != 1) throw new ServiceException("坐席信息已被其他用户修改，请刷新后重试");
@@ -161,6 +163,7 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         response.setAgentCode(agent.getAgentCode());
         response.setAgentName(agent.getAgentName());
         response.setUserId(agent.getUserId());
+        response.setCallerNumberId(agent.getCallerNumberId());
         response.setSipAccountId(sipAccountId);
         if (sipAccount != null) {
             response.setSipExtension(sipAccount.getExtension());
