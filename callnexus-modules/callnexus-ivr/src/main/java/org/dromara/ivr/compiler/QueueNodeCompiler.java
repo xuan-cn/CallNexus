@@ -58,10 +58,64 @@ public class QueueNodeCompiler implements IvrNodeCompiler {
         context.xml().append("      <action application=\"set\" data=\"callnexus_ivr_queue_code=")
             .append(context.renderSupport().escape(queue.getQueueCode()))
             .append("\"/>\n");
+        context.xml().append("      <action application=\"set\" data=\"callnexus_node_id=")
+            .append(context.freeSwitchNodeId())
+            .append("\"/>\n");
+        if (Boolean.TRUE.equals(queue.getMaskCallerNumber())) {
+            context.xml().append("      <action application=\"set\" data=\"effective_caller_id_number=anonymous\"/>\n");
+            context.xml().append("      <action application=\"set\" data=\"effective_caller_id_name=匿名来电\"/>\n");
+        }
+        if (queue.getForceWaitSeconds() != null && queue.getForceWaitSeconds() > 0) {
+            context.xml().append("      <action application=\"sleep\" data=\"")
+                .append(queue.getForceWaitSeconds() * 1000)
+                .append("\"/>\n");
+        }
+        context.xml().append("      <action application=\"set\" data=\"hangup_after_bridge=true\"/>\n");
         context.xml().append("      <action application=\"callcenter\" data=\"")
             .append(context.renderSupport().escape(queue.getQueueCode()))
             .append("@default\"/>\n");
+        appendQueueExitAction(context, queue);
         context.renderSupport().appendNodeEnd(context.xml());
+    }
+
+    private void appendQueueExitAction(IvrNodeContext context, CallQueueDialplanResponse queue) {
+        String action = queue.getTimeoutAction() == null ? "HANGUP" : queue.getTimeoutAction();
+        switch (action) {
+            case "CONTINUE" -> {
+                context.xml().append("      <action application=\"callcenter\" data=\"")
+                    .append(context.renderSupport().escape(queue.getQueueCode()))
+                    .append("@default\"/>\n");
+                context.renderSupport().appendHangup(context.xml(), "NORMAL_CLEARING");
+            }
+            case "VOICEMAIL" -> appendInternalTransfer(context, "callnexus_queue_voicemail_" + safeTarget(queue.getTimeoutTarget()));
+            case "IVR" -> appendInternalTransfer(context, "callnexus_queue_ivr_" + safeTarget(queue.getTimeoutTarget()));
+            case "EXTENSION" -> {
+                context.xml().append("      <action application=\"bridge\" data=\"user/")
+                    .append(context.renderSupport().escape(safeTarget(queue.getTimeoutTarget())))
+                    .append("@")
+                    .append(context.renderSupport().escape(context.sipDomain()))
+                    .append("\"/>\n");
+                context.renderSupport().appendHangup(context.xml(), "NORMAL_CLEARING");
+            }
+            case "QUEUE" -> {
+                context.xml().append("      <action application=\"callcenter\" data=\"")
+                    .append(context.renderSupport().escape(queue.getTimeoutTargetQueueCode()))
+                    .append("@default\"/>\n");
+                context.renderSupport().appendHangup(context.xml(), "NORMAL_CLEARING");
+            }
+            default -> context.renderSupport().appendHangup(context.xml(), "NORMAL_CLEARING");
+        }
+    }
+
+    private void appendInternalTransfer(IvrNodeContext context, String destination) {
+        context.xml().append("      <action application=\"set\" data=\"callnexus_internal_transfer=QUEUE\"/>\n");
+        context.xml().append("      <action application=\"transfer\" data=\"")
+            .append(context.renderSupport().escape(destination))
+            .append(" XML ${context}\"/>\n");
+    }
+
+    private String safeTarget(String value) {
+        return value == null ? "" : value.replaceAll("[^A-Za-z0-9_#*+-]", "");
     }
 
     private Long queueId(String value) {

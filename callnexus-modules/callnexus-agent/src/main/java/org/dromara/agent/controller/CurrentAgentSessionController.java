@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.agent.domain.request.ChangeAgentStatusRequest;
 import org.dromara.agent.domain.response.CurrentAgentResponse;
+import org.dromara.agent.domain.response.CurrentAgentWebRtcConfigResponse;
 import org.dromara.agent.service.CurrentAgentSessionService;
 import org.dromara.common.core.domain.R;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -24,6 +25,11 @@ public class CurrentAgentSessionController {
     @GetMapping("/me")
     public R<CurrentAgentResponse> current() {
         return R.ok(sessionService.current());
+    }
+
+    @GetMapping("/webrtc-config")
+    public R<CurrentAgentWebRtcConfigResponse> webRtcConfig() {
+        return R.ok(sessionService.webRtcConfig());
     }
 
     @PutMapping("/sign-in")

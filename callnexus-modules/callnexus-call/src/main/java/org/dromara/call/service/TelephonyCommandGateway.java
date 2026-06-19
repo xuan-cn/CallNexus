@@ -8,5 +8,9 @@ public interface TelephonyCommandGateway {
     void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination, OutboundRoute outboundRoute,
                    CallOriginateContext context);
     void hangup(EslEndpoint endpoint, String callId);
+    void hold(EslEndpoint endpoint, String callId);
+    void unhold(EslEndpoint endpoint, String callId);
+    void blindTransfer(EslEndpoint endpoint, String callId, String targetExtension);
+    void originateConsultation(EslEndpoint endpoint, String consultCallId, String agentExtension, String targetExtension);
     boolean callExists(EslEndpoint endpoint, String callId);
 }

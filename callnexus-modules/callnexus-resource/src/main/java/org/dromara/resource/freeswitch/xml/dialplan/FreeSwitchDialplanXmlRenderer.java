@@ -57,6 +57,7 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="set" data="callnexus_route_type=QUEUE"/>
                       <action application="set" data="callnexus_queue_id=%s"/>
                       <action application="set" data="callnexus_queue_code=%s"/>
+                      <action application="set" data="callnexus_node_id=%s"/>
                       <action application="export" data="callnexus_business_call_id=${uuid}"/>
                       <action application="export" data="callnexus_direction=INBOUND"/>
                       <action application="export" data="callnexus_original_caller=${caller_id_number}"/>
@@ -66,13 +67,92 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
                       <action application="record_session" data="${callnexus_recording_path}"/>
                       <action application="answer"/>
+                      %s%s
+                      <action application="set" data="hangup_after_bridge=true"/>
                       <action application="callcenter" data="%s"/>
+                      %s
                     </condition>
                   </extension>
                 </context>
               </section>
             </document>
-            """.formatted(dialplanContext, number, number, route.getId(), queue.getId(), queueName, number, queueName);
+            """.formatted(dialplanContext, number, number, route.getId(), queue.getId(), queueName, route.getNodeId(), number,
+            maskCallerActions(queue), forceWaitAction(queue), queueName, queueExitActions(queue, queueName, context));
+    }
+
+    public String renderInternalVoiceMailRoute(String destinationNumber, VoiceMailDialplanResponse box, String context) {
+        String number = FreeSwitchXmlRenderer.escape(destinationNumber);
+        String dialplanContext = FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "public" : context);
+        String promptPath = FreeSwitchXmlRenderer.escape(box.getPromptPath());
+        return """
+            <document type="freeswitch/xml">
+              <section name="dialplan" description="CallNexus Dynamic Dialplan">
+                <context name="%s">
+                  <extension name="callnexus_internal_voicemail_%s" continue="false">
+                    <condition field="destination_number" expression="^%s$">
+                      <action application="set" data="callnexus_route_type=VOICEMAIL"/>
+                      <action application="set" data="callnexus_voicemail_box_id=%s"/>
+                      <action application="answer"/>
+                      <action application="sleep" data="300"/>
+                      <action application="playback" data="%s"/>
+                      <action application="playback" data="tone_stream://%%(1000,0,640)"/>
+                      <action application="set" data="callnexus_voicemail_path=/var/lib/freeswitch/recordings/${callnexus_business_call_id}-voicemail.wav"/>
+                      <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-voicemail.sh ${callnexus_business_call_id} ${callnexus_voicemail_path} %s ${caller_id_number} ${callnexus_original_called}"/>
+                      <action application="record" data="${callnexus_voicemail_path} %s %s %s"/>
+                      <action application="hangup" data="NORMAL_CLEARING"/>
+                    </condition>
+                  </extension>
+                </context>
+              </section>
+            </document>
+            """.formatted(dialplanContext, number, number, box.getId(), promptPath, box.getId(),
+            box.getMaxSeconds(), box.getSilenceThreshold(), box.getSilenceHits());
+    }
+
+    private String maskCallerActions(CallQueueDialplanResponse queue) {
+        if (!Boolean.TRUE.equals(queue.getMaskCallerNumber())) {
+            return "";
+        }
+        return """
+                      <action application="set" data="effective_caller_id_number=anonymous"/>
+                      <action application="set" data="effective_caller_id_name=匿名来电"/>
+                      """;
+    }
+
+    private String forceWaitAction(CallQueueDialplanResponse queue) {
+        Integer seconds = queue.getForceWaitSeconds();
+        if (seconds == null || seconds <= 0) {
+            return "";
+        }
+        return "                      <action application=\"sleep\" data=\"" + (seconds * 1000) + "\"/>\n";
+    }
+
+    private String queueExitActions(CallQueueDialplanResponse queue, String currentQueueName, String context) {
+        String action = queue.getTimeoutAction() == null || queue.getTimeoutAction().isBlank() ? "HANGUP" : queue.getTimeoutAction();
+        String target = queue.getTimeoutTarget();
+        return switch (action) {
+            case "CONTINUE" -> "                      <action application=\"callcenter\" data=\"" + currentQueueName + "\"/>\n"
+                + "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
+            case "VOICEMAIL" -> internalTransfer("callnexus_queue_voicemail_" + safeTarget(target), context);
+            case "IVR" -> internalTransfer("callnexus_queue_ivr_" + safeTarget(target), context);
+            case "EXTENSION" -> "                      <action application=\"bridge\" data=\"user/"
+                + FreeSwitchXmlRenderer.escape(safeTarget(target)) + "@${domain_name}\"/>\n"
+                + "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
+            case "QUEUE" -> "                      <action application=\"callcenter\" data=\""
+                + FreeSwitchXmlRenderer.escape(queue.getTimeoutTargetQueueCode() + "@default") + "\"/>\n"
+                + "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
+            default -> "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
+        };
+    }
+
+    private String internalTransfer(String destination, String context) {
+        return "                      <action application=\"set\" data=\"callnexus_internal_transfer=QUEUE\"/>\n"
+            + "                      <action application=\"transfer\" data=\"" + FreeSwitchXmlRenderer.escape(destination)
+            + " XML " + FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "public" : context) + "\"/>\n";
+    }
+
+    private String safeTarget(String value) {
+        return value == null ? "" : value.replaceAll("[^A-Za-z0-9_#*+-]", "");
     }
 
     public String renderVoiceMailRoute(PhoneNumberDialplanRouteResponse route, VoiceMailDialplanResponse box, String context) {

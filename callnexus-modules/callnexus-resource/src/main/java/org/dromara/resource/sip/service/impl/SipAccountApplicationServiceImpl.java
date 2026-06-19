@@ -103,6 +103,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         response.setExtension(account.getExtension());
         response.setSipDomain(node.getSipDomain());
         response.setWssUrl(node.getWssUrl());
+        response.setAuthPassword(account.getAuthPassword());
         return response;
     }
 

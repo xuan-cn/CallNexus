@@ -7,7 +7,12 @@ public final class EslHeaders {
     public static final String CALLER_CALLER_ID_NUMBER = "Caller-Caller-ID-Number";
     public static final String CALLER_USERNAME = "Caller-Username";
     public static final String CALLER_DESTINATION_NUMBER = "Caller-Destination-Number";
+    public static final String CALLER_CALLEE_ID_NUMBER = "Caller-Callee-ID-Number";
+    public static final String VARIABLE_SIP_REQ_USER = "variable_sip_req_user";
     public static final String VARIABLE_SIP_TO_USER = "variable_sip_to_user";
+    public static final String VARIABLE_DIALED_USER = "variable_dialed_user";
+    public static final String VARIABLE_DIALLED_USER = "variable_dialled_user";
+    public static final String VARIABLE_CURRENT_APPLICATION_DATA = "variable_current_application_data";
     public static final String HANGUP_CAUSE = "Hangup-Cause";
     public static final String OTHER_LEG_UNIQUE_ID = "Other-Leg-Unique-ID";
     public static final String BRIDGE_A_UNIQUE_ID = "Bridge-A-Unique-ID";

@@ -64,6 +64,50 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     }
 
     @Override
+    public void hold(EslEndpoint endpoint, String callId) {
+        requireCallId(callId);
+        sendCommand(endpoint, "api uuid_hold " + callId);
+        log.info("FreeSWITCH 通话保持命令已提交，callId={}", callId);
+    }
+
+    @Override
+    public void unhold(EslEndpoint endpoint, String callId) {
+        requireCallId(callId);
+        sendCommand(endpoint, "api uuid_hold off " + callId);
+        log.info("FreeSWITCH 取消保持命令已提交，callId={}", callId);
+    }
+
+    @Override
+    public void blindTransfer(EslEndpoint endpoint, String callId, String targetExtension) {
+        requireCallId(callId);
+        requireDialValue(targetExtension);
+        requireDialValue(endpoint.sipDomain());
+        sendCommand(endpoint, "api uuid_transfer " + callId + " " + targetExtension + " XML default");
+        log.info("FreeSWITCH 盲转客户通话腿命令已提交，callId={}，targetExtension={}", callId, targetExtension);
+    }
+
+    @Override
+    public void originateConsultation(EslEndpoint endpoint, String consultCallId, String agentExtension, String targetExtension) {
+        requireCallId(consultCallId);
+        requireDialValue(agentExtension);
+        requireDialValue(targetExtension);
+        requireDialValue(endpoint.sipDomain());
+        String variables = "{origination_uuid=" + consultCallId
+            + ",callnexus_business_call_id=" + consultCallId
+            + ",callnexus_direction=INTERNAL"
+            + ",callnexus_original_caller=" + agentExtension
+            + ",callnexus_original_called=" + targetExtension
+            + ",origination_caller_id_number=" + agentExtension
+            + ",origination_caller_id_name=" + agentExtension
+            + ",hangup_after_bridge=true}";
+        String command = "bgapi originate " + variables + userDialString(agentExtension, endpoint.sipDomain())
+            + " &bridge(" + userDialString(targetExtension, endpoint.sipDomain()) + ")";
+        sendCommand(endpoint, command);
+        log.info("FreeSWITCH 咨询呼叫命令已提交，consultCallId={}，agentExtension={}，targetExtension={}",
+            consultCallId, agentExtension, targetExtension);
+    }
+
+    @Override
     public boolean callExists(EslEndpoint endpoint, String callId) {
         requireCallId(callId);
         EslFrame response = executeCommand(endpoint, "api uuid_exists " + callId);

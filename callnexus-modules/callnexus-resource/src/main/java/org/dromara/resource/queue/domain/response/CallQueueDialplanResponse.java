@@ -7,4 +7,12 @@ public class CallQueueDialplanResponse {
     private Long id;
     private String queueCode;
     private String queueName;
+    private Boolean maskCallerNumber;
+    private Integer forceWaitSeconds;
+    private String timeoutAction;
+    private String timeoutTarget;
+    private String timeoutTargetQueueCode;
+    private String noAgentAction;
+    private String noAgentTarget;
+    private String noAgentTargetQueueCode;
 }

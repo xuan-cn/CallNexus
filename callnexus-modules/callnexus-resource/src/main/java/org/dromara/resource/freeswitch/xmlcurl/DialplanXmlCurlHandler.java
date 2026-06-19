@@ -15,6 +15,8 @@ import org.dromara.resource.phone.domain.response.PhoneNumberDialplanRouteRespon
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
 import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
 import org.dromara.resource.sip.service.SipAccountQueryService;
+import org.dromara.resource.voicemail.domain.response.VoiceMailDialplanResponse;
+import org.dromara.resource.voicemail.service.VoiceMailBoxQueryService;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -25,6 +27,7 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
     private final SipAccountQueryService sipAccountQueryService;
     private final FreeSwitchDialplanXmlRenderer dialplanXmlRenderer;
     private final IvrDialplanQueryService ivrDialplanQueryService;
+    private final VoiceMailBoxQueryService voiceMailBoxQueryService;
     private final DialplanRouteHandlerRegistry routeHandlerRegistry;
     private final OutboundAuthorizationService outboundAuthorizationService;
 
@@ -38,6 +41,31 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         String destinationNumber = destinationNumber(request);
         String domain = domain(request);
         String context = context(request);
+        Long queueTransferIvrFlowId = queueTransferId(destinationNumber, "callnexus_queue_ivr_");
+        if (queueTransferIvrFlowId != null) {
+            if (!isQueueInternalTransfer(request)) {
+                log.warn("拒绝未携带队列内部转接标记的 IVR 目标，destinationNumber={}，tenantId={}",
+                    destinationNumber, request.tenantId());
+                return FreeSwitchXmlRenderer.notFound();
+            }
+            return ivrDialplanQueryService.renderPublishedFlow(request.tenantId(), queueTransferIvrFlowId, nodeId(request),
+                destinationNumber, context, domain);
+        }
+        Long queueTransferVoiceMailBoxId = queueTransferId(destinationNumber, "callnexus_queue_voicemail_");
+        if (queueTransferVoiceMailBoxId != null) {
+            if (!isQueueInternalTransfer(request)) {
+                log.warn("拒绝未携带队列内部转接标记的语音留言目标，destinationNumber={}，tenantId={}",
+                    destinationNumber, request.tenantId());
+                return FreeSwitchXmlRenderer.notFound();
+            }
+            VoiceMailDialplanResponse box = voiceMailBoxQueryService.findAvailableBox(request.tenantId(), queueTransferVoiceMailBoxId, nodeId(request));
+            if (box == null) {
+                log.warn("队列内部转语音留言失败，留言箱不可用，boxId={}，nodeId={}，tenantId={}",
+                    queueTransferVoiceMailBoxId, nodeId(request), request.tenantId());
+                return FreeSwitchXmlRenderer.notFound();
+            }
+            return dialplanXmlRenderer.renderInternalVoiceMailRoute(destinationNumber, box, context);
+        }
         Long internalIvrFlowId = internalIvrFlowId(destinationNumber);
         if (internalIvrFlowId != null) {
             String activeFlowId = request.firstValue("variable_callnexus_ivr_flow_id");
@@ -143,6 +171,23 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         return value;
     }
 
+    private Long nodeId(FreeSwitchXmlCurlRequest request) {
+        String value = request.firstValue("variable_callnexus_node_id");
+        if (value == null || value.isBlank()) value = request.firstValue("callnexus_node_id");
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private boolean isQueueInternalTransfer(FreeSwitchXmlCurlRequest request) {
+        String value = request.firstValue("variable_callnexus_internal_transfer");
+        if (value == null || value.isBlank()) value = request.firstValue("callnexus_internal_transfer");
+        return "QUEUE".equals(value);
+    }
+
     private String normalizeDialedNumber(String value) {
         if (value == null) return null;
         String normalized = value.trim();
@@ -162,6 +207,15 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         if (separator <= 0) return null;
         try {
             return Long.valueOf(remainder.substring(0, separator));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private Long queueTransferId(String destinationNumber, String prefix) {
+        if (destinationNumber == null || !destinationNumber.startsWith(prefix)) return null;
+        try {
+            return Long.valueOf(destinationNumber.substring(prefix.length()));
         } catch (NumberFormatException exception) {
             return null;
         }

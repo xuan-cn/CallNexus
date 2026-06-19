@@ -43,6 +43,6 @@ public interface CallCenterResourceQueryService {
      * @param queueName      队列名称
      * @param wrapUpSeconds  话后整理时长（秒）
      */
-    record QueueInfo(Long queueId, String queueCode, String queueName, Integer wrapUpSeconds) {
+    record QueueInfo(Long queueId, String queueCode, String queueName, Integer wrapUpSeconds, Integer maxWaitSeconds) {
     }
 }

@@ -52,6 +52,11 @@ public class CallQueueService implements CallQueueQueryService {
     private static final Set<String> STRATEGIES = Set.of(
         "LONGEST_IDLE_AGENT", "ROUND_ROBIN", "TOP_DOWN", "RING_ALL"
     );
+    private static final Set<String> ANSWER_ACTIONS = Set.of("NONE", "PLAY_AGENT_NUMBER", "PLAY_MEDIA");
+    private static final Set<String> HANGUP_KEY_ACTIONS = Set.of("NONE", "AGENT", "CALLER");
+    private static final Set<String> EXIT_ACTIONS = Set.of("HANGUP", "CONTINUE", "VOICEMAIL", "IVR", "EXTENSION", "QUEUE");
+    private static final Set<String> NO_AGENT_ACTIONS = Set.of("WAIT", "HANGUP", "VOICEMAIL", "IVR", "EXTENSION", "QUEUE");
+    private static final Set<String> AGENT_NO_ANSWER_ACTIONS = Set.of("NEXT_AGENT", "BREAK_AGENT");
 
     private final CallQueueMapper queueMapper;
     private final SkillGroupMapper skillGroupMapper;
@@ -91,6 +96,7 @@ public class CallQueueService implements CallQueueQueryService {
             response.setId(queue.getId());
             response.setQueueCode(queue.getQueueCode());
             response.setQueueName(queue.getQueueName());
+            fillDialplanOptions(response, queue, nodeId);
             return response;
         });
     }
@@ -162,6 +168,7 @@ public class CallQueueService implements CallQueueQueryService {
         if (!STRATEGIES.contains(request.getStrategy())) {
             throw new ServiceException("不支持的队列分配策略");
         }
+        validateEnhancedOptions(request);
         if (!"RING_ALL".equals(request.getStrategy())
             && request.getMaxWaitSeconds() <= request.getRingTimeoutSeconds()) {
             throw new ServiceException("逐个分配坐席时，队列最大等待时间必须大于单个坐席振铃超时时间");
@@ -175,12 +182,61 @@ public class CallQueueService implements CallQueueQueryService {
             throw new ServiceException("FreeSWITCH 节点组不存在或已停用");
         }
         if (request.getWaitMediaId() != null) {
-            MediaAsset media = mediaAssetMapper.selectById(request.getWaitMediaId());
-            if (media == null || !Boolean.TRUE.equals(media.getEnabled())
-                || !"QUEUE_WAIT_MUSIC".equals(media.getCategory())
-                || !"PUBLISHED".equals(media.getPublishStatus())) {
-                throw new ServiceException("队列等待音不存在、未发布或分类不是队列等待音乐");
+            validatePublishedMedia(request.getWaitMediaId(), "QUEUE_WAIT_MUSIC", "队列等待音不存在、未发布或分类不是队列等待音乐");
+        }
+        if (request.getQueueAnnounceMediaId() != null) {
+            validatePublishedMedia(request.getQueueAnnounceMediaId(), "QUEUE_WAIT_MUSIC", "排队提醒音不存在、未发布或分类不是队列等待音乐");
+        }
+        if ("PLAY_MEDIA".equals(request.getAnswerAction())) {
+            if (request.getAnswerMediaId() == null) {
+                throw new ServiceException("接通时播放语音必须选择媒体");
             }
+            validatePublishedMedia(request.getAnswerMediaId(), "IVR_PROMPT", "接通提示音不存在、未发布或分类不是 IVR 提示音");
+        }
+    }
+
+    private void validateEnhancedOptions(CallQueueRequest request) {
+        if (!ANSWER_ACTIONS.contains(request.getAnswerAction())) {
+            throw new ServiceException("不支持的接通时动作");
+        }
+        if (!HANGUP_KEY_ACTIONS.contains(request.getHangupKeyAction())) {
+            throw new ServiceException("不支持的挂机按键采集方式");
+        }
+        if (!EXIT_ACTIONS.contains(request.getTimeoutAction())) {
+            throw new ServiceException("不支持的队列超时处理方式");
+        }
+        if (!NO_AGENT_ACTIONS.contains(request.getNoAgentAction())) {
+            throw new ServiceException("不支持的无坐席处理方式");
+        }
+        if (!AGENT_NO_ANSWER_ACTIONS.contains(request.getAgentNoAnswerAction())) {
+            throw new ServiceException("不支持的坐席未接处理方式");
+        }
+        requireTarget("队列超时处理", request.getTimeoutAction(), request.getTimeoutTarget());
+        requireTarget("无坐席处理", request.getNoAgentAction(), request.getNoAgentTarget());
+        if (Boolean.TRUE.equals(request.getBusyTransferMobile()) && org.apache.commons.lang3.StringUtils.isBlank(request.getBusyTransferNumber())) {
+            throw new ServiceException("启用遇忙转手机时必须填写手机号");
+        }
+        if (Boolean.TRUE.equals(request.getAgentTimeoutTransferMobile()) && org.apache.commons.lang3.StringUtils.isBlank(request.getAgentTimeoutTransferNumber())) {
+            throw new ServiceException("启用坐席超时转手机时必须填写手机号");
+        }
+        if (Boolean.TRUE.equals(request.getQueueAnnounceEnabled()) && request.getQueueAnnounceMediaId() == null) {
+            throw new ServiceException("启用排队提醒时必须选择提醒语音");
+        }
+    }
+
+    private void requireTarget(String label, String action, String target) {
+        if (Set.of("VOICEMAIL", "IVR", "EXTENSION", "QUEUE").contains(action)
+            && org.apache.commons.lang3.StringUtils.isBlank(target)) {
+            throw new ServiceException(label + "选择转接类动作时必须配置目标");
+        }
+    }
+
+    private void validatePublishedMedia(Long mediaId, String category, String message) {
+        MediaAsset media = mediaAssetMapper.selectById(mediaId);
+        if (media == null || !Boolean.TRUE.equals(media.getEnabled())
+            || !category.equals(media.getCategory())
+            || !"PUBLISHED".equals(media.getPublishStatus())) {
+            throw new ServiceException(message);
         }
     }
 
@@ -208,6 +264,25 @@ public class CallQueueService implements CallQueueQueryService {
         queue.setStrategy(request.getStrategy());
         queue.setWaitMediaId(request.getWaitMediaId());
         queue.setCallerNumberId(request.getCallerNumberId());
+        queue.setMaskCallerNumber(request.getMaskCallerNumber());
+        queue.setManualAnswer(request.getManualAnswer());
+        queue.setBusyTransferMobile(request.getBusyTransferMobile());
+        queue.setBusyTransferNumber(request.getBusyTransferNumber());
+        queue.setForceWaitSeconds(request.getForceWaitSeconds());
+        queue.setAnswerAction(request.getAnswerAction());
+        queue.setAnswerMediaId(request.getAnswerMediaId());
+        queue.setHangupKeyAction(request.getHangupKeyAction());
+        queue.setTimeoutAction(request.getTimeoutAction());
+        queue.setTimeoutTarget(request.getTimeoutTarget());
+        queue.setNoAgentAction(request.getNoAgentAction());
+        queue.setNoAgentTarget(request.getNoAgentTarget());
+        queue.setAgentNoAnswerAction(request.getAgentNoAnswerAction());
+        queue.setAgentTimeoutTransferMobile(request.getAgentTimeoutTransferMobile());
+        queue.setAgentTimeoutTransferNumber(request.getAgentTimeoutTransferNumber());
+        queue.setStickyAgentEnabled(request.getStickyAgentEnabled());
+        queue.setQueueAnnounceEnabled(request.getQueueAnnounceEnabled());
+        queue.setQueueAnnounceInterval(request.getQueueAnnounceInterval());
+        queue.setQueueAnnounceMediaId(request.getQueueAnnounceMediaId());
         queue.setMaxWaitSeconds(request.getMaxWaitSeconds());
         queue.setRingTimeoutSeconds(request.getRingTimeoutSeconds());
         queue.setMaxNoAnswer(request.getMaxNoAnswer());
@@ -240,18 +315,70 @@ public class CallQueueService implements CallQueueQueryService {
         response.setStrategy(queue.getStrategy());
         response.setWaitMediaId(queue.getWaitMediaId());
         response.setCallerNumberId(queue.getCallerNumberId());
+        response.setMaskCallerNumber(queue.getMaskCallerNumber());
+        response.setManualAnswer(queue.getManualAnswer());
+        response.setBusyTransferMobile(queue.getBusyTransferMobile());
+        response.setBusyTransferNumber(queue.getBusyTransferNumber());
+        response.setForceWaitSeconds(queue.getForceWaitSeconds());
+        response.setAnswerAction(queue.getAnswerAction());
+        response.setAnswerMediaId(queue.getAnswerMediaId());
+        response.setHangupKeyAction(queue.getHangupKeyAction());
+        response.setTimeoutAction(queue.getTimeoutAction());
+        response.setTimeoutTarget(queue.getTimeoutTarget());
+        response.setNoAgentAction(queue.getNoAgentAction());
+        response.setNoAgentTarget(queue.getNoAgentTarget());
+        response.setAgentNoAnswerAction(queue.getAgentNoAnswerAction());
+        response.setAgentTimeoutTransferMobile(queue.getAgentTimeoutTransferMobile());
+        response.setAgentTimeoutTransferNumber(queue.getAgentTimeoutTransferNumber());
+        response.setStickyAgentEnabled(queue.getStickyAgentEnabled());
+        response.setQueueAnnounceEnabled(queue.getQueueAnnounceEnabled());
+        response.setQueueAnnounceInterval(queue.getQueueAnnounceInterval());
+        response.setQueueAnnounceMediaId(queue.getQueueAnnounceMediaId());
         response.setMaxWaitSeconds(queue.getMaxWaitSeconds());
         response.setRingTimeoutSeconds(queue.getRingTimeoutSeconds());
         response.setMaxNoAnswer(queue.getMaxNoAnswer());
         response.setWrapUpSeconds(queue.getWrapUpSeconds());
         response.setSyncStatus(queue.getSyncStatus());
         response.setLastSyncedAt(queue.getLastSyncedAt());
-        response.setSyncError(queue.getSyncError());
+        response.setSyncError("FAILED".equals(queue.getSyncStatus()) || "PARTIAL".equals(queue.getSyncStatus()) ? queue.getSyncError() : null);
         response.setEnabled(queue.getEnabled());
         response.setRemark(queue.getRemark());
         response.setVersion(queue.getVersion());
         response.setCreateTime(queue.getCreateTime());
         return response;
+    }
+
+    private void fillDialplanOptions(CallQueueDialplanResponse response, CallQueue queue, Long nodeId) {
+        response.setMaskCallerNumber(Boolean.TRUE.equals(queue.getMaskCallerNumber()));
+        response.setForceWaitSeconds(queue.getForceWaitSeconds() == null ? 0 : queue.getForceWaitSeconds());
+        response.setTimeoutAction(blankDefault(queue.getTimeoutAction(), "HANGUP"));
+        response.setTimeoutTarget(queue.getTimeoutTarget());
+        response.setNoAgentAction(blankDefault(queue.getNoAgentAction(), "WAIT"));
+        response.setNoAgentTarget(queue.getNoAgentTarget());
+        response.setTimeoutTargetQueueCode(resolveTargetQueueCode(queue.getTimeoutAction(), queue.getTimeoutTarget(), nodeId));
+        response.setNoAgentTargetQueueCode(resolveTargetQueueCode(queue.getNoAgentAction(), queue.getNoAgentTarget(), nodeId));
+    }
+
+    private String resolveTargetQueueCode(String action, String target, Long nodeId) {
+        if (!"QUEUE".equals(action) || org.apache.commons.lang3.StringUtils.isBlank(target)) {
+            return null;
+        }
+        try {
+            CallQueue targetQueue = queueMapper.selectById(Long.valueOf(target));
+            if (targetQueue == null || !Boolean.TRUE.equals(targetQueue.getEnabled())) {
+                throw new ServiceException("目标队列不存在或已停用");
+            }
+            if (!nodeIds(targetQueue.getNodeGroupId()).contains(nodeId)) {
+                throw new ServiceException("目标队列未覆盖当前 FreeSWITCH 节点");
+            }
+            return targetQueue.getQueueCode();
+        } catch (NumberFormatException exception) {
+            throw new ServiceException("目标队列格式不正确");
+        }
+    }
+
+    private String blankDefault(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value;
     }
 
     private List<QueueNodeRuntimeConfig> runtimeConfigs(CallQueue queue) {
@@ -277,7 +404,12 @@ public class CallQueueService implements CallQueueQueryService {
                 throw new ServiceException("节点 " + nodeId + " 没有绑定可用 SIP 分机的技能组坐席");
             }
             configs.add(new QueueNodeRuntimeConfig(nodeId, queue.getQueueCode(), queue.getStrategy(),
-                waitMediaPath(queue, nodeId), queue.getMaxWaitSeconds(), agents));
+                waitMediaPath(queue, nodeId),
+                Boolean.TRUE.equals(queue.getQueueAnnounceEnabled()),
+                queue.getQueueAnnounceInterval(),
+                mediaPath(queue.getQueueAnnounceMediaId(), nodeId, "排队提醒音"),
+                blankDefault(queue.getAgentNoAnswerAction(), "NEXT_AGENT"),
+                queue.getMaxWaitSeconds(), agents));
         }
         if (configs.isEmpty()) {
             throw new ServiceException("队列关联的 FreeSWITCH 节点组没有成员节点");
@@ -292,25 +424,32 @@ public class CallQueueService implements CallQueueQueryService {
     }
 
     private String waitMediaPath(CallQueue queue, Long nodeId) {
-        if (queue.getWaitMediaId() == null) return null;
-        MediaAsset media = mediaAssetMapper.selectById(queue.getWaitMediaId());
+        return mediaPath(queue.getWaitMediaId(), nodeId, "队列等待音");
+    }
+
+    private String mediaPath(Long mediaId, Long nodeId, String label) {
+        if (mediaId == null) return null;
+        MediaAsset media = mediaAssetMapper.selectById(mediaId);
+        if (media == null || media.getLatestVersionId() == null) {
+            throw new ServiceException(label + "不存在或没有可用版本");
+        }
         List<Long> activePublicationIds = mediaPublicationMapper.selectList(new LambdaQueryWrapper<MediaPublication>()
-                .eq(MediaPublication::getMediaId, queue.getWaitMediaId())
+                .eq(MediaPublication::getMediaId, mediaId)
                 .eq(MediaPublication::getVersionId, media.getLatestVersionId())
                 .in(MediaPublication::getStatus, List.of("PUBLISHING", "PARTIAL", "PUBLISHED")))
             .stream().map(MediaPublication::getId).toList();
         if (activePublicationIds.isEmpty()) {
-            throw new ServiceException("队列等待音当前版本没有有效发布记录");
+            throw new ServiceException(label + "当前版本没有有效发布记录");
         }
         MediaNodeSync sync = mediaNodeSyncMapper.selectOne(new LambdaQueryWrapper<MediaNodeSync>()
-            .eq(MediaNodeSync::getMediaId, queue.getWaitMediaId())
+            .eq(MediaNodeSync::getMediaId, mediaId)
             .in(MediaNodeSync::getPublicationId, activePublicationIds)
             .eq(MediaNodeSync::getNodeId, nodeId)
             .eq(MediaNodeSync::getStatus, "SUCCESS")
             .orderByDesc(MediaNodeSync::getSyncedAt)
             .last("limit 1"));
         if (sync == null) {
-            throw new ServiceException("队列等待音尚未同步到节点 " + nodeId);
+            throw new ServiceException(label + "尚未同步到节点 " + nodeId);
         }
         return sync.getTargetPath();
     }

@@ -70,7 +70,8 @@ public class FreeSwitchCallQueueRuntimeSyncServiceImpl implements CallQueueRunti
         for (QueueAgentRuntimeConfig agent : config.agents()) {
             syncAgent(endpoint, queue, agent);
         }
-        log.info("FreeSWITCH 队列同步完成，nodeId={}，queueCode={}，agentCount={}", config.nodeId(), config.queueCode(), config.agents().size());
+        log.info("FreeSWITCH 队列同步完成，nodeId={}，queueCode={}，agentCount={}，queueAnnounceEnabled={}，agentNoAnswerAction={}",
+            config.nodeId(), config.queueCode(), config.agents().size(), config.queueAnnounceEnabled(), config.agentNoAnswerAction());
     }
 
     private void syncAgent(EslEndpoint endpoint, String queue, QueueAgentRuntimeConfig config) {

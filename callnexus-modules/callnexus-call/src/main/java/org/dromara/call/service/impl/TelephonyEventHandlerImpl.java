@@ -65,6 +65,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
                 log.error("队列事件落库失败，不影响坐席实时状态处理，nodeId={}，subclass={}，uuid={}",
                     event.nodeId(), event.eventSubclass(), event.uuid(), exception);
             }
+            publishCallCenterAgentRealtimeEvent(event);
             return;
         }
         try {
@@ -94,6 +95,11 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
                 event.nodeId(), event.eventName(), event.uuid(), event.callerNumber(), event.destinationNumber());
         }
         for (AgentRealtimeTargetResponse target : targets.values()) {
+            if (isStaleMappedHangupForTarget(event, target)) {
+                log.debug("忽略历史映射带出的非当前坐席挂断事件，uuid={}，targetExtension={}，callerNumber={}，destinationNumber={}",
+                    event.uuid(), target.getExtension(), event.callerNumber(), event.destinationNumber());
+                continue;
+            }
             TenantHelper.dynamic(target.getTenantId(), () -> updateTargetState(event, target));
             String realtimeMessage = JsonUtils.toJsonString(toMessage(event, target));
             publishRealtimeMessage(target.getUserId(), realtimeMessage);
@@ -146,13 +152,86 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             || EslEventNames.CHANNEL_BRIDGE.equals(event.eventName());
     }
 
+    private boolean isStaleMappedHangupForTarget(TelephonyEvent event, AgentRealtimeTargetResponse target) {
+        if (!EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
+            return false;
+        }
+        AgentActiveCall activeCall = RedisUtils.getCacheObject(activeCallKey(target));
+        if (activeCall != null && matchesEndedCall(event, relatedUuids(event), activeCall)) {
+            return false;
+        }
+        String extension = normalizeExtension(target.getExtension());
+        if (extension == null) {
+            return false;
+        }
+        return !extension.equals(normalizeExtension(event.callerNumber()))
+            && !extension.equals(normalizeExtension(event.destinationNumber()));
+    }
+
     private Map<Long, AgentRealtimeTargetResponse> resolveTargets(TelephonyEvent event) {
         Map<Long, AgentRealtimeTargetResponse> targets = new LinkedHashMap<>();
-        AgentRealtimeTargetResponse calledAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber());
-        AgentRealtimeTargetResponse callingAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber());
-        if (calledAgent != null) targets.put(calledAgent.getAgentId(), calledAgent);
-        if (callingAgent != null) targets.put(callingAgent.getAgentId(), callingAgent);
+        addTargetByExtension(targets, event.nodeId(), event.destinationNumber());
+        addTargetByExtension(targets, event.nodeId(), event.callerNumber());
+        addTargetByExtension(targets, event.nodeId(), event.headers().get(EslHeaders.CALLER_CALLEE_ID_NUMBER));
+        addTargetByExtension(targets, event.nodeId(), event.headers().get(EslHeaders.VARIABLE_SIP_TO_USER));
+        addTargetByExtension(targets, event.nodeId(), event.headers().get(EslHeaders.VARIABLE_SIP_REQ_USER));
+        addTargetByExtension(targets, event.nodeId(), event.headers().get(EslHeaders.VARIABLE_DIALED_USER));
+        addTargetByExtension(targets, event.nodeId(), event.headers().get(EslHeaders.VARIABLE_DIALLED_USER));
+        addTargetByExtension(targets, event.nodeId(), extensionFromDialString(event.headers().get(EslHeaders.VARIABLE_CURRENT_APPLICATION_DATA)));
         return targets;
+    }
+
+    private void addTargetByExtension(Map<Long, AgentRealtimeTargetResponse> targets, Long nodeId, String extension) {
+        String normalized = normalizeExtension(extension);
+        if (normalized == null) return;
+        AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(nodeId, normalized);
+        if (target != null) targets.put(target.getAgentId(), target);
+    }
+
+    private void publishCallCenterAgentRealtimeEvent(TelephonyEvent event) {
+        if (!EslEventNames.SUBCLASS_CC_RING_AGENT.equals(event.eventSubclass())
+            && !EslEventNames.SUBCLASS_CC_AGENT_ANSWER.equals(event.eventSubclass())) {
+            return;
+        }
+        String extension = normalizeExtension(event.headers().get(EslHeaders.CC_AGENT));
+        if (extension == null) return;
+        AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(event.nodeId(), extension);
+        if (target == null) return;
+        CallRealtimeMessage message = new CallRealtimeMessage();
+        message.setType(EslEventNames.SUBCLASS_CC_AGENT_ANSWER.equals(event.eventSubclass()) ? "CALL_ANSWER" : "CALL_PROGRESS");
+        message.setCallId(event.uuid());
+        message.setCallerNumber(event.callerNumber());
+        message.setCalledNumber(target.getExtension());
+        message.setAgentExtension(target.getExtension());
+        message.setOccurredAt(LocalDateTime.now());
+        publishRealtimeMessage(target.getUserId(), JsonUtils.toJsonString(message));
+        if (EslEventNames.SUBCLASS_CC_AGENT_ANSWER.equals(event.eventSubclass())) {
+            TenantHelper.dynamic(target.getTenantId(), () -> {
+                saveActiveCallIfAbsent(event, target);
+                updatePresence(target, AgentPresenceStatus.BUSY, null);
+            });
+        }
+    }
+
+    private String normalizeExtension(String value) {
+        if (value == null || value.isBlank()) return null;
+        String normalized = value.trim();
+        if (normalized.startsWith("user/")) {
+            normalized = normalized.substring("user/".length());
+        }
+        int atIndex = normalized.indexOf('@');
+        if (atIndex > 0) {
+            normalized = normalized.substring(0, atIndex);
+        }
+        normalized = normalized.replaceAll("[^0-9*#+]", "");
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    private String extensionFromDialString(String value) {
+        if (value == null || value.isBlank()) return null;
+        int userIndex = value.indexOf("user/");
+        if (userIndex < 0) return null;
+        return normalizeExtension(value.substring(userIndex + "user/".length()));
     }
 
     private CallRealtimeMessage toMessage(TelephonyEvent event, AgentRealtimeTargetResponse target) {
@@ -178,7 +257,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
                 mappedTargets.forEach(target -> targets.put(target.getAgentId(), target));
             }
         }
-        if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName()) && targets.isEmpty()) {
+        if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             mergeActiveCallTargets(event, targets);
         }
     }
@@ -276,7 +355,16 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             AgentActiveCall call = RedisUtils.getCacheObject(key);
             if (call == null || !matchesEndedCall(event, relatedUuids, call)) continue;
             AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(event.nodeId(), call.getAgentExtension());
-            if (target != null) targets.put(target.getAgentId(), target);
+            if (target != null) {
+                if (!target.getAgentId().equals(call.getAgentId())) {
+                    log.warn("挂断事件 activeCall 兜底匹配到异常坐席数据，uuid={}，relatedUuids={}，activeAgentId={}，resolvedAgentId={}，extension={}，activeCallId={}",
+                        event.uuid(), relatedUuids, call.getAgentId(), target.getAgentId(), call.getAgentExtension(), call.getCallId());
+                    continue;
+                }
+                targets.put(target.getAgentId(), target);
+                log.info("挂断事件按 activeCall 兜底匹配到坐席，uuid={}，relatedUuids={}，agentId={}，extension={}，activeCallId={}",
+                    event.uuid(), relatedUuids, target.getAgentId(), target.getExtension(), call.getCallId());
+            }
         }
     }
 
@@ -295,7 +383,6 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
 
     private void saveActiveCallIfAbsent(TelephonyEvent event, AgentRealtimeTargetResponse target) {
         String key = activeCallKey(target);
-        if (RedisUtils.getCacheObject(key) != null) return;
         AgentActiveCall call = new AgentActiveCall();
         call.setCallId(event.uuid());
         call.setAgentId(target.getAgentId());

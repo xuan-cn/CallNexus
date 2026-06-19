@@ -4,7 +4,7 @@ CallNexus 是一套基于 RuoYi-Vue-Plus 5.6.1 基座、面向多租户的 **呼
 
 > 配套前端仓库：`CallNexus-UI`
 >
-> 配套规范文档：`FEATURE_ROADMAP.md`、`DEVELOPMENT_PROGRESS.md`、`AUDIO_STORAGE_DESIGN.md`、`FREESWITCH_MEDIA_AGENT_DEPLOYMENT.md`
+> 配套规范文档：`DevelopmentSpecifications/功能路线图.md`、`DevelopmentSpecifications/开发进度.md`、`DevelopmentSpecifications/声音存储设计.md`、`DevelopmentSpecifications/FreeSWITCH媒体Agent部署指南.md`
 
 ---
 
@@ -186,7 +186,7 @@ CallNexus/
 1. 在文件管理中创建并启用声音分类 OSS 配置：`call-recording`、`ringback-tone`、`queue-wait-music`、`ivr-prompt`、`user-music`。
 2. 配置 FreeSWITCH `mod_xml_curl`，将 directory / gateways / dialplan 分别指向 `/api/internal/freeswitch/*` 接口，并携带 `token`、`tenantId`、`domain` 参数。
 3. 部署录音上传脚本（参考 `FREESWITCH_RECORDING_DEPLOYMENT.md`），确保 FreeSWITCH 容器内存在 `curl`。
-4. 部署媒体同步 Sidecar Agent（参考 `FREESWITCH_MEDIA_AGENT_DEPLOYMENT.md`），与 FreeSWITCH 共享声音卷 `/var/lib/freeswitch/sounds/callnexus`。
+4. 部署媒体同步 Sidecar Agent（参考 `DevelopmentSpecifications/FreeSWITCH媒体Agent部署指南.md`），与 FreeSWITCH 共享声音卷 `/var/lib/freeswitch/sounds/callnexus`。
 5. 在 CallNexus 节点页面为每个 FreeSWITCH 节点生成独立 Agent Token，并加入需要发布媒体的节点组。
 
 FreeSWITCH 动态 Directory 默认参数：

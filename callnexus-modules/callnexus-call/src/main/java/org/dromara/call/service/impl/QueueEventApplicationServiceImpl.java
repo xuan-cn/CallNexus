@@ -24,6 +24,7 @@ import org.dromara.resource.event.queue.QueueEntrySignalEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -245,12 +246,32 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
             .eq(CallEvent::getSessionId, sessionId)
             .eq(CallEvent::getEventType, "AGENT_ANSWER"));
         if (hasAgentAnswer) return;
-        // 主叫主动放弃 vs 队列超时：ORIGINATOR_CANCEL 表示主叫侧挂断，其余视为队列等待超时。
-        String eventType = "ORIGINATOR_CANCEL".equalsIgnoreCase(hangupCause) ? "ABANDON" : "QUEUE_TIMEOUT";
+        String eventType = resolveUnansweredQueueTerminationType(sessionId, hangupCause);
         appendQueueTimelineEvent(sessionId, channelUuid, null, eventType, null, hangupCause,
             buildTerminationMetadata(eventType, hangupCause));
         log.info("已落库队列未接听终止事件，sessionId={}，eventType={}，hangupCause={}",
             sessionId, eventType, hangupCause);
+    }
+
+    private String resolveUnansweredQueueTerminationType(Long sessionId, String hangupCause) {
+        if ("ORIGINATOR_CANCEL".equalsIgnoreCase(hangupCause)) {
+            return "ABANDON";
+        }
+        QueueEntryInfo entry = readQueueEntryFromTimeline(sessionId);
+        if (entry != null && entry.queueId() != null && entry.occurredAt() != null) {
+            CallCenterResourceQueryService.QueueInfo queue = resourceQueryService.findQueueById(entry.queueId());
+            Integer maxWaitSeconds = queue == null ? null : queue.maxWaitSeconds();
+            if (maxWaitSeconds != null && maxWaitSeconds > 0) {
+                LocalDateTime endedAt = LocalDateTime.now();
+                CallSession session = sessionMapper.selectById(sessionId);
+                if (session != null && session.getEndedAt() != null) {
+                    endedAt = session.getEndedAt();
+                }
+                long waitedSeconds = Math.max(0, Duration.between(entry.occurredAt(), endedAt).getSeconds());
+                return waitedSeconds >= maxWaitSeconds ? "QUEUE_TIMEOUT" : "ABANDON";
+            }
+        }
+        return "QUEUE_TIMEOUT";
     }
 
     private String buildTerminationMetadata(String eventType, String hangupCause) {
@@ -353,7 +374,7 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
             Long queueId = metadata.get("queueId") == null ? null : Long.valueOf(metadata.get("queueId").toString());
             String queueCode = metadata.get("queueCode") == null ? null : metadata.get("queueCode").toString();
             String queueName = metadata.get("queueName") == null ? null : metadata.get("queueName").toString();
-            return new QueueEntryInfo(queueId, queueCode, queueName);
+            return new QueueEntryInfo(queueId, queueCode, queueName, queueInEvent.getOccurredAt());
         } catch (Exception exception) {
             log.warn("解析 QUEUE_IN 事件 metadata 失败，sessionId={}", sessionId, exception);
             return null;
@@ -419,6 +440,6 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         return JsonUtils.toJsonString(metadata);
     }
 
-    private record QueueEntryInfo(Long queueId, String queueCode, String queueName) {
+    private record QueueEntryInfo(Long queueId, String queueCode, String queueName, LocalDateTime occurredAt) {
     }
 }

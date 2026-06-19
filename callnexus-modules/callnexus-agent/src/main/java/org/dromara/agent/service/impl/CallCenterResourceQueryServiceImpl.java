@@ -45,7 +45,8 @@ public class CallCenterResourceQueryServiceImpl implements CallCenterResourceQue
             if (queue == null) return null;
             // 队列按节点组绑定，需确认当前上报节点属于该队列的节点组，避免跨节点串用配置。
             if (!nodeBelongsToGroup(queue.getNodeGroupId(), nodeId)) return null;
-            return new QueueInfo(queue.getId(), queue.getQueueCode(), queue.getQueueName(), queue.getWrapUpSeconds());
+            return new QueueInfo(queue.getId(), queue.getQueueCode(), queue.getQueueName(), queue.getWrapUpSeconds(),
+                queue.getMaxWaitSeconds());
         });
     }
 
@@ -55,7 +56,8 @@ public class CallCenterResourceQueryServiceImpl implements CallCenterResourceQue
         return TenantHelper.ignore(() -> {
             CallQueue queue = callQueueMapper.selectById(queueId);
             if (queue == null || !Boolean.TRUE.equals(queue.getEnabled())) return null;
-            return new QueueInfo(queue.getId(), queue.getQueueCode(), queue.getQueueName(), queue.getWrapUpSeconds());
+            return new QueueInfo(queue.getId(), queue.getQueueCode(), queue.getQueueName(), queue.getWrapUpSeconds(),
+                queue.getMaxWaitSeconds());
         });
     }
 

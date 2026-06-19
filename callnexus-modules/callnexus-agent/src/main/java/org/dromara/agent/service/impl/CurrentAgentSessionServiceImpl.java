@@ -11,6 +11,7 @@ import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.CallQueue;
 import org.dromara.agent.domain.SkillGroupMember;
 import org.dromara.agent.domain.response.CurrentAgentResponse;
+import org.dromara.agent.domain.response.CurrentAgentWebRtcConfigResponse;
 import org.dromara.agent.mapper.AgentExtensionMapper;
 import org.dromara.agent.mapper.AgentMapper;
 import org.dromara.agent.mapper.CallQueueMapper;
@@ -58,6 +59,27 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
             return response;
         }
         return buildResponse(agent, normalizeAfterCallStatus(agent, getPresence(agent.getId())));
+    }
+
+    @Override
+    public CurrentAgentWebRtcConfigResponse webRtcConfig() {
+        Agent agent = requireCurrentAgent();
+        AgentExtension binding = findExtension(agent.getId());
+        if (binding == null || !sipAccountQueryService.existsEnabled(binding.getSipAccountId())) {
+            throw new ServiceException("当前坐席未绑定可用 SIP 分机");
+        }
+        SipAccountResponse sipAccount = sipAccountQueryService.get(binding.getSipAccountId());
+        SipRegistrationConfigResponse registrationConfig = sipAccountQueryService.getRegistrationConfig(binding.getSipAccountId());
+        CurrentAgentWebRtcConfigResponse response = new CurrentAgentWebRtcConfigResponse();
+        response.setAgentId(agent.getId());
+        response.setSipAccountId(registrationConfig.getSipAccountId());
+        response.setNodeId(registrationConfig.getNodeId());
+        response.setExtension(registrationConfig.getExtension());
+        response.setSipDisplayName(sipAccount == null ? null : sipAccount.getDisplayName());
+        response.setSipDomain(registrationConfig.getSipDomain());
+        response.setWssUrl(registrationConfig.getWssUrl());
+        response.setAuthPassword(registrationConfig.getAuthPassword());
+        return response;
     }
 
     @Override

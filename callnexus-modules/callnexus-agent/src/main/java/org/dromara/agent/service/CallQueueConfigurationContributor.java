@@ -81,6 +81,8 @@ public class CallQueueConfigurationContributor implements FreeSwitchCallCenterCo
             + "    <param name=\"max-wait-time\" value=\"" + queue.getMaxWaitSeconds() + "\"/>\n"
             + "    <param name=\"max-wait-time-with-no-agent\" value=\"0\"/>\n"
             + "    <param name=\"max-wait-time-with-no-agent-time-reached\" value=\"5\"/>\n"
+            + announceParams(queue, nodeId)
+            + "    <param name=\"agent-no-answer-status\" value=\"" + agentNoAnswerStatus(queue.getAgentNoAnswerAction()) + "\"/>\n"
             + "    <param name=\"tier-rules-apply\" value=\"false\"/>\n"
             + "    <param name=\"tier-rule-wait-second\" value=\"300\"/>\n"
             + "    <param name=\"tier-rule-wait-multiply-level\" value=\"true\"/>\n"
@@ -90,6 +92,16 @@ public class CallQueueConfigurationContributor implements FreeSwitchCallCenterCo
             + "  </queue>";
     }
 
+    private String announceParams(CallQueue queue, Long nodeId) {
+        if (!Boolean.TRUE.equals(queue.getQueueAnnounceEnabled())) {
+            return "";
+        }
+        String mediaPath = mediaPath(queue.getQueueAnnounceMediaId(), nodeId, "排队提醒音");
+        Integer interval = queue.getQueueAnnounceInterval() == null ? 30 : queue.getQueueAnnounceInterval();
+        return "    <param name=\"announce-sound\" value=\"" + FreeSwitchXmlRenderer.escape(mediaPath) + "\"/>\n"
+            + "    <param name=\"announce-frequency\" value=\"" + interval + "\"/>\n";
+    }
+
     private List<Long> nodeIds(Long nodeGroupId) {
         return nodeGroupMemberMapper.selectList(new LambdaQueryWrapper<FreeSwitchNodeGroupMember>()
                 .eq(FreeSwitchNodeGroupMember::getGroupId, nodeGroupId))
@@ -97,32 +109,40 @@ public class CallQueueConfigurationContributor implements FreeSwitchCallCenterCo
     }
 
     private String waitMediaPath(CallQueue queue, Long nodeId) {
-        if (queue.getWaitMediaId() == null) {
+        return mediaPath(queue.getWaitMediaId(), nodeId, "队列等待音");
+    }
+
+    private String mediaPath(Long mediaId, Long nodeId, String label) {
+        if (mediaId == null) {
             return null;
         }
-        MediaAsset media = mediaAssetMapper.selectById(queue.getWaitMediaId());
+        MediaAsset media = mediaAssetMapper.selectById(mediaId);
         if (media == null || media.getLatestVersionId() == null) {
-            throw new ServiceException("队列等待音不存在或没有可用版本");
+            throw new ServiceException(label + "不存在或没有可用版本");
         }
         List<Long> publicationIds = mediaPublicationMapper.selectList(new LambdaQueryWrapper<MediaPublication>()
-                .eq(MediaPublication::getMediaId, queue.getWaitMediaId())
+                .eq(MediaPublication::getMediaId, mediaId)
                 .eq(MediaPublication::getVersionId, media.getLatestVersionId())
                 .in(MediaPublication::getStatus, List.of("PUBLISHING", "PARTIAL", "PUBLISHED")))
             .stream().map(MediaPublication::getId).toList();
         if (publicationIds.isEmpty()) {
-            throw new ServiceException("队列等待音当前版本没有有效发布记录");
+            throw new ServiceException(label + "当前版本没有有效发布记录");
         }
         MediaNodeSync sync = mediaNodeSyncMapper.selectOne(new LambdaQueryWrapper<MediaNodeSync>()
-            .eq(MediaNodeSync::getMediaId, queue.getWaitMediaId())
+            .eq(MediaNodeSync::getMediaId, mediaId)
             .in(MediaNodeSync::getPublicationId, publicationIds)
             .eq(MediaNodeSync::getNodeId, nodeId)
             .eq(MediaNodeSync::getStatus, "SUCCESS")
             .orderByDesc(MediaNodeSync::getSyncedAt)
             .last("limit 1"));
         if (sync == null) {
-            throw new ServiceException("队列等待音尚未同步到节点 " + nodeId);
+            throw new ServiceException(label + "尚未同步到节点 " + nodeId);
         }
         return sync.getTargetPath();
+    }
+
+    private String agentNoAnswerStatus(String action) {
+        return "BREAK_AGENT".equals(action) ? "On Break" : "Available";
     }
 
     private String strategy(String strategy) {
