@@ -212,7 +212,7 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
                       <action application="record_session" data="${callnexus_recording_path}"/>
-                      <action application="bridge" data="sofia/gateway/%s/%s"/>
+                      <action application="bridge" data="[absolute_codec_string=PCMA,codec_string=PCMA]sofia/gateway/%s/%s"/>
                     </condition>
                   </extension>
                 </context>

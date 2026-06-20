@@ -3,6 +3,7 @@ package org.dromara.agent.domain;
 import lombok.Data;
 
 import java.io.Serializable;
+import java.util.Set;
 
 @Data
 public class AgentActiveCall implements Serializable {
@@ -13,4 +14,5 @@ public class AgentActiveCall implements Serializable {
     private Boolean external;
     private String gatewayCode;
     private String callerIdNumber;
+    private Set<String> relatedUuids;
 }

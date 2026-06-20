@@ -39,6 +39,7 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private static final String ACTIVE_CALL_KEY_PREFIX = "callnexus:agent:active-call:";
+    private static final String CALL_UUID_ACTIVE_CALL_KEYS_PREFIX = "callnexus:call:uuid-active-agents:";
     private static final String CALL_UUID_TARGETS_KEY_PREFIX = "callnexus:call:uuid-targets-v2:";
     private static final String CALL_UUID_ANSWERED_TARGETS_KEY_PREFIX = "callnexus:call:uuid-answered-targets:";
     private static final String ENDED_CALL_UUID_KEY_PREFIX = "callnexus:call:ended-uuid:";
@@ -108,6 +109,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             markCallEnded(event);
             deleteUuidMappings(event);
             deleteAnsweredTargetMappings(event);
+            deleteUuidActiveCallIndexes(event);
         } else if (!targets.isEmpty()) {
             saveUuidMappings(event, targets.values());
         }
@@ -127,7 +129,10 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
 
     private void updateTargetState(TelephonyEvent event, AgentRealtimeTargetResponse target) {
         if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
-            RedisUtils.deleteObject(activeCallKey(target));
+            String activeCallKey = activeCallKey(target);
+            AgentActiveCall activeCall = RedisUtils.getCacheObject(activeCallKey);
+            deleteUuidActiveCallIndexes(event, activeCall);
+            RedisUtils.deleteObject(activeCallKey);
             // 已接听的坐席挂断后进入话后整理，把本次通话 channel UUID 记录到 presence，
             // 供话后整理时长按实际接听队列计算；整理结束恢复 IDLE 时清空。
             String handlingCallId = wasAnswered(event, target) ? event.uuid() : null;
@@ -349,23 +354,34 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     }
 
     private void mergeActiveCallTargets(TelephonyEvent event, Map<Long, AgentRealtimeTargetResponse> targets) {
-        Collection<String> keys = RedisUtils.keys(ACTIVE_CALL_KEY_PREFIX + "*");
         Set<String> relatedUuids = relatedUuids(event);
-        for (String key : keys) {
-            AgentActiveCall call = RedisUtils.getCacheObject(key);
-            if (call == null || !matchesEndedCall(event, relatedUuids, call)) continue;
-            AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(event.nodeId(), call.getAgentExtension());
-            if (target != null) {
-                if (!target.getAgentId().equals(call.getAgentId())) {
-                    log.warn("挂断事件 activeCall 兜底匹配到异常坐席数据，uuid={}，relatedUuids={}，activeAgentId={}，resolvedAgentId={}，extension={}，activeCallId={}",
-                        event.uuid(), relatedUuids, call.getAgentId(), target.getAgentId(), call.getAgentExtension(), call.getCallId());
-                    continue;
-                }
-                targets.put(target.getAgentId(), target);
-                log.info("挂断事件按 activeCall 兜底匹配到坐席，uuid={}，relatedUuids={}，agentId={}，extension={}，activeCallId={}",
-                    event.uuid(), relatedUuids, target.getAgentId(), target.getExtension(), call.getCallId());
-            }
+        for (String activeCallKey : activeCallKeysByUuids(relatedUuids)) {
+            mergeActiveCallTarget(event, relatedUuids, targets, activeCallKey);
         }
+    }
+
+    private Set<String> activeCallKeysByUuids(Set<String> relatedUuids) {
+        Set<String> activeCallKeys = new LinkedHashSet<>();
+        for (String uuid : relatedUuids) {
+            activeCallKeys.addAll(RedisUtils.getCacheSet(uuidActiveCallKeysKey(uuid)));
+        }
+        return activeCallKeys;
+    }
+
+    private void mergeActiveCallTarget(TelephonyEvent event, Set<String> relatedUuids, Map<Long, AgentRealtimeTargetResponse> targets,
+                                       String activeCallKey) {
+        AgentActiveCall call = RedisUtils.getCacheObject(activeCallKey);
+        if (call == null || !matchesEndedCall(event, relatedUuids, call)) return;
+        AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(event.nodeId(), call.getAgentExtension());
+        if (target == null) return;
+        if (!target.getAgentId().equals(call.getAgentId())) {
+            log.warn("挂断事件 activeCall 兜底匹配到异常坐席数据，uuid={}，relatedUuids={}，activeAgentId={}，resolvedAgentId={}，extension={}，activeCallId={}",
+                event.uuid(), relatedUuids, call.getAgentId(), target.getAgentId(), call.getAgentExtension(), call.getCallId());
+            return;
+        }
+        targets.put(target.getAgentId(), target);
+        log.info("挂断事件按 activeCall 反向索引匹配到坐席，uuid={}，relatedUuids={}，agentId={}，extension={}，activeCallId={}",
+            event.uuid(), relatedUuids, target.getAgentId(), target.getExtension(), call.getCallId());
     }
 
     private boolean matchesEndedCall(TelephonyEvent event, Set<String> relatedUuids, AgentActiveCall call) {
@@ -388,7 +404,33 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         call.setAgentId(target.getAgentId());
         call.setAgentExtension(target.getExtension());
         call.setDestination(target.getExtension().equals(event.callerNumber()) ? event.destinationNumber() : event.callerNumber());
+        call.setRelatedUuids(relatedUuids(event));
         RedisUtils.setCacheObject(key, call, ACTIVE_CALL_TTL);
+        saveUuidActiveCallIndexes(event, key);
+    }
+
+    private void saveUuidActiveCallIndexes(TelephonyEvent event, String activeCallKey) {
+        for (String uuid : relatedUuids(event)) {
+            String key = uuidActiveCallKeysKey(uuid);
+            RedisUtils.addCacheSet(key, activeCallKey);
+            RedisUtils.expire(key, ACTIVE_CALL_TTL);
+        }
+    }
+
+    private void deleteUuidActiveCallIndexes(TelephonyEvent event) {
+        relatedUuids(event).forEach(uuid -> RedisUtils.deleteObject(uuidActiveCallKeysKey(uuid)));
+    }
+
+    private void deleteUuidActiveCallIndexes(TelephonyEvent event, AgentActiveCall activeCall) {
+        Set<String> uuids = new LinkedHashSet<>(relatedUuids(event));
+        if (activeCall != null && activeCall.getRelatedUuids() != null) {
+            uuids.addAll(activeCall.getRelatedUuids());
+        }
+        uuids.forEach(uuid -> RedisUtils.deleteObject(uuidActiveCallKeysKey(uuid)));
+    }
+
+    private String uuidActiveCallKeysKey(String uuid) {
+        return CALL_UUID_ACTIVE_CALL_KEYS_PREFIX + uuid;
     }
 
     private void updatePresence(AgentRealtimeTargetResponse target, AgentPresenceStatus status, String handlingCallId) {

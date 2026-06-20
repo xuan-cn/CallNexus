@@ -23,6 +23,7 @@ import java.util.Map;
 public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     private static final int CONNECT_TIMEOUT_MILLIS = 5000;
     private static final int READ_TIMEOUT_MILLIS = 5000;
+    private static final String OUTBOUND_GATEWAY_CODEC = "PCMA";
 
     @Override
     public void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination, OutboundRoute outboundRoute,
@@ -195,7 +196,9 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         String legVariables = "[origination_caller_id_number=" + callerIdNumber
             + ",origination_caller_id_name=" + callerIdNumber
             + ",effective_caller_id_number=" + callerIdNumber
-            + ",effective_caller_id_name=" + callerIdNumber + "]";
+            + ",effective_caller_id_name=" + callerIdNumber
+            + ",absolute_codec_string=" + OUTBOUND_GATEWAY_CODEC
+            + ",codec_string=" + OUTBOUND_GATEWAY_CODEC + "]";
         return legVariables + "sofia/gateway/" + outboundRoute.getGatewayCode() + "/" + destination;
     }
 
