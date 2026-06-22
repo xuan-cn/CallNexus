@@ -10,7 +10,15 @@ public interface TelephonyCommandGateway {
     void hangup(EslEndpoint endpoint, String callId);
     void hold(EslEndpoint endpoint, String callId);
     void unhold(EslEndpoint endpoint, String callId);
+    void mute(EslEndpoint endpoint, String callId);
+    void unmute(EslEndpoint endpoint, String callId);
+    void sendDtmf(EslEndpoint endpoint, String callId, String digits);
+    void park(EslEndpoint endpoint, String callId);
+    void recoverMedia(EslEndpoint endpoint, String callId);
+    void setCallVariable(EslEndpoint endpoint, String callId, String name, String value);
+    void bridgeCalls(EslEndpoint endpoint, String leftCallId, String rightCallId);
     void blindTransfer(EslEndpoint endpoint, String callId, String targetExtension);
-    void originateConsultation(EslEndpoint endpoint, String consultCallId, String agentExtension, String targetExtension);
+    void originateConsultation(EslEndpoint endpoint, String businessCallId, String consultCallId, String agentExtension, String targetExtension,
+                               String customerLegUuid, String sourceAgentLegUuid);
     boolean callExists(EslEndpoint endpoint, String callId);
 }

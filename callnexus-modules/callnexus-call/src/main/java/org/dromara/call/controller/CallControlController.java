@@ -3,7 +3,9 @@ package org.dromara.call.controller;
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.dromara.call.domain.request.CallNoteRequest;
 import org.dromara.call.domain.request.OriginateCallRequest;
+import org.dromara.call.domain.request.SendDtmfRequest;
 import org.dromara.call.domain.request.TransferCallRequest;
 import org.dromara.call.domain.response.CallControlResponse;
 import org.dromara.call.service.CallControlApplicationService;
@@ -45,6 +47,30 @@ public class CallControlController {
         return R.ok();
     }
 
+    @PostMapping("/{callId}/mute")
+    public R<Void> mute(@PathVariable String callId) {
+        applicationService.mute(callId);
+        return R.ok();
+    }
+
+    @PostMapping("/{callId}/unmute")
+    public R<Void> unmute(@PathVariable String callId) {
+        applicationService.unmute(callId);
+        return R.ok();
+    }
+
+    @PostMapping("/{callId}/dtmf")
+    public R<Void> sendDtmf(@PathVariable String callId, @Valid @RequestBody SendDtmfRequest request) {
+        applicationService.sendDtmf(callId, request.getDigits());
+        return R.ok();
+    }
+
+    @PostMapping("/{callId}/notes")
+    public R<Void> saveNote(@PathVariable String callId, @Valid @RequestBody CallNoteRequest request) {
+        applicationService.saveNote(callId, request.getContent());
+        return R.ok();
+    }
+
     @PostMapping("/{callId}/transfer")
     public R<Void> blindTransfer(@PathVariable String callId, @Valid @RequestBody TransferCallRequest request) {
         applicationService.blindTransfer(callId, request.getTargetExtension());
@@ -53,7 +79,7 @@ public class CallControlController {
 
     @PostMapping("/{callId}/consult-transfer")
     public R<CallControlResponse> startConsultTransfer(@PathVariable String callId, @Valid @RequestBody TransferCallRequest request) {
-        return R.ok(applicationService.startConsultTransfer(callId, request.getTargetExtension()));
+        return R.ok(applicationService.startConsultTransfer(callId, request.getTargetExtension(), request.getPhoneMode()));
     }
 
     @PostMapping("/{callId}/consult-transfer/cancel")

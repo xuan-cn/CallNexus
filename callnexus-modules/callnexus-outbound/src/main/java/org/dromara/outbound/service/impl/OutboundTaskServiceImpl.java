@@ -473,10 +473,10 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             .eq(OutboundMember::getId, memberId)
             .eq(OutboundMember::getClaimedUserId, LoginHelper.getUserId())
             .set(OutboundMember::getStatus, "DIALING")
-            .set(OutboundMember::getBusinessCallId, call.getCallId())
+            .set(OutboundMember::getBusinessCallId, call.getBusinessCallId())
             .set(OutboundMember::getAttemptCount, attemptNo)
             .set(OutboundMember::getLeaseExpiresAt, LocalDateTime.now().plusMinutes(dialingLeaseMinutes())));
-        callBusinessAssociationService.associateCustomer(call.getCallId(), member.getCustomerId());
+        callBusinessAssociationService.associateCustomer(call.getBusinessCallId(), member.getCustomerId());
         return toMemberResponse(requireMember(memberId));
     }
 

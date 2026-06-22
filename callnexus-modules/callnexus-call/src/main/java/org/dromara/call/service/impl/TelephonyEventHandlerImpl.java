@@ -2,6 +2,8 @@ package org.dromara.call.service.impl;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.dromara.agent.domain.AgentConsultCall;
+import org.dromara.agent.domain.AgentConsultCallStatus;
 import org.dromara.agent.domain.AgentPresence;
 import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
@@ -11,11 +13,14 @@ import org.dromara.agent.service.CallQueueRuntimeSyncService;
 import org.dromara.call.constant.EslEventNames;
 import org.dromara.call.constant.EslHeaders;
 import org.dromara.agent.domain.AgentActiveCall;
+import org.dromara.call.domain.EslEndpoint;
 import org.dromara.call.domain.TelephonyEvent;
 import org.dromara.call.domain.response.CallRealtimeMessage;
 import org.dromara.call.service.TelephonyEventHandler;
 import org.dromara.call.service.CallRecordApplicationService;
+import org.dromara.call.service.CallStateRuntimeService;
 import org.dromara.call.service.QueueEventApplicationService;
+import org.dromara.call.service.TelephonyCommandGateway;
 import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.sse.dto.SseMessageDto;
@@ -23,6 +28,8 @@ import org.dromara.common.sse.utils.SseMessageUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.common.websocket.dto.WebSocketMessageDto;
 import org.dromara.common.websocket.utils.WebSocketUtils;
+import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionResponse;
+import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -39,18 +46,26 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private static final String ACTIVE_CALL_KEY_PREFIX = "callnexus:agent:active-call:";
+    private static final String CONSULT_CALL_KEY_PREFIX = "callnexus:agent:consult-call:";
+    private static final String CONSULT_LEG_KEY_PREFIX = "callnexus:call:consult-leg:";
     private static final String CALL_UUID_ACTIVE_CALL_KEYS_PREFIX = "callnexus:call:uuid-active-agents:";
     private static final String CALL_UUID_TARGETS_KEY_PREFIX = "callnexus:call:uuid-targets-v2:";
     private static final String CALL_UUID_ANSWERED_TARGETS_KEY_PREFIX = "callnexus:call:uuid-answered-targets:";
     private static final String ENDED_CALL_UUID_KEY_PREFIX = "callnexus:call:ended-uuid:";
+    private static final String TRANSFERRED_SOURCE_AGENT_KEY_PREFIX = "callnexus:call:transferred-source-agent:";
+    private static final String TRANSFERRED_SOURCE_EXTENSION_KEY_PREFIX = "callnexus:call:transferred-source-extension:";
+    private static final String TRANSFERRED_SOURCE_LEG_KEY_PREFIX = "callnexus:call:transferred-source-leg:";
     private static final String PRESENCE_KEY_PREFIX = "callnexus:agent:presence:";
     private static final Duration ACTIVE_CALL_TTL = Duration.ofHours(4);
     private static final Duration PRESENCE_TTL = Duration.ofHours(12);
     private static final Duration ENDED_CALL_TTL = Duration.ofSeconds(30);
 
     private final AgentRealtimeQueryService agentQueryService;
+    private final FreeSwitchNodeQueryService nodeQueryService;
+    private final TelephonyCommandGateway telephonyCommandGateway;
     private final CallQueueRuntimeSyncService queueRuntimeSyncService;
     private final CallRecordApplicationService callRecordApplicationService;
+    private final CallStateRuntimeService callStateRuntimeService;
     private final QueueEventApplicationService queueEventApplicationService;
 
     @Override
@@ -75,6 +90,13 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             log.error("通话记录事件落库失败，不影响实时通话状态处理，nodeId={}，eventName={}，uuid={}",
                 event.nodeId(), event.eventName(), event.uuid(), exception);
         }
+        try {
+            callStateRuntimeService.handleEvent(event);
+        } catch (Exception exception) {
+            log.error("稳定通话状态写入失败，不影响实时通话状态处理，nodeId={}，eventName={}，uuid={}",
+                event.nodeId(), event.eventName(), event.uuid(), exception);
+        }
+        handleConsultLifecycleEvent(event);
         if (EslEventNames.isTerminalEvent(event.eventName())
             && !EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             return;
@@ -84,6 +106,14 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         }
         Map<Long, AgentRealtimeTargetResponse> targets = resolveTargets(event);
         mergeMappedTargets(event, targets);
+        removeConsultSourceTarget(event, targets);
+        removeCompletedTransferSourceTargets(event, targets);
+        boolean completedTransferSourceLegHangup = isCompletedTransferSourceLegHangup(event);
+        if (completedTransferSourceLegHangup) {
+            log.debug("忽略已完成咨询转接源坐席通道挂断实时事件，uuid={}，relatedUuids={}",
+                event.uuid(), relatedUuids(event));
+            targets.clear();
+        }
         if (isConnectedEvent(event)) {
             saveAnsweredTargets(event, targets.values());
         }
@@ -106,10 +136,14 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             publishRealtimeMessage(target.getUserId(), realtimeMessage);
         }
         if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
-            markCallEnded(event);
-            deleteUuidMappings(event);
-            deleteAnsweredTargetMappings(event);
-            deleteUuidActiveCallIndexes(event);
+            if (completedTransferSourceLegHangup) {
+                deleteSingleUuidRuntimeMappings(event.uuid());
+            } else {
+                markCallEnded(event);
+                deleteUuidMappings(event);
+                deleteAnsweredTargetMappings(event);
+                deleteUuidActiveCallIndexes(event);
+            }
         } else if (!targets.isEmpty()) {
             saveUuidMappings(event, targets.values());
         }
@@ -128,9 +162,21 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     }
 
     private void updateTargetState(TelephonyEvent event, AgentRealtimeTargetResponse target) {
+        Set<String> relatedUuids = relatedUuids(event);
+        if (isCompletedTransferSourceTarget(target, relatedUuids)) {
+            RedisUtils.deleteObject(activeCallKey(target));
+            log.info("忽略已完成咨询转接源坐席的后续实时事件，避免源坐席重新进入通话状态，uuid={}，relatedUuids={}，agentId={}，extension={}，eventName={}",
+                event.uuid(), relatedUuids, target.getAgentId(), target.getExtension(), event.eventName());
+            return;
+        }
         if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             String activeCallKey = activeCallKey(target);
             AgentActiveCall activeCall = RedisUtils.getCacheObject(activeCallKey);
+            if (activeCall != null && !matchesEndedCall(event, relatedUuids, activeCall)) {
+                log.debug("忽略非当前活动通话的挂断事件，uuid={}，relatedUuids={}，agentId={}，extension={}，activeCallId={}，activeRelatedUuids={}",
+                    event.uuid(), relatedUuids, target.getAgentId(), target.getExtension(), activeCall.getCallId(), activeCall.getRelatedUuids());
+                return;
+            }
             deleteUuidActiveCallIndexes(event, activeCall);
             RedisUtils.deleteObject(activeCallKey);
             // 已接听的坐席挂断后进入话后整理，把本次通话 channel UUID 记录到 presence，
@@ -155,6 +201,212 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private boolean isConnectedEvent(TelephonyEvent event) {
         return EslEventNames.CHANNEL_ANSWER.equals(event.eventName())
             || EslEventNames.CHANNEL_BRIDGE.equals(event.eventName());
+    }
+
+    private void handleConsultLifecycleEvent(TelephonyEvent event) {
+        try {
+            if (EslEventNames.CHANNEL_ANSWER.equals(event.eventName())) {
+                handleConsultTargetAnswered(event);
+            } else if (EslEventNames.CHANNEL_BRIDGE.equals(event.eventName())) {
+                handleConsultBridgeConfirmed(event);
+            }
+        } catch (Exception exception) {
+            log.warn("咨询转接事件状态机处理失败，eventName={}，uuid={}，error={}",
+                event.eventName(), event.uuid(), exception.getMessage());
+        }
+    }
+
+    private void handleConsultTargetAnswered(TelephonyEvent event) {
+        AgentConsultCall consultCall = readConsultCallByEvent(event);
+        if (consultCall == null || !event.uuid().equals(consultCall.getConsultLegUuid())) {
+            return;
+        }
+        if (!canBridgeConsultTargetOnAnswer(consultCall.getStatus())) {
+            log.debug("忽略重复或乱序的咨询坐席接听事件，uuid={}，status={}", event.uuid(), consultCall.getStatus());
+            return;
+        }
+        EslEndpoint endpoint = endpoint(consultCall.getNodeId());
+        String customerLegUuid = consultCall.getCustomerLegUuid();
+        String sourceAgentLegUuid = consultCall.getSourceAgentLegUuid();
+        String consultLegUuid = consultCall.getConsultLegUuid();
+        if (!telephonyCommandGateway.callExists(endpoint, customerLegUuid)) {
+            hangupIfExists(endpoint, consultLegUuid);
+            markConsultFailed(consultCall, "客户通话腿不存在，无法建立咨询桥接");
+            return;
+        }
+        if (!telephonyCommandGateway.callExists(endpoint, sourceAgentLegUuid)) {
+            hangupIfExists(endpoint, consultLegUuid);
+            unholdIfPossible(endpoint, customerLegUuid);
+            markConsultFailed(consultCall, "原坐席通话腿不存在，无法建立咨询桥接");
+            return;
+        }
+        consultCall.setStatus(AgentConsultCallStatus.TARGET_ANSWERED);
+        consultCall.setAnsweredAt(LocalDateTime.now());
+        saveConsultCall(consultCall);
+        log.info("咨询坐席已接听，准备由 Java 状态机桥接原坐席和咨询坐席，originalCallId={}，A={}，B={}，C={}，source={}，target={}",
+            consultCall.getOriginalCallId(), customerLegUuid, sourceAgentLegUuid, consultLegUuid,
+            consultCall.getAgentExtension(), consultCall.getTargetExtension());
+        unholdIfPossible(endpoint, sourceAgentLegUuid);
+        unholdIfPossible(endpoint, consultLegUuid);
+        telephonyCommandGateway.bridgeCalls(endpoint, sourceAgentLegUuid, consultLegUuid);
+        consultCall.setStatus(AgentConsultCallStatus.CONSULT_BRIDGING);
+        saveConsultCall(consultCall);
+    }
+
+    private boolean canBridgeConsultTargetOnAnswer(AgentConsultCallStatus status) {
+        return AgentConsultCallStatus.CUSTOMER_HOLDING.equals(status)
+            || AgentConsultCallStatus.DIALING.equals(status)
+            || AgentConsultCallStatus.TARGET_RINGING.equals(status);
+    }
+
+    private void handleConsultBridgeConfirmed(TelephonyEvent event) {
+        AgentConsultCall consultCall = readConsultCallByRelatedUuids(event);
+        if (consultCall == null || !isBridgePair(event, consultCall.getSourceAgentLegUuid(), consultCall.getConsultLegUuid())) {
+            return;
+        }
+        if (!AgentConsultCallStatus.TARGET_ANSWERED.equals(consultCall.getStatus())
+            && !AgentConsultCallStatus.CONSULT_BRIDGING.equals(consultCall.getStatus())) {
+            return;
+        }
+        consultCall.setStatus(AgentConsultCallStatus.CONSULT_TALKING);
+        consultCall.setConsultBridgedAt(LocalDateTime.now());
+        saveConsultCall(consultCall);
+        log.info("咨询桥接已由 CHANNEL_BRIDGE 确认，状态变更为 CONSULT_TALKING，originalCallId={}，A={}，B={}，C={}，source={}，target={}",
+            consultCall.getOriginalCallId(), consultCall.getCustomerLegUuid(), consultCall.getSourceAgentLegUuid(),
+            consultCall.getConsultLegUuid(), consultCall.getAgentExtension(), consultCall.getTargetExtension());
+    }
+
+    private AgentConsultCall readConsultCallByRelatedUuids(TelephonyEvent event) {
+        for (String uuid : relatedUuids(event)) {
+            AgentConsultCall consultCall = readConsultCallByLeg(uuid);
+            if (consultCall != null) {
+                return consultCall;
+            }
+        }
+        return null;
+    }
+
+    private AgentConsultCall readConsultCallByEvent(TelephonyEvent event) {
+        AgentConsultCall consultCall = readConsultCallByLeg(event.uuid());
+        if (consultCall != null) {
+            return consultCall;
+        }
+        consultCall = readConsultCallByLeg(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CONSULT_LEG_UUID));
+        if (consultCall != null) {
+            return consultCall;
+        }
+        return buildConsultCallFromEvent(event);
+    }
+
+    private AgentConsultCall buildConsultCallFromEvent(TelephonyEvent event) {
+        if (!"CONSULT".equalsIgnoreCase(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE))) {
+            return null;
+        }
+        String customerLegUuid = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CUSTOMER_LEG_UUID);
+        String sourceAgentLegUuid = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_SOURCE_AGENT_LEG_UUID);
+        String consultLegUuid = firstNotBlank(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CONSULT_LEG_UUID), event.uuid());
+        if (!isUuid(customerLegUuid) || !isUuid(sourceAgentLegUuid) || !isUuid(consultLegUuid)) {
+            log.warn("咨询接听事件缺少完整三腿信息，无法重建咨询上下文，uuid={}，customerLeg={}，sourceLeg={}，consultLeg={}",
+                event.uuid(), customerLegUuid, sourceAgentLegUuid, consultLegUuid);
+            return null;
+        }
+        String sourceExtension = normalizeExtension(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_SOURCE_AGENT_EXTENSION));
+        String targetExtension = normalizeExtension(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_TARGET_AGENT_EXTENSION));
+        if (sourceExtension == null || targetExtension == null) {
+            log.warn("咨询接听事件缺少源坐席或目标坐席分机，无法重建咨询上下文，uuid={}，sourceExtension={}，targetExtension={}",
+                event.uuid(), sourceExtension, targetExtension);
+            return null;
+        }
+        AgentRealtimeTargetResponse sourceAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), sourceExtension);
+        if (sourceAgent == null) {
+            log.warn("咨询接听事件无法匹配源坐席，无法重建咨询上下文，uuid={}，nodeId={}，sourceExtension={}",
+                event.uuid(), event.nodeId(), sourceExtension);
+            return null;
+        }
+        AgentRealtimeTargetResponse targetAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), targetExtension);
+        AgentConsultCall consultCall = new AgentConsultCall();
+        consultCall.setOriginalCallId(firstNotBlank(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALL_ID), customerLegUuid));
+        consultCall.setConsultCallId(firstNotBlank(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CONSULT_CALL_ID), consultLegUuid));
+        consultCall.setAgentChannelId(sourceAgentLegUuid);
+        consultCall.setCustomerCallId(customerLegUuid);
+        consultCall.setSourceAgentCallId(sourceAgentLegUuid);
+        consultCall.setTargetAgentCallId(consultLegUuid);
+        consultCall.setTenantId(sourceAgent.getTenantId());
+        consultCall.setNodeId(event.nodeId());
+        consultCall.setCustomerLegUuid(customerLegUuid);
+        consultCall.setSourceAgentLegUuid(sourceAgentLegUuid);
+        consultCall.setConsultLegUuid(consultLegUuid);
+        consultCall.setStatus(AgentConsultCallStatus.DIALING);
+        consultCall.setAgentId(sourceAgent.getAgentId());
+        consultCall.setAgentExtension(sourceExtension);
+        consultCall.setTargetAgentId(targetAgent == null ? null : targetAgent.getAgentId());
+        consultCall.setTargetExtension(targetExtension);
+        consultCall.setStartedAt(LocalDateTime.now());
+        saveConsultCall(consultCall);
+        log.warn("未命中咨询 Redis 索引，已从 CHANNEL_ANSWER 事件变量重建咨询上下文，originalCallId={}，A={}，B={}，C={}，source={}，target={}",
+            consultCall.getOriginalCallId(), customerLegUuid, sourceAgentLegUuid, consultLegUuid, sourceExtension, targetExtension);
+        return consultCall;
+    }
+
+    private AgentConsultCall readConsultCallByLeg(String legUuid) {
+        if (legUuid == null || legUuid.isBlank()) {
+            return null;
+        }
+        return RedisUtils.getCacheObject(consultLegKey(legUuid));
+    }
+
+    private void saveConsultCall(AgentConsultCall consultCall) {
+        if (consultCall == null) {
+            return;
+        }
+        if (consultCall.getTenantId() != null && !consultCall.getTenantId().isBlank() && consultCall.getAgentId() != null) {
+            RedisUtils.setCacheObject(consultCallKey(consultCall.getTenantId(), consultCall.getAgentId()), consultCall, ACTIVE_CALL_TTL);
+        }
+        saveConsultLegIndex(consultCall.getCustomerLegUuid(), consultCall);
+        saveConsultLegIndex(consultCall.getSourceAgentLegUuid(), consultCall);
+        saveConsultLegIndex(consultCall.getConsultLegUuid(), consultCall);
+    }
+
+    private void saveConsultLegIndex(String legUuid, AgentConsultCall consultCall) {
+        if (legUuid == null || legUuid.isBlank()) {
+            return;
+        }
+        RedisUtils.setCacheObject(consultLegKey(legUuid), consultCall, ACTIVE_CALL_TTL);
+    }
+
+    private void markConsultFailed(AgentConsultCall consultCall, String reason) {
+        consultCall.setStatus(AgentConsultCallStatus.FAILED);
+        saveConsultCall(consultCall);
+        log.warn("咨询转接失败，reason={}，originalCallId={}，A={}，B={}，C={}，source={}，target={}",
+            reason, consultCall.getOriginalCallId(), consultCall.getCustomerLegUuid(), consultCall.getSourceAgentLegUuid(),
+            consultCall.getConsultLegUuid(), consultCall.getAgentExtension(), consultCall.getTargetExtension());
+    }
+
+    private void hangupIfExists(EslEndpoint endpoint, String callId) {
+        if (callId == null || callId.isBlank() || !telephonyCommandGateway.callExists(endpoint, callId)) {
+            return;
+        }
+        telephonyCommandGateway.hangup(endpoint, callId);
+    }
+
+    private void unholdIfPossible(EslEndpoint endpoint, String callId) {
+        try {
+            if (callId != null && !callId.isBlank() && telephonyCommandGateway.callExists(endpoint, callId)) {
+                telephonyCommandGateway.unhold(endpoint, callId);
+            }
+        } catch (RuntimeException exception) {
+            log.warn("咨询转接恢复客户保持失败，callId={}，error={}", callId, exception.getMessage());
+        }
+    }
+
+    private boolean isBridgePair(TelephonyEvent event, String left, String right) {
+        Set<String> uuids = relatedUuids(event);
+        return left != null && right != null && uuids.contains(left) && uuids.contains(right);
+    }
+
+    private EslEndpoint endpoint(Long nodeId) {
+        FreeSwitchNodeConnectionResponse node = nodeQueryService.getEnabledConnection(nodeId);
+        return new EslEndpoint(node.getEslHost(), node.getEslPort(), node.getEslPassword(), node.getSipDomain());
     }
 
     private boolean isStaleMappedHangupForTarget(TelephonyEvent event, AgentRealtimeTargetResponse target) {
@@ -184,6 +436,49 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         addTargetByExtension(targets, event.nodeId(), event.headers().get(EslHeaders.VARIABLE_DIALLED_USER));
         addTargetByExtension(targets, event.nodeId(), extensionFromDialString(event.headers().get(EslHeaders.VARIABLE_CURRENT_APPLICATION_DATA)));
         return targets;
+    }
+
+    private void removeConsultSourceTarget(TelephonyEvent event, Map<Long, AgentRealtimeTargetResponse> targets) {
+        if (!"CONSULT".equalsIgnoreCase(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE))) {
+            return;
+        }
+        String sourceExtension = normalizeExtension(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER));
+        if (sourceExtension == null) {
+            return;
+        }
+        targets.values().removeIf(target -> sourceExtension.equals(normalizeExtension(target.getExtension())));
+    }
+
+    private void removeCompletedTransferSourceTargets(TelephonyEvent event, Map<Long, AgentRealtimeTargetResponse> targets) {
+        if (targets.isEmpty()) {
+            return;
+        }
+        Set<String> relatedUuids = relatedUuids(event);
+        targets.values().removeIf(target -> isCompletedTransferSourceTarget(target, relatedUuids));
+    }
+
+    private boolean isCompletedTransferSourceTarget(AgentRealtimeTargetResponse target, Set<String> relatedUuids) {
+        for (String uuid : relatedUuids) {
+            if (Boolean.TRUE.equals(RedisUtils.getCacheObject(transferredSourceAgentKey(target.getTenantId(), uuid, target.getAgentId())))) {
+                log.debug("过滤已完成咨询转接源坐席后续实时事件，uuid={}，agentId={}，extension={}",
+                    uuid, target.getAgentId(), target.getExtension());
+                return true;
+            }
+            String extension = normalizeExtension(target.getExtension());
+            if (extension != null
+                && Boolean.TRUE.equals(RedisUtils.getCacheObject(transferredSourceExtensionKey(target.getTenantId(), uuid, extension)))) {
+                log.debug("过滤已完成咨询转接源坐席后续实时事件，uuid={}，extension={}", uuid, target.getExtension());
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isCompletedTransferSourceLegHangup(TelephonyEvent event) {
+        return EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())
+            && event.uuid() != null
+            && !event.uuid().isBlank()
+            && Boolean.TRUE.equals(RedisUtils.getCacheObject(transferredSourceLegKey(event.uuid())));
     }
 
     private void addTargetByExtension(Map<Long, AgentRealtimeTargetResponse> targets, Long nodeId, String extension) {
@@ -255,6 +550,14 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         return ACTIVE_CALL_KEY_PREFIX + target.getTenantId() + ":" + target.getAgentId();
     }
 
+    private String consultCallKey(String tenantId, Long agentId) {
+        return CONSULT_CALL_KEY_PREFIX + tenantId + ":" + agentId;
+    }
+
+    private String consultLegKey(String legUuid) {
+        return CONSULT_LEG_KEY_PREFIX + legUuid;
+    }
+
     private void mergeMappedTargets(TelephonyEvent event, Map<Long, AgentRealtimeTargetResponse> targets) {
         for (String uuid : relatedUuids(event)) {
             List<AgentRealtimeTargetResponse> mappedTargets = readMappedTargets(uuid);
@@ -317,6 +620,15 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         relatedUuids(event).forEach(uuid -> RedisUtils.deleteObject(answeredTargetsKey(uuid)));
     }
 
+    private void deleteSingleUuidRuntimeMappings(String uuid) {
+        if (uuid == null || uuid.isBlank()) {
+            return;
+        }
+        RedisUtils.deleteObject(uuidTargetsKey(uuid));
+        RedisUtils.deleteObject(answeredTargetsKey(uuid));
+        RedisUtils.deleteObject(uuidActiveCallKeysKey(uuid));
+    }
+
     private String answeredTargetsKey(String uuid) {
         return CALL_UUID_ANSWERED_TARGETS_KEY_PREFIX + uuid;
     }
@@ -330,6 +642,11 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         addUuid(uuids, event.headers().get(EslHeaders.CHANNEL_CALL_UUID));
         addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_ORIGINATION_UUID));
         addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_BRIDGE_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_BUSINESS_CALL_ID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_CC_MEMBER_SESSION_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_CC_MEMBER_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.CC_CALLER_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.CC_MEMBER_UUID));
         return uuids;
     }
 
@@ -385,8 +702,11 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     }
 
     private boolean matchesEndedCall(TelephonyEvent event, Set<String> relatedUuids, AgentActiveCall call) {
-        if (call.getCallId() != null && relatedUuids.contains(call.getCallId())) return true;
-        return equalsAny(call.getAgentExtension(), event.callerNumber(), event.destinationNumber());
+        String eventUuid = event.uuid();
+        if (eventUuid == null || eventUuid.isBlank()) return false;
+        if (eventUuid.equals(call.getCallId())) return true;
+        if (eventUuid.equals(call.getAgentChannelId())) return true;
+        return call.getRelatedUuids() != null && call.getRelatedUuids().contains(eventUuid);
     }
 
     private boolean equalsAny(String source, String... values) {
@@ -399,14 +719,93 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
 
     private void saveActiveCallIfAbsent(TelephonyEvent event, AgentRealtimeTargetResponse target) {
         String key = activeCallKey(target);
+        AgentActiveCall existing = RedisUtils.getCacheObject(key);
+        if (existing != null) {
+            existing.setCallId(resolvePrimaryCallId(event, existing));
+            existing.setBusinessCallId(callStateRuntimeService.resolveBusinessCallId(event, existing));
+            String agentChannelId = resolveAgentChannelId(event, target);
+            if (agentChannelId != null) {
+                existing.setAgentChannelId(agentChannelId);
+            }
+            existing.setDestination(resolvePeerNumber(event, target));
+            existing.setRelatedUuids(mergeRelatedUuids(event, existing));
+            RedisUtils.setCacheObject(key, existing, ACTIVE_CALL_TTL);
+            saveUuidActiveCallIndexes(event, key);
+            return;
+        }
         AgentActiveCall call = new AgentActiveCall();
-        call.setCallId(event.uuid());
+        call.setCallId(resolvePrimaryCallId(event, null));
+        call.setBusinessCallId(callStateRuntimeService.resolveBusinessCallId(event));
+        call.setAgentChannelId(resolveAgentChannelId(event, target));
         call.setAgentId(target.getAgentId());
         call.setAgentExtension(target.getExtension());
-        call.setDestination(target.getExtension().equals(event.callerNumber()) ? event.destinationNumber() : event.callerNumber());
+        call.setDestination(resolvePeerNumber(event, target));
         call.setRelatedUuids(relatedUuids(event));
         RedisUtils.setCacheObject(key, call, ACTIVE_CALL_TTL);
         saveUuidActiveCallIndexes(event, key);
+    }
+
+    private String resolvePrimaryCallId(TelephonyEvent event, AgentActiveCall existing) {
+        if (existing != null && "INTERNAL".equalsIgnoreCase(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_DIRECTION))) {
+            return existing.getCallId();
+        }
+        if (EslEventNames.CHANNEL_BRIDGE.equals(event.eventName()) && isUuid(event.uuid())) {
+            return event.uuid();
+        }
+        return firstNotBlank(
+            isUuid(event.uuid()) ? event.uuid() : null,
+            event.headers().get(EslHeaders.VARIABLE_ORIGINATION_UUID),
+            event.headers().get(EslHeaders.CHANNEL_CALL_UUID),
+            isUuid(event.headers().get(EslHeaders.CC_CALLER_UUID)) ? event.headers().get(EslHeaders.CC_CALLER_UUID) : null,
+            existing == null ? null : existing.getCallId(),
+            event.uuid()
+        );
+    }
+
+    private String resolvePeerNumber(TelephonyEvent event, AgentRealtimeTargetResponse target) {
+        String extension = normalizeExtension(target.getExtension());
+        String caller = normalizeExtension(event.callerNumber());
+        if (extension != null && extension.equals(caller)) {
+            return event.destinationNumber();
+        }
+        String originalCaller = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER);
+        if (originalCaller != null && !originalCaller.isBlank()) {
+            return originalCaller;
+        }
+        return event.callerNumber();
+    }
+
+    private String resolveAgentChannelId(TelephonyEvent event, AgentRealtimeTargetResponse target) {
+        if (event.uuid() == null || event.uuid().isBlank()) {
+            return null;
+        }
+        String extension = normalizeExtension(target.getExtension());
+        if (extension == null) {
+            return null;
+        }
+        if (extension.equals(normalizeExtension(event.callerNumber()))
+            || extension.equals(normalizeExtension(event.destinationNumber()))
+            || extension.equals(normalizeExtension(event.headers().get(EslHeaders.CALLER_CALLEE_ID_NUMBER)))
+            || extension.equals(normalizeExtension(event.headers().get(EslHeaders.VARIABLE_SIP_TO_USER)))
+            || extension.equals(normalizeExtension(event.headers().get(EslHeaders.VARIABLE_SIP_REQ_USER)))
+            || extension.equals(normalizeExtension(event.headers().get(EslHeaders.VARIABLE_DIALED_USER)))
+            || extension.equals(normalizeExtension(event.headers().get(EslHeaders.VARIABLE_DIALLED_USER)))) {
+            return event.uuid();
+        }
+        return null;
+    }
+
+    private String firstNotBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private boolean isUuid(String value) {
+        return value != null && value.matches("^[0-9a-fA-F-]{36}$");
     }
 
     private void saveUuidActiveCallIndexes(TelephonyEvent event, String activeCallKey) {
@@ -417,8 +816,18 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         }
     }
 
+    private Set<String> mergeRelatedUuids(TelephonyEvent event, AgentActiveCall activeCall) {
+        Set<String> uuids = new LinkedHashSet<>(relatedUuids(event));
+        if (activeCall != null && activeCall.getRelatedUuids() != null) {
+            uuids.addAll(activeCall.getRelatedUuids());
+        }
+        return uuids;
+    }
+
     private void deleteUuidActiveCallIndexes(TelephonyEvent event) {
-        relatedUuids(event).forEach(uuid -> RedisUtils.deleteObject(uuidActiveCallKeysKey(uuid)));
+        if (event.uuid() != null && !event.uuid().isBlank()) {
+            RedisUtils.deleteObject(uuidActiveCallKeysKey(event.uuid()));
+        }
     }
 
     private void deleteUuidActiveCallIndexes(TelephonyEvent event, AgentActiveCall activeCall) {
@@ -431,6 +840,18 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
 
     private String uuidActiveCallKeysKey(String uuid) {
         return CALL_UUID_ACTIVE_CALL_KEYS_PREFIX + uuid;
+    }
+
+    private String transferredSourceAgentKey(String tenantId, String customerCallId, Long agentId) {
+        return TRANSFERRED_SOURCE_AGENT_KEY_PREFIX + tenantId + ":" + customerCallId + ":" + agentId;
+    }
+
+    private String transferredSourceExtensionKey(String tenantId, String customerCallId, String extension) {
+        return TRANSFERRED_SOURCE_EXTENSION_KEY_PREFIX + tenantId + ":" + customerCallId + ":" + extension;
+    }
+
+    private String transferredSourceLegKey(String sourceAgentCallId) {
+        return TRANSFERRED_SOURCE_LEG_KEY_PREFIX + sourceAgentCallId;
     }
 
     private void updatePresence(AgentRealtimeTargetResponse target, AgentPresenceStatus status, String handlingCallId) {

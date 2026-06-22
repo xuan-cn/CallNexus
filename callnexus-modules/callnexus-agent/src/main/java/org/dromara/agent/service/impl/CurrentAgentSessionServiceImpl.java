@@ -39,6 +39,7 @@ import java.util.List;
 public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionService {
     private static final String PRESENCE_KEY_PREFIX = "callnexus:agent:presence:";
     private static final String ACTIVE_CALL_KEY_PREFIX = "callnexus:agent:active-call:";
+    private static final String ENDED_CALL_UUID_KEY_PREFIX = "callnexus:call:ended-uuid:";
     private static final Duration PRESENCE_TTL = Duration.ofHours(12);
 
     private final AgentMapper agentMapper;
@@ -189,8 +190,14 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
         response.setAfterCallRemainingSeconds(afterCallRemainingSeconds(agent, presence));
         AgentActiveCall activeCall = RedisUtils.getCacheObject(activeCallKey(agent.getId()));
         if (activeCall != null) {
-            response.setActiveCallId(activeCall.getCallId());
-            response.setActiveCallNumber(activeCall.getDestination());
+            if (isEndedActiveCall(activeCall)) {
+                RedisUtils.deleteObject(activeCallKey(agent.getId()));
+                log.info("清理已结束的坐席活动通话缓存，agentId={}，activeCallId={}，relatedUuids={}",
+                    agent.getId(), activeCall.getCallId(), activeCall.getRelatedUuids());
+            } else {
+                response.setActiveCallId(activeCall.getCallId());
+                response.setActiveCallNumber(activeCall.getDestination());
+            }
         }
         if (presence != null) {
             response.setSignedInAt(presence.getSignedInAt());
@@ -251,6 +258,23 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
 
     private String activeCallKey(Long agentId) {
         return ACTIVE_CALL_KEY_PREFIX + LoginHelper.getTenantId() + ":" + agentId;
+    }
+
+    private boolean isEndedActiveCall(AgentActiveCall activeCall) {
+        if (activeCall == null) {
+            return false;
+        }
+        if (activeCall.getCallId() != null && RedisUtils.hasKey(endedUuidKey(activeCall.getCallId()))) {
+            return true;
+        }
+        if (activeCall.getAgentChannelId() != null && RedisUtils.hasKey(endedUuidKey(activeCall.getAgentChannelId()))) {
+            return true;
+        }
+        return false;
+    }
+
+    private String endedUuidKey(String uuid) {
+        return ENDED_CALL_UUID_KEY_PREFIX + uuid;
     }
 
     private void syncQueueStatus(Agent agent, AgentPresenceStatus status) {

@@ -1,0 +1,530 @@
+package org.dromara.call.service.impl;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.dromara.agent.domain.AgentActiveCall;
+import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
+import org.dromara.agent.service.AgentRealtimeQueryService;
+import org.dromara.call.constant.EslEventNames;
+import org.dromara.call.constant.EslHeaders;
+import org.dromara.call.domain.AgentCallSession;
+import org.dromara.call.domain.CallBridge;
+import org.dromara.call.domain.CallLeg;
+import org.dromara.call.domain.CallSession;
+import org.dromara.call.domain.TelephonyEvent;
+import org.dromara.call.mapper.AgentCallSessionMapper;
+import org.dromara.call.mapper.CallBridgeMapper;
+import org.dromara.call.mapper.CallLegMapper;
+import org.dromara.call.mapper.CallSessionMapper;
+import org.dromara.call.service.CallStateRuntimeService;
+import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
+import java.util.LinkedHashSet;
+import java.util.Set;
+
+@Service
+@Slf4j
+@RequiredArgsConstructor
+public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
+    private final CallSessionMapper sessionMapper;
+    private final CallLegMapper legMapper;
+    private final CallBridgeMapper bridgeMapper;
+    private final AgentCallSessionMapper agentCallSessionMapper;
+    private final AgentRealtimeQueryService agentQueryService;
+    private final FreeSwitchNodeQueryService nodeQueryService;
+
+    @Override
+    public void handleEvent(TelephonyEvent event) {
+        if (event == null || StringUtils.isBlank(event.uuid()) || StringUtils.isBlank(event.eventName())) {
+            return;
+        }
+        if (EslEventNames.CUSTOM.equals(event.eventName())) {
+            return;
+        }
+        String tenantId = resolveTenantId(event);
+        if (StringUtils.isBlank(tenantId)) {
+            log.warn("跳过无法识别租户的通话状态事件，nodeId={}，eventName={}，uuid={}", event.nodeId(), event.eventName(), event.uuid());
+            return;
+        }
+        TenantHelper.dynamic(tenantId, () -> persistEvent(event, tenantId));
+    }
+
+    @Override
+    public String resolveBusinessCallId(TelephonyEvent event) {
+        return resolveBusinessCallId(event, null);
+    }
+
+    @Override
+    public String resolveBusinessCallId(TelephonyEvent event, AgentActiveCall existing) {
+        if (event == null) {
+            return existing == null ? null : existing.getBusinessCallId();
+        }
+        return firstNotBlank(
+            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_BUSINESS_CALL_ID),
+            existing == null ? null : existing.getBusinessCallId(),
+            event.headers().get(EslHeaders.VARIABLE_CC_MEMBER_SESSION_UUID),
+            event.headers().get(EslHeaders.CC_CALLER_UUID),
+            event.headers().get(EslHeaders.CC_MEMBER_UUID),
+            existing == null ? null : existing.getCallId(),
+            event.uuid()
+        );
+    }
+
+    private void persistEvent(TelephonyEvent event, String tenantId) {
+        LocalDateTime now = LocalDateTime.now();
+        String businessCallId = resolveBusinessCallId(event);
+        CallSession session = resolveSession(event, tenantId, businessCallId, now);
+        CallLeg leg = upsertLeg(event, tenantId, session, businessCallId, now);
+        updateBridge(event, tenantId, session, businessCallId, now);
+        updateAgentCallSession(event, tenantId, session, leg, now);
+        updateSessionOwner(event, session, leg);
+    }
+
+    private CallSession resolveSession(TelephonyEvent event, String tenantId, String businessCallId, LocalDateTime now) {
+        CallSession session = sessionMapper.selectOne(new LambdaQueryWrapper<CallSession>()
+            .eq(CallSession::getBusinessCallId, businessCallId)
+            .last("limit 1"));
+        if (session != null) {
+            return session;
+        }
+        session = new CallSession();
+        session.setTenantId(tenantId);
+        session.setBusinessCallId(businessCallId);
+        session.setNodeId(event.nodeId());
+        session.setDirection(resolveDirection(event));
+        session.setCallerNumber(originalCaller(event));
+        session.setCalledNumber(originalCalled(event));
+        session.setCallStatus("CREATED");
+        session.setStartedAt(now);
+        session.setDurationSeconds(0);
+        session.setBillableSeconds(0);
+        try {
+            sessionMapper.insert(session);
+            return session;
+        } catch (DuplicateKeyException ignored) {
+            return sessionMapper.selectOne(new LambdaQueryWrapper<CallSession>()
+                .eq(CallSession::getBusinessCallId, businessCallId)
+                .last("limit 1"));
+        }
+    }
+
+    private CallLeg upsertLeg(TelephonyEvent event, String tenantId, CallSession session, String businessCallId, LocalDateTime now) {
+        CallLeg leg = legMapper.selectOne(new LambdaQueryWrapper<CallLeg>()
+            .eq(CallLeg::getLegUuid, event.uuid())
+            .last("limit 1"));
+        if (leg == null) {
+            leg = new CallLeg();
+            leg.setTenantId(tenantId);
+            leg.setSessionId(session.getId());
+            leg.setBusinessCallId(businessCallId);
+            leg.setNodeId(event.nodeId());
+            leg.setLegUuid(event.uuid());
+            leg.setLegRole(resolveLegRole(event));
+            applyAgent(leg, event);
+            leg.setCallerNumber(event.callerNumber());
+            leg.setCalledNumber(event.destinationNumber());
+            leg.setLegState("CREATED");
+            leg.setActive(true);
+            applyLegEvent(leg, event, now);
+            try {
+                legMapper.insert(leg);
+                return leg;
+            } catch (DuplicateKeyException ignored) {
+                leg = legMapper.selectOne(new LambdaQueryWrapper<CallLeg>()
+                    .eq(CallLeg::getLegUuid, event.uuid())
+                    .last("limit 1"));
+            }
+        }
+        if (leg == null) {
+            throw new IllegalStateException("通话腿状态写入失败");
+        }
+        leg.setSessionId(session.getId());
+        leg.setBusinessCallId(businessCallId);
+        if (StringUtils.isBlank(leg.getLegRole()) || "UNKNOWN".equals(leg.getLegRole())) {
+            leg.setLegRole(resolveLegRole(event));
+        }
+        if (leg.getAgentId() == null) {
+            applyAgent(leg, event);
+        }
+        if (StringUtils.isBlank(leg.getCallerNumber())) {
+            leg.setCallerNumber(event.callerNumber());
+        }
+        if (StringUtils.isBlank(leg.getCalledNumber())) {
+            leg.setCalledNumber(event.destinationNumber());
+        }
+        applyLegEvent(leg, event, now);
+        legMapper.updateById(leg);
+        return leg;
+    }
+
+    private void applyLegEvent(CallLeg leg, TelephonyEvent event, LocalDateTime now) {
+        switch (event.eventName()) {
+            case EslEventNames.CHANNEL_PROGRESS, EslEventNames.CHANNEL_PROGRESS_MEDIA -> {
+                leg.setLegState("RINGING");
+                if (leg.getRingingAt() == null) {
+                    leg.setRingingAt(now);
+                }
+            }
+            case EslEventNames.CHANNEL_ANSWER -> {
+                leg.setLegState("ANSWERED");
+                if (leg.getAnsweredAt() == null) {
+                    leg.setAnsweredAt(now);
+                }
+            }
+            case EslEventNames.CHANNEL_BRIDGE -> {
+                leg.setLegState("BRIDGED");
+                if (leg.getBridgedAt() == null) {
+                    leg.setBridgedAt(now);
+                }
+            }
+            case EslEventNames.CHANNEL_HOLD -> {
+                leg.setLegState("HELD");
+                leg.setHeldAt(now);
+            }
+            case EslEventNames.CHANNEL_UNHOLD -> leg.setLegState(leg.getBridgedAt() == null ? "ANSWERED" : "BRIDGED");
+            case EslEventNames.CHANNEL_HANGUP, EslEventNames.CHANNEL_HANGUP_COMPLETE, EslEventNames.CHANNEL_DESTROY -> {
+                leg.setLegState("ENDED");
+                leg.setActive(false);
+                if (leg.getEndedAt() == null || now.isAfter(leg.getEndedAt())) {
+                    leg.setEndedAt(now);
+                }
+                if (StringUtils.isNotBlank(event.hangupCause())) {
+                    leg.setHangupCause(event.hangupCause());
+                }
+            }
+            default -> {
+            }
+        }
+    }
+
+    private void updateBridge(TelephonyEvent event, String tenantId, CallSession session, String businessCallId, LocalDateTime now) {
+        String peerUuid = firstRelatedUuid(event);
+        if (StringUtils.isBlank(peerUuid)) {
+            return;
+        }
+        if (EslEventNames.CHANNEL_BRIDGE.equals(event.eventName())) {
+            markLegBridged(event.uuid(), now);
+            markLegBridged(peerUuid, now);
+            if (activeBridgeExists(event.uuid(), peerUuid)) {
+                return;
+            }
+            CallBridge bridge = new CallBridge();
+            bridge.setTenantId(tenantId);
+            bridge.setSessionId(session.getId());
+            bridge.setBusinessCallId(businessCallId);
+            bridge.setNodeId(event.nodeId());
+            bridge.setLeftLegUuid(event.uuid());
+            bridge.setRightLegUuid(peerUuid);
+            bridge.setBridgeType(resolveBridgeType(event, event.uuid(), peerUuid));
+            bridge.setBridgeState("BRIDGED");
+            bridge.setStartedAt(now);
+            bridgeMapper.insert(bridge);
+            return;
+        }
+        if (EslEventNames.CHANNEL_UNBRIDGE.equals(event.eventName())
+            || EslEventNames.CHANNEL_HANGUP.equals(event.eventName())
+            || EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
+            bridgeMapper.update(null, new LambdaUpdateWrapper<CallBridge>()
+                .eq(CallBridge::getBridgeState, "BRIDGED")
+                .and(wrapper -> wrapper
+                    .nested(pair -> pair.eq(CallBridge::getLeftLegUuid, event.uuid()).eq(CallBridge::getRightLegUuid, peerUuid))
+                    .or(pair -> pair.eq(CallBridge::getLeftLegUuid, peerUuid).eq(CallBridge::getRightLegUuid, event.uuid())))
+                .set(CallBridge::getBridgeState, "UNBRIDGED")
+                .set(CallBridge::getEndedAt, now));
+        }
+    }
+
+    private void markLegBridged(String legUuid, LocalDateTime now) {
+        if (StringUtils.isBlank(legUuid)) {
+            return;
+        }
+        CallLeg leg = legMapper.selectOne(new LambdaQueryWrapper<CallLeg>()
+            .eq(CallLeg::getLegUuid, legUuid)
+            .last("limit 1"));
+        if (leg == null || Boolean.FALSE.equals(leg.getActive())) {
+            return;
+        }
+        leg.setLegState("BRIDGED");
+        if (leg.getBridgedAt() == null) {
+            leg.setBridgedAt(now);
+        }
+        legMapper.updateById(leg);
+    }
+
+    private boolean activeBridgeExists(String left, String right) {
+        return bridgeMapper.exists(new LambdaQueryWrapper<CallBridge>()
+            .eq(CallBridge::getBridgeState, "BRIDGED")
+            .and(wrapper -> wrapper
+                .nested(pair -> pair.eq(CallBridge::getLeftLegUuid, left).eq(CallBridge::getRightLegUuid, right))
+                .or(pair -> pair.eq(CallBridge::getLeftLegUuid, right).eq(CallBridge::getRightLegUuid, left))));
+    }
+
+    private void updateAgentCallSession(TelephonyEvent event, String tenantId, CallSession session, CallLeg leg, LocalDateTime now) {
+        if (leg.getAgentId() == null || StringUtils.isBlank(leg.getAgentExtension())) {
+            return;
+        }
+        AgentCallSession agentSession = agentCallSessionMapper.selectOne(new LambdaQueryWrapper<AgentCallSession>()
+            .eq(AgentCallSession::getAgentLegUuid, leg.getLegUuid())
+            .last("limit 1"));
+        if (agentSession == null) {
+            agentSession = new AgentCallSession();
+            agentSession.setTenantId(tenantId);
+            agentSession.setSessionId(session.getId());
+            agentSession.setBusinessCallId(session.getBusinessCallId());
+            agentSession.setNodeId(event.nodeId());
+            agentSession.setAgentId(leg.getAgentId());
+            agentSession.setAgentExtension(leg.getAgentExtension());
+            agentSession.setAgentLegUuid(leg.getLegUuid());
+            agentSession.setRole(resolveAgentCallRole(event, leg));
+            agentSession.setSessionState("ACTIVE");
+            agentSession.setVisible(true);
+            agentSession.setJoinedAt(now);
+            try {
+                agentCallSessionMapper.insert(agentSession);
+                return;
+            } catch (DuplicateKeyException ignored) {
+                agentSession = agentCallSessionMapper.selectOne(new LambdaQueryWrapper<AgentCallSession>()
+                    .eq(AgentCallSession::getAgentLegUuid, leg.getLegUuid())
+                    .last("limit 1"));
+            }
+        }
+        if (agentSession == null) {
+            return;
+        }
+        agentSession.setSessionId(session.getId());
+        agentSession.setBusinessCallId(session.getBusinessCallId());
+        if (EslEventNames.CHANNEL_HANGUP.equals(event.eventName())
+            || EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())
+            || EslEventNames.CHANNEL_DESTROY.equals(event.eventName())) {
+            agentSession.setSessionState("ENDED");
+            agentSession.setVisible(false);
+            if (agentSession.getLeftAt() == null) {
+                agentSession.setLeftAt(now);
+            }
+        } else if (EslEventNames.CHANNEL_BRIDGE.equals(event.eventName())) {
+            agentSession.setSessionState(isConsultEvent(event) ? "CONSULTING" : "ACTIVE");
+            agentSession.setVisible(true);
+        }
+        agentCallSessionMapper.updateById(agentSession);
+    }
+
+    private void updateSessionOwner(TelephonyEvent event, CallSession session, CallLeg leg) {
+        if (leg.getAgentId() == null || !Boolean.TRUE.equals(leg.getActive())) {
+            return;
+        }
+        if (!EslEventNames.CHANNEL_ANSWER.equals(event.eventName()) && !EslEventNames.CHANNEL_BRIDGE.equals(event.eventName())) {
+            return;
+        }
+        sessionMapper.update(null, new LambdaUpdateWrapper<CallSession>()
+            .eq(CallSession::getId, session.getId())
+            .set(CallSession::getOwnerAgentId, leg.getAgentId())
+            .set(CallSession::getOwnerAgentExtension, leg.getAgentExtension())
+            .set(CallSession::getOwnerAgentLegUuid, leg.getLegUuid())
+            .set(CallSession::getCurrentBridgeState, EslEventNames.CHANNEL_BRIDGE.equals(event.eventName()) ? "BRIDGED" : "ANSWERED"));
+    }
+
+    private String resolveTenantId(TelephonyEvent event) {
+        AgentRealtimeTargetResponse callingAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber());
+        if (callingAgent != null) {
+            return callingAgent.getTenantId();
+        }
+        AgentRealtimeTargetResponse calledAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber());
+        if (calledAgent != null) {
+            return calledAgent.getTenantId();
+        }
+        String tenantId = event.headers().get("tenantId");
+        if (StringUtils.isNotBlank(tenantId)) {
+            return tenantId;
+        }
+        return nodeQueryService.findTenantId(event.nodeId());
+    }
+
+    private void applyAgent(CallLeg leg, TelephonyEvent event) {
+        AgentRealtimeTargetResponse agent = resolveAgent(event);
+        if (agent == null) {
+            return;
+        }
+        leg.setAgentId(agent.getAgentId());
+        leg.setAgentExtension(agent.getExtension());
+    }
+
+    private AgentRealtimeTargetResponse resolveAgent(TelephonyEvent event) {
+        String consultLegUuid = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CONSULT_LEG_UUID);
+        String sourceLegUuid = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_SOURCE_AGENT_LEG_UUID);
+        if (event.uuid().equals(consultLegUuid)) {
+            return findAgentByExtension(event, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_TARGET_AGENT_EXTENSION));
+        }
+        if (event.uuid().equals(sourceLegUuid)) {
+            return findAgentByExtension(event, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_SOURCE_AGENT_EXTENSION));
+        }
+        AgentRealtimeTargetResponse ccAgent = findAgentByExtension(event, event.headers().get(EslHeaders.CC_AGENT));
+        if (ccAgent != null) {
+            return ccAgent;
+        }
+        AgentRealtimeTargetResponse calledAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber());
+        if (calledAgent != null) {
+            return calledAgent;
+        }
+        return agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber());
+    }
+
+    private AgentRealtimeTargetResponse findAgentByExtension(TelephonyEvent event, String value) {
+        String extension = normalizeExtension(value);
+        return extension == null ? null : agentQueryService.findByNodeAndExtension(event.nodeId(), extension);
+    }
+
+    private String resolveLegRole(TelephonyEvent event) {
+        if (isConsultEvent(event) && event.uuid().equals(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CONSULT_LEG_UUID))) {
+            return "CONSULT_AGENT";
+        }
+        if (resolveAgent(event) != null) {
+            return "AGENT";
+        }
+        return "CUSTOMER";
+    }
+
+    private String resolveAgentCallRole(TelephonyEvent event, CallLeg leg) {
+        if ("CONSULT_AGENT".equals(leg.getLegRole())) {
+            return "CONSULT_TARGET";
+        }
+        if (isConsultEvent(event) && event.uuid().equals(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_SOURCE_AGENT_LEG_UUID))) {
+            return "SOURCE";
+        }
+        return "OWNER";
+    }
+
+    private String resolveBridgeType(TelephonyEvent event, String leftLegUuid, String rightLegUuid) {
+        if (isConsultEvent(event)) {
+            return "CONSULT";
+        }
+        String leftRole = legRole(leftLegUuid);
+        String rightRole = legRole(rightLegUuid);
+        if (isConsultBridge(leftRole, rightRole)) {
+            return "CONSULT";
+        }
+        if (isTransferBridge(leftRole, rightRole)) {
+            return "TRANSFER";
+        }
+        if (StringUtils.isNotBlank(event.headers().get(EslHeaders.CC_QUEUE))) {
+            return "QUEUE";
+        }
+        return "NORMAL";
+    }
+
+    private String legRole(String legUuid) {
+        if (StringUtils.isBlank(legUuid)) {
+            return null;
+        }
+        CallLeg leg = legMapper.selectOne(new LambdaQueryWrapper<CallLeg>()
+            .select(CallLeg::getLegRole)
+            .eq(CallLeg::getLegUuid, legUuid)
+            .last("limit 1"));
+        return leg == null ? null : leg.getLegRole();
+    }
+
+    private boolean isConsultBridge(String leftRole, String rightRole) {
+        return ("AGENT".equals(leftRole) && "CONSULT_AGENT".equals(rightRole))
+            || ("CONSULT_AGENT".equals(leftRole) && "AGENT".equals(rightRole));
+    }
+
+    private boolean isTransferBridge(String leftRole, String rightRole) {
+        return ("CUSTOMER".equals(leftRole) && "CONSULT_AGENT".equals(rightRole))
+            || ("CONSULT_AGENT".equals(leftRole) && "CUSTOMER".equals(rightRole));
+    }
+
+    private boolean isConsultEvent(TelephonyEvent event) {
+        return "CONSULT".equalsIgnoreCase(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE));
+    }
+
+    private String resolveDirection(TelephonyEvent event) {
+        String explicitDirection = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_DIRECTION);
+        if (StringUtils.isNotBlank(explicitDirection)) {
+            return explicitDirection;
+        }
+        boolean callerIsAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber()) != null;
+        boolean calledIsAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber()) != null;
+        if (callerIsAgent && calledIsAgent) {
+            return "INTERNAL";
+        }
+        if (callerIsAgent) {
+            return "OUTBOUND";
+        }
+        if (calledIsAgent) {
+            return "INBOUND";
+        }
+        return "UNKNOWN";
+    }
+
+    private String originalCaller(TelephonyEvent event) {
+        String caller = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER);
+        return StringUtils.isNotBlank(caller) ? caller : event.callerNumber();
+    }
+
+    private String originalCalled(TelephonyEvent event) {
+        String called = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLED);
+        return StringUtils.isNotBlank(called) ? called : event.destinationNumber();
+    }
+
+    private String firstRelatedUuid(TelephonyEvent event) {
+        return relatedUuids(event).stream()
+            .filter(uuid -> !uuid.equals(event.uuid()))
+            .findFirst()
+            .orElse(null);
+    }
+
+    private Set<String> relatedUuids(TelephonyEvent event) {
+        Set<String> uuids = new LinkedHashSet<>();
+        addUuid(uuids, event.uuid());
+        addUuid(uuids, event.headers().get(EslHeaders.OTHER_LEG_UNIQUE_ID));
+        addUuid(uuids, event.headers().get(EslHeaders.BRIDGE_A_UNIQUE_ID));
+        addUuid(uuids, event.headers().get(EslHeaders.BRIDGE_B_UNIQUE_ID));
+        addUuid(uuids, event.headers().get(EslHeaders.CHANNEL_CALL_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_ORIGINATION_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_BRIDGE_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CUSTOMER_LEG_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_SOURCE_AGENT_LEG_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CONSULT_LEG_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_CC_MEMBER_SESSION_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.CC_CALLER_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.CC_MEMBER_UUID));
+        return uuids;
+    }
+
+    private void addUuid(Set<String> uuids, String uuid) {
+        if (StringUtils.isNotBlank(uuid)) {
+            uuids.add(uuid);
+        }
+    }
+
+    private String normalizeExtension(String value) {
+        if (StringUtils.isBlank(value)) {
+            return null;
+        }
+        String normalized = value.trim();
+        if (normalized.startsWith("user/")) {
+            normalized = normalized.substring("user/".length());
+        }
+        int atIndex = normalized.indexOf('@');
+        if (atIndex > 0) {
+            normalized = normalized.substring(0, atIndex);
+        }
+        normalized = normalized.replaceAll("[^0-9*#+]", "");
+        return normalized.isBlank() ? null : normalized;
+    }
+
+    private String firstNotBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.isNotBlank(value)) {
+                return value;
+            }
+        }
+        return null;
+    }
+}

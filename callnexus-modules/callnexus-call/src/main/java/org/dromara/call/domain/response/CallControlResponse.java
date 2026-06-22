@@ -5,6 +5,7 @@ import lombok.Data;
 @Data
 public class CallControlResponse {
     private String callId;
+    private String businessCallId;
     private String agentExtension;
     private String destination;
     private Boolean external;

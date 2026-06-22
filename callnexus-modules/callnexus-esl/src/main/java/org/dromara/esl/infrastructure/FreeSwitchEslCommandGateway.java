@@ -33,28 +33,30 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         requireDialValue(endpoint.sipDomain());
         String callerIdNumber = outboundRoute != null && outboundRoute.isExternal() ? outboundRoute.getCallerIdNumber() : agentExtension;
         requireDialValue(callerIdNumber);
+        CallOriginateContext safeContext = context == null ? CallOriginateContext.empty() : context;
+        String businessCallId = businessCallId(callId, context);
         String variables = "{origination_uuid=" + callId
-            + ",callnexus_business_call_id=" + callId
+            + ",callnexus_business_call_id=" + businessCallId
             + ",callnexus_direction=" + (outboundRoute != null && outboundRoute.isExternal() ? "OUTBOUND" : "INTERNAL")
             + ",callnexus_original_caller=" + agentExtension
             + ",callnexus_original_called=" + destination
-            + optionalVariable("callnexus_customer_id", context.customerId())
-            + optionalVariable("callnexus_outbound_task_id", context.outboundTaskId())
-            + optionalVariable("callnexus_outbound_member_id", context.outboundMemberId())
+            + optionalVariable("callnexus_customer_id", safeContext.customerId())
+            + optionalVariable("callnexus_outbound_task_id", safeContext.outboundTaskId())
+            + optionalVariable("callnexus_outbound_member_id", safeContext.outboundMemberId())
             + ",origination_caller_id_number=" + callerIdNumber
             + ",origination_caller_id_name=" + callerIdNumber
             + ",execute_on_answer=record_session::/var/lib/freeswitch/recordings/" + callId + ".wav"
-            + ",api_hangup_hook='bg_system /opt/callnexus/bin/upload-recording.sh " + callId
+            + ",api_hangup_hook='bg_system /opt/callnexus/bin/upload-recording.sh " + businessCallId
             + " /var/lib/freeswitch/recordings/" + callId + ".wav'"
             + ",hangup_after_bridge=true}";
         String destinationDialString = destinationDialString(destination, endpoint.sipDomain(), outboundRoute);
         String command = "bgapi originate " + variables + userDialString(agentExtension, endpoint.sipDomain())
             + " &bridge(" + destinationDialString + ")";
         sendCommand(endpoint, command);
-        log.info("FreeSWITCH 发起呼叫命令已提交，callId={}，agentExtension={}，destination={}，external={}，gatewayCode={}，callerIdNumber={}，customerId={}，outboundTaskId={}，outboundMemberId={}",
-            callId, agentExtension, destination, outboundRoute != null && outboundRoute.isExternal(),
+        log.info("FreeSWITCH 发起呼叫命令已提交，channelUuid={}，businessCallId={}，agentExtension={}，destination={}，external={}，gatewayCode={}，callerIdNumber={}，customerId={}，outboundTaskId={}，outboundMemberId={}",
+            callId, businessCallId, agentExtension, destination, outboundRoute != null && outboundRoute.isExternal(),
             outboundRoute == null ? null : outboundRoute.getGatewayCode(), callerIdNumber,
-            context.customerId(), context.outboundTaskId(), context.outboundMemberId());
+            safeContext.customerId(), safeContext.outboundTaskId(), safeContext.outboundMemberId());
     }
 
     @Override
@@ -79,6 +81,68 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     }
 
     @Override
+    public void mute(EslEndpoint endpoint, String callId) {
+        requireCallId(callId);
+        sendCommand(endpoint, "api uuid_audio " + callId + " start read mute -4");
+        log.info("FreeSWITCH 坐席腿静音命令已提交，callId={}", callId);
+    }
+
+    @Override
+    public void unmute(EslEndpoint endpoint, String callId) {
+        requireCallId(callId);
+        sendCommand(endpoint, "api uuid_audio " + callId + " stop");
+        log.info("FreeSWITCH 坐席腿取消静音命令已提交，callId={}", callId);
+    }
+
+    @Override
+    public void sendDtmf(EslEndpoint endpoint, String callId, String digits) {
+        requireCallId(callId);
+        requireDtmfDigits(digits);
+        String safeDigits = digits.toUpperCase();
+        sendCommand(endpoint, "api uuid_send_dtmf " + callId + " " + safeDigits);
+        log.info("FreeSWITCH DTMF 命令已提交，callId={}，digits={}", callId, safeDigits);
+    }
+
+    @Override
+    public void park(EslEndpoint endpoint, String callId) {
+        requireCallId(callId);
+        sendCommand(endpoint, "api uuid_park " + callId);
+        log.info("FreeSWITCH 通话驻留命令已提交，callId={}", callId);
+    }
+
+    @Override
+    public void recoverMedia(EslEndpoint endpoint, String callId) {
+        requireCallId(callId);
+        EslFrame response = executeCommand(endpoint, "api uuid_media " + callId);
+        String reply = response.header("Reply-Text");
+        if (reply == null || reply.isBlank()) {
+            reply = response.body();
+        }
+        if (isSuccessResponse(reply)) {
+            log.info("FreeSWITCH 通话媒体恢复命令已提交，callId={}，response={}", callId, reply);
+            return;
+        }
+        log.warn("FreeSWITCH 通话媒体恢复命令失败，继续后续流程，callId={}，response={}", callId, reply);
+    }
+
+    @Override
+    public void setCallVariable(EslEndpoint endpoint, String callId, String name, String value) {
+        requireCallId(callId);
+        requireDialValue(name);
+        requireDialValue(value);
+        sendCommand(endpoint, "api uuid_setvar " + callId + " " + name + " " + value);
+        log.info("FreeSWITCH 通话变量已设置，callId={}，name={}，value={}", callId, name, value);
+    }
+
+    @Override
+    public void bridgeCalls(EslEndpoint endpoint, String leftCallId, String rightCallId) {
+        requireCallId(leftCallId);
+        requireCallId(rightCallId);
+        sendCommand(endpoint, "api uuid_bridge " + leftCallId + " " + rightCallId);
+        log.info("FreeSWITCH 双腿桥接命令已提交，leftCallId={}，rightCallId={}", leftCallId, rightCallId);
+    }
+
+    @Override
     public void blindTransfer(EslEndpoint endpoint, String callId, String targetExtension) {
         requireCallId(callId);
         requireDialValue(targetExtension);
@@ -88,24 +152,37 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     }
 
     @Override
-    public void originateConsultation(EslEndpoint endpoint, String consultCallId, String agentExtension, String targetExtension) {
+    public void originateConsultation(EslEndpoint endpoint, String businessCallId, String consultCallId, String agentExtension, String targetExtension,
+                                      String customerLegUuid, String sourceAgentLegUuid) {
+        requireDialValue(businessCallId);
         requireCallId(consultCallId);
+        requireCallId(customerLegUuid);
+        requireCallId(sourceAgentLegUuid);
         requireDialValue(agentExtension);
         requireDialValue(targetExtension);
         requireDialValue(endpoint.sipDomain());
         String variables = "{origination_uuid=" + consultCallId
-            + ",callnexus_business_call_id=" + consultCallId
+            + ",callnexus_business_call_id=" + businessCallId
             + ",callnexus_direction=INTERNAL"
+            + ",callnexus_call_purpose=CONSULT"
+            + ",callnexus_original_call_id=" + customerLegUuid
+            + ",callnexus_consult_call_id=" + consultCallId
+            + ",callnexus_customer_leg_uuid=" + customerLegUuid
+            + ",callnexus_source_agent_leg_uuid=" + sourceAgentLegUuid
+            + ",callnexus_consult_leg_uuid=" + consultCallId
+            + ",callnexus_source_agent_extension=" + agentExtension
+            + ",callnexus_target_agent_extension=" + targetExtension
             + ",callnexus_original_caller=" + agentExtension
             + ",callnexus_original_called=" + targetExtension
             + ",origination_caller_id_number=" + agentExtension
             + ",origination_caller_id_name=" + agentExtension
-            + ",hangup_after_bridge=true}";
-        String command = "bgapi originate " + variables + userDialString(agentExtension, endpoint.sipDomain())
-            + " &bridge(" + userDialString(targetExtension, endpoint.sipDomain()) + ")";
+            + ",hangup_after_bridge=false"
+            + ",park_after_bridge=true}";
+        String command = "bgapi originate " + variables + userDialString(targetExtension, endpoint.sipDomain())
+            + " &park()";
         sendCommand(endpoint, command);
-        log.info("FreeSWITCH 咨询呼叫命令已提交，consultCallId={}，agentExtension={}，targetExtension={}",
-            consultCallId, agentExtension, targetExtension);
+        log.info("FreeSWITCH 咨询呼叫命令已提交，businessCallId={}，consultCallId={}，agentExtension={}，targetExtension={}",
+            businessCallId, consultCallId, agentExtension, targetExtension);
     }
 
     @Override
@@ -182,6 +259,12 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         }
     }
 
+    private void requireDtmfDigits(String digits) {
+        if (digits == null || !digits.matches("^[0-9A-Da-d*#]{1,32}$")) {
+            throw new ServiceException("DTMF 按键不合法");
+        }
+    }
+
     private String userDialString(String extension, String domain) {
         return "user/" + extension + "@" + domain;
     }
@@ -204,6 +287,14 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
 
     private String optionalVariable(String name, Long value) {
         return value == null ? "" : "," + name + "=" + value;
+    }
+
+    private String businessCallId(String fallbackCallId, CallOriginateContext context) {
+        if (context != null && context.businessCallId() != null && !context.businessCallId().isBlank()) {
+            requireDialValue(context.businessCallId());
+            return context.businessCallId();
+        }
+        return fallbackCallId;
     }
 
     private void write(BufferedOutputStream output, String command) throws IOException {

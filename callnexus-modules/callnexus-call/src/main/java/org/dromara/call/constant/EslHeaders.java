@@ -21,8 +21,16 @@ public final class EslHeaders {
     public static final String VARIABLE_BRIDGE_UUID = "variable_bridge_uuid";
     public static final String VARIABLE_CALLNEXUS_BUSINESS_CALL_ID = "variable_callnexus_business_call_id";
     public static final String VARIABLE_CALLNEXUS_DIRECTION = "variable_callnexus_direction";
+    public static final String VARIABLE_CALLNEXUS_CALL_PURPOSE = "variable_callnexus_call_purpose";
     public static final String VARIABLE_CALLNEXUS_ORIGINAL_CALLER = "variable_callnexus_original_caller";
     public static final String VARIABLE_CALLNEXUS_ORIGINAL_CALLED = "variable_callnexus_original_called";
+    public static final String VARIABLE_CALLNEXUS_ORIGINAL_CALL_ID = "variable_callnexus_original_call_id";
+    public static final String VARIABLE_CALLNEXUS_CONSULT_CALL_ID = "variable_callnexus_consult_call_id";
+    public static final String VARIABLE_CALLNEXUS_CUSTOMER_LEG_UUID = "variable_callnexus_customer_leg_uuid";
+    public static final String VARIABLE_CALLNEXUS_SOURCE_AGENT_LEG_UUID = "variable_callnexus_source_agent_leg_uuid";
+    public static final String VARIABLE_CALLNEXUS_CONSULT_LEG_UUID = "variable_callnexus_consult_leg_uuid";
+    public static final String VARIABLE_CALLNEXUS_SOURCE_AGENT_EXTENSION = "variable_callnexus_source_agent_extension";
+    public static final String VARIABLE_CALLNEXUS_TARGET_AGENT_EXTENSION = "variable_callnexus_target_agent_extension";
     public static final String VARIABLE_CALLNEXUS_CUSTOMER_ID = "variable_callnexus_customer_id";
     public static final String VARIABLE_CALLNEXUS_OUTBOUND_TASK_ID = "variable_callnexus_outbound_task_id";
     public static final String VARIABLE_CALLNEXUS_OUTBOUND_MEMBER_ID = "variable_callnexus_outbound_member_id";
@@ -42,6 +50,8 @@ public final class EslHeaders {
     public static final String CC_QUEUE_POSITION = "CC-Queue-Position";
     public static final String CC_CALLER_CID_NUMBER = "CC-Caller-CID-Number";
     public static final String CC_MEMBER_UUID = "CC-Member-UUID";
+    public static final String VARIABLE_CC_MEMBER_SESSION_UUID = "variable_cc_member_session_uuid";
+    public static final String VARIABLE_CC_MEMBER_UUID = "variable_cc_member_uuid";
 
     private EslHeaders() {
     }

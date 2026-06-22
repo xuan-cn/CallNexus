@@ -8,6 +8,8 @@ import java.util.Set;
 @Data
 public class AgentActiveCall implements Serializable {
     private String callId;
+    private String businessCallId;
+    private String agentChannelId;
     private Long agentId;
     private String agentExtension;
     private String destination;
