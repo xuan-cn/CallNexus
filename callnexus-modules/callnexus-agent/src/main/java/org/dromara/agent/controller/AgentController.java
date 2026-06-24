@@ -5,6 +5,8 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.agent.domain.request.*;
 import org.dromara.agent.domain.response.AgentResponse;
+import org.dromara.ai.domain.request.GenerateAgentPromptRequest;
+import org.dromara.ai.domain.response.AiGeneratedMediaResponse;
 import org.dromara.agent.service.AgentApplicationService;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.mybatis.core.page.PageQuery;
@@ -61,5 +63,23 @@ public class AgentController {
     public R<Void> unbindExtension(@PathVariable Long id) {
         applicationService.unbindExtension(id);
         return R.ok();
+    }
+
+    @PostMapping("/{id}/prompt/generate")
+    @SaCheckPermission("callcenter:agent:update")
+    public R<AiGeneratedMediaResponse> generatePrompt(@PathVariable Long id, @RequestBody(required = false) GenerateAgentPromptRequest request) {
+        return R.ok(applicationService.generatePrompt(id, request == null ? new GenerateAgentPromptRequest() : request));
+    }
+
+    @PostMapping("/prompts/generate")
+    @SaCheckPermission("callcenter:agent:update")
+    public R<Integer> batchGeneratePrompts(@RequestBody(required = false) BatchGenerateAgentPromptRequest request) {
+        return R.ok(applicationService.batchGeneratePrompts(request == null ? new BatchGenerateAgentPromptRequest() : request));
+    }
+
+    @GetMapping("/{id}/prompt")
+    @SaCheckPermission("callcenter:agent:query")
+    public R<AiGeneratedMediaResponse> prompt(@PathVariable Long id) {
+        return R.ok(applicationService.prompt(id));
     }
 }

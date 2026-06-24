@@ -9,7 +9,10 @@ import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
 import org.dromara.agent.service.AgentRealtimeQueryService;
 import org.dromara.call.constant.EslEventNames;
 import org.dromara.call.constant.EslHeaders;
+import org.dromara.call.domain.AgentCallSession;
+import org.dromara.call.domain.CallBridge;
 import org.dromara.call.domain.CallEvent;
+import org.dromara.call.domain.CallLeg;
 import org.dromara.call.domain.CallRecord;
 import org.dromara.call.domain.CallSession;
 import org.dromara.call.domain.CallSessionCompletedEvent;
@@ -17,10 +20,17 @@ import org.dromara.call.domain.TelephonyEvent;
 import org.dromara.call.domain.VoiceMailMessage;
 import org.dromara.call.domain.request.CallRecordPageQuery;
 import org.dromara.call.domain.response.CallEventResponse;
+import org.dromara.call.domain.response.AgentCallSessionResponse;
+import org.dromara.call.domain.response.CallBusinessTimelineResponse;
+import org.dromara.call.domain.response.CallDiagnosticBridgeResponse;
+import org.dromara.call.domain.response.CallDiagnosticLegResponse;
 import org.dromara.call.domain.response.CallLegResponse;
 import org.dromara.call.domain.response.CallRecordResponse;
 import org.dromara.call.domain.response.VoiceMailMessageResponse;
+import org.dromara.call.mapper.AgentCallSessionMapper;
+import org.dromara.call.mapper.CallBridgeMapper;
 import org.dromara.call.mapper.CallEventMapper;
+import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallRecordMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.mapper.VoiceMailMessageMapper;
@@ -41,6 +51,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -54,6 +65,9 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private final CallRecordMapper recordMapper;
     private final CallSessionMapper sessionMapper;
     private final CallEventMapper eventMapper;
+    private final CallLegMapper callLegMapper;
+    private final CallBridgeMapper callBridgeMapper;
+    private final AgentCallSessionMapper agentCallSessionMapper;
     private final VoiceMailMessageMapper voiceMailMessageMapper;
     private final AgentRealtimeQueryService agentQueryService;
     private final FreeSwitchNodeQueryService nodeQueryService;
@@ -598,16 +612,226 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
                     .eq(CallRecord::getSessionId, session.getId())
                     .orderByAsc(CallRecord::getStartedAt))
                 .stream().map(this::toLegResponse).toList());
-            response.setEvents(eventMapper.selectList(new LambdaQueryWrapper<CallEvent>()
-                    .eq(CallEvent::getSessionId, session.getId())
-                    .orderByAsc(CallEvent::getOccurredAt))
-                .stream().map(this::toEventResponse).toList());
+            List<CallEvent> events = eventMapper.selectList(new LambdaQueryWrapper<CallEvent>()
+                .eq(CallEvent::getSessionId, session.getId())
+                .orderByAsc(CallEvent::getOccurredAt));
+            List<CallLeg> diagnosticLegs = callLegMapper.selectList(new LambdaQueryWrapper<CallLeg>()
+                .eq(CallLeg::getSessionId, session.getId())
+                .orderByAsc(CallLeg::getRingingAt)
+                .orderByAsc(CallLeg::getAnsweredAt)
+                .orderByAsc(CallLeg::getId));
+            List<CallBridge> diagnosticBridges = callBridgeMapper.selectList(new LambdaQueryWrapper<CallBridge>()
+                .eq(CallBridge::getSessionId, session.getId())
+                .orderByAsc(CallBridge::getStartedAt)
+                .orderByAsc(CallBridge::getId));
+            List<AgentCallSession> agentSessions = agentCallSessionMapper.selectList(new LambdaQueryWrapper<AgentCallSession>()
+                .eq(AgentCallSession::getSessionId, session.getId())
+                .orderByAsc(AgentCallSession::getJoinedAt)
+                .orderByAsc(AgentCallSession::getId));
+            response.setEvents(events.stream().map(this::toEventResponse).toList());
+            response.setBusinessTimeline(buildBusinessTimeline(session, events, diagnosticLegs, diagnosticBridges, agentSessions));
             response.setVoicemailMessages(voiceMailMessageMapper.selectList(new LambdaQueryWrapper<VoiceMailMessage>()
                     .eq(VoiceMailMessage::getCallSessionId, session.getId())
                     .orderByDesc(VoiceMailMessage::getCreateTime))
                 .stream().map(this::toVoiceMailMessageResponse).toList());
+            response.setDiagnosticLegs(diagnosticLegs.stream().map(this::toDiagnosticLegResponse).toList());
+            response.setDiagnosticBridges(diagnosticBridges.stream().map(this::toDiagnosticBridgeResponse).toList());
+            response.setAgentSessions(agentSessions.stream().map(this::toAgentCallSessionResponse).toList());
         }
         return response;
+    }
+
+    private List<CallBusinessTimelineResponse> buildBusinessTimeline(CallSession session, List<CallEvent> events,
+                                                                     List<CallLeg> legs, List<CallBridge> bridges,
+                                                                     List<AgentCallSession> agentSessions) {
+        List<CallBusinessTimelineResponse> timeline = new ArrayList<>();
+        addTimeline(timeline, session.getStartedAt(), "CALL_STARTED", "通话开始",
+            callDirectionText(session.getDirection()) + "：" + safeText(session.getCallerNumber()) + " -> " + safeText(session.getCalledNumber()),
+            session.getCallerNumber(), session.getCalledNumber(), "primary", session.getBusinessCallId(), null);
+
+        for (CallEvent event : events) {
+            addTimeline(timeline, event.getOccurredAt(), event.getEventType(), eventTitle(event.getEventType()),
+                eventDescription(event), event.getFromTarget(), event.getToTarget(), eventTone(event.getEventType()),
+                event.getChannelUuid(), event.getRelatedChannelUuid());
+        }
+
+        for (CallBridge bridge : bridges) {
+            addTimeline(timeline, bridge.getStartedAt(), bridgeTypeEvent(bridge.getBridgeType()), bridgeTypeTitle(bridge.getBridgeType()),
+                bridgeDescription(bridge), legDisplay(legs, bridge.getLeftLegUuid()), legDisplay(legs, bridge.getRightLegUuid()),
+                bridgeTone(bridge.getBridgeType()), bridge.getLeftLegUuid(), bridge.getRightLegUuid());
+        }
+
+        for (AgentCallSession agentSession : agentSessions) {
+            addTimeline(timeline, agentSession.getJoinedAt(), "AGENT_JOINED", agentRoleTitle(agentSession.getRole()),
+                "坐席 " + safeText(agentSession.getAgentExtension()) + " 加入通话，角色：" + agentRoleLabel(agentSession.getRole()),
+                agentSession.getAgentExtension(), null, "info", agentSession.getAgentLegUuid(), null);
+            if (agentSession.getLeftAt() != null) {
+                addTimeline(timeline, agentSession.getLeftAt(), "AGENT_LEFT", "坐席离开",
+                    "坐席 " + safeText(agentSession.getAgentExtension()) + " 离开通话",
+                    agentSession.getAgentExtension(), null, "danger", agentSession.getAgentLegUuid(), null);
+            }
+        }
+
+        addTimeline(timeline, session.getEndedAt(), "CALL_ENDED", "通话结束",
+            "挂断原因：" + safeText(session.getHangupCause()), session.getCallerNumber(), session.getCalledNumber(),
+            "danger", session.getBusinessCallId(), null);
+
+        timeline.sort(Comparator
+            .comparing(CallBusinessTimelineResponse::getOccurredAt, Comparator.nullsLast(LocalDateTime::compareTo))
+            .thenComparing(CallBusinessTimelineResponse::getId, Comparator.nullsLast(String::compareTo)));
+        for (int i = 0; i < timeline.size(); i++) {
+            timeline.get(i).setId(String.valueOf(i + 1));
+        }
+        return timeline;
+    }
+
+    private void addTimeline(List<CallBusinessTimelineResponse> timeline, LocalDateTime occurredAt, String type,
+                             String title, String description, String actor, String target, String tone,
+                             String channelUuid, String relatedChannelUuid) {
+        if (occurredAt == null) {
+            return;
+        }
+        CallBusinessTimelineResponse item = new CallBusinessTimelineResponse();
+        item.setId(String.valueOf(timeline.size() + 1));
+        item.setOccurredAt(occurredAt);
+        item.setType(type);
+        item.setTitle(title);
+        item.setDescription(description);
+        item.setActor(actor);
+        item.setTarget(target);
+        item.setTone(tone);
+        item.setChannelUuid(channelUuid);
+        item.setRelatedChannelUuid(relatedChannelUuid);
+        timeline.add(item);
+    }
+
+    private String eventTitle(String eventType) {
+        return switch (safeText(eventType)) {
+            case "CALL_LEG_CREATED" -> "创建通话腿";
+            case "RINGING" -> "开始振铃";
+            case "ANSWERED" -> "接听通话";
+            case "BRIDGED" -> "建立通话";
+            case "TRANSFERRED" -> "完成转接";
+            case "UNBRIDGED" -> "解除桥接";
+            case "HELD" -> "客户保持";
+            case "UNHELD" -> "恢复通话";
+            case "CALL_LEG_ENDED" -> "通话腿结束";
+            case "QUEUE_IN" -> "进入队列";
+            case "QUEUE_WAIT" -> "队列等待";
+            case "AGENT_RING" -> "坐席振铃";
+            case "AGENT_ANSWER" -> "坐席接听";
+            case "AGENT_NO_ANSWER" -> "坐席未接";
+            case "QUEUE_TIMEOUT" -> "队列超时";
+            case "ABANDON" -> "客户放弃";
+            case "VOICEMAIL_RECORDED" -> "语音留言";
+            case "DTMF_SENT" -> "发送 DTMF";
+            default -> safeText(eventType);
+        };
+    }
+
+    private String eventDescription(CallEvent event) {
+        String from = safeText(event.getFromTarget());
+        String to = safeText(event.getToTarget());
+        if (!"-".equals(from) && !"-".equals(to)) {
+            return from + " -> " + to;
+        }
+        if (!"-".equals(from)) {
+            return from;
+        }
+        if (!"-".equals(to)) {
+            return to;
+        }
+        return "事件：" + safeText(event.getEventType());
+    }
+
+    private String eventTone(String eventType) {
+        return switch (safeText(eventType)) {
+            case "ANSWERED", "BRIDGED", "AGENT_ANSWER", "TRANSFERRED", "UNHELD" -> "success";
+            case "CALL_LEG_ENDED", "QUEUE_TIMEOUT", "ABANDON", "AGENT_NO_ANSWER" -> "danger";
+            case "RINGING", "AGENT_RING", "QUEUE_IN", "QUEUE_WAIT", "HELD" -> "warning";
+            default -> "primary";
+        };
+    }
+
+    private String bridgeTypeEvent(String bridgeType) {
+        return switch (safeText(bridgeType)) {
+            case "CONSULT" -> "CONSULT_BRIDGED";
+            case "TRANSFER" -> "TRANSFER_BRIDGED";
+            case "BLIND_TRANSFER" -> "BLIND_TRANSFER_BRIDGED";
+            default -> "NORMAL_BRIDGED";
+        };
+    }
+
+    private String bridgeTypeTitle(String bridgeType) {
+        return switch (safeText(bridgeType)) {
+            case "CONSULT" -> "咨询通话";
+            case "TRANSFER" -> "转接接管";
+            case "BLIND_TRANSFER" -> "盲转接通";
+            default -> "客户与坐席通话";
+        };
+    }
+
+    private String bridgeDescription(CallBridge bridge) {
+        String state = "BRIDGED".equals(bridge.getBridgeState()) ? "桥接中" : "已解除";
+        return bridgeTypeTitle(bridge.getBridgeType()) + "，状态：" + state;
+    }
+
+    private String bridgeTone(String bridgeType) {
+        return switch (safeText(bridgeType)) {
+            case "CONSULT" -> "warning";
+            case "TRANSFER", "BLIND_TRANSFER" -> "success";
+            default -> "success";
+        };
+    }
+
+    private String agentRoleTitle(String role) {
+        return switch (safeText(role)) {
+            case "OWNER" -> "主控坐席加入";
+            case "CONSULT_TARGET" -> "咨询坐席加入";
+            case "TRANSFER_TARGET" -> "转接坐席加入";
+            default -> "坐席加入";
+        };
+    }
+
+    private String agentRoleLabel(String role) {
+        return switch (safeText(role)) {
+            case "OWNER" -> "主控坐席";
+            case "CONSULT_TARGET" -> "咨询目标";
+            case "TRANSFER_TARGET" -> "转接目标";
+            default -> safeText(role);
+        };
+    }
+
+    private String legDisplay(List<CallLeg> legs, String uuid) {
+        if (StringUtils.isBlank(uuid)) {
+            return "-";
+        }
+        return legs.stream()
+            .filter(leg -> uuid.equals(leg.getLegUuid()))
+            .findFirst()
+            .map(leg -> {
+                if (StringUtils.isNotBlank(leg.getAgentExtension())) {
+                    return "坐席" + leg.getAgentExtension();
+                }
+                if (StringUtils.isNotBlank(leg.getCallerNumber())) {
+                    return leg.getCallerNumber();
+                }
+                return uuid;
+            })
+            .orElse(uuid);
+    }
+
+    private String callDirectionText(String direction) {
+        return switch (safeText(direction)) {
+            case "INBOUND" -> "呼入";
+            case "OUTBOUND" -> "呼出";
+            case "INTERNAL" -> "内部通话";
+            default -> "通话";
+        };
+    }
+
+    private String safeText(String value) {
+        return StringUtils.isBlank(value) ? "-" : value;
     }
 
     private VoiceMailMessageResponse toVoiceMailMessageResponse(VoiceMailMessage message) {
@@ -679,6 +903,59 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         response.setDurationSeconds(record.getDurationSeconds());
         response.setBillableSeconds(record.getBillableSeconds());
         response.setHangupCause(record.getHangupCause());
+        return response;
+    }
+
+    private CallDiagnosticLegResponse toDiagnosticLegResponse(CallLeg leg) {
+        CallDiagnosticLegResponse response = new CallDiagnosticLegResponse();
+        response.setId(leg.getId());
+        response.setBusinessCallId(leg.getBusinessCallId());
+        response.setNodeId(leg.getNodeId());
+        response.setLegUuid(leg.getLegUuid());
+        response.setLegRole(leg.getLegRole());
+        response.setAgentId(leg.getAgentId());
+        response.setAgentExtension(leg.getAgentExtension());
+        response.setCallerNumber(leg.getCallerNumber());
+        response.setCalledNumber(leg.getCalledNumber());
+        response.setLegState(leg.getLegState());
+        response.setActive(leg.getActive());
+        response.setRingingAt(leg.getRingingAt());
+        response.setAnsweredAt(leg.getAnsweredAt());
+        response.setBridgedAt(leg.getBridgedAt());
+        response.setHeldAt(leg.getHeldAt());
+        response.setParkedAt(leg.getParkedAt());
+        response.setEndedAt(leg.getEndedAt());
+        response.setHangupCause(leg.getHangupCause());
+        return response;
+    }
+
+    private CallDiagnosticBridgeResponse toDiagnosticBridgeResponse(CallBridge bridge) {
+        CallDiagnosticBridgeResponse response = new CallDiagnosticBridgeResponse();
+        response.setId(bridge.getId());
+        response.setBusinessCallId(bridge.getBusinessCallId());
+        response.setNodeId(bridge.getNodeId());
+        response.setLeftLegUuid(bridge.getLeftLegUuid());
+        response.setRightLegUuid(bridge.getRightLegUuid());
+        response.setBridgeType(bridge.getBridgeType());
+        response.setBridgeState(bridge.getBridgeState());
+        response.setStartedAt(bridge.getStartedAt());
+        response.setEndedAt(bridge.getEndedAt());
+        return response;
+    }
+
+    private AgentCallSessionResponse toAgentCallSessionResponse(AgentCallSession session) {
+        AgentCallSessionResponse response = new AgentCallSessionResponse();
+        response.setId(session.getId());
+        response.setBusinessCallId(session.getBusinessCallId());
+        response.setNodeId(session.getNodeId());
+        response.setAgentId(session.getAgentId());
+        response.setAgentExtension(session.getAgentExtension());
+        response.setAgentLegUuid(session.getAgentLegUuid());
+        response.setRole(session.getRole());
+        response.setSessionState(session.getSessionState());
+        response.setVisible(session.getVisible());
+        response.setJoinedAt(session.getJoinedAt());
+        response.setLeftAt(session.getLeftAt());
         return response;
     }
 

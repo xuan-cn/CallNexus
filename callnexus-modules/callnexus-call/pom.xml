@@ -14,34 +14,47 @@
         <dependency>
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-resource</artifactId>
+            <version>${revision}</version>
         </dependency>
         <dependency>
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-agent</artifactId>
+            <version>${revision}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.dromara</groupId>
+            <artifactId>callnexus-ai</artifactId>
+            <version>${revision}</version>
         </dependency>
         <dependency>
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-common-redis</artifactId>
+            <version>${revision}</version>
         </dependency>
         <dependency>
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-common-satoken</artifactId>
+            <version>${revision}</version>
         </dependency>
         <dependency>
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-common-websocket</artifactId>
+            <version>${revision}</version>
         </dependency>
         <dependency>
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-common-sse</artifactId>
+            <version>${revision}</version>
         </dependency>
         <dependency>
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-common-json</artifactId>
+            <version>${revision}</version>
         </dependency>
         <dependency>
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-system</artifactId>
+            <version>${revision}</version>
         </dependency>
     </dependencies>
 </project>

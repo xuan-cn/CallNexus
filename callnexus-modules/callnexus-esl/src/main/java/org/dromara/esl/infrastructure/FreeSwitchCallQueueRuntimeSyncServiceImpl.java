@@ -102,8 +102,8 @@ public class FreeSwitchCallQueueRuntimeSyncServiceImpl implements CallQueueRunti
 
     private String mapStatus(AgentPresenceStatus status) {
         return switch (status) {
-            case IDLE, BUSY -> "Available";
-            case AFTER_CALL -> "On Break";
+            case IDLE -> "Available";
+            case BUSY, AFTER_CALL -> "On Break";
             case OFFLINE -> "Logged Out";
         };
     }

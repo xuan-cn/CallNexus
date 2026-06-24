@@ -120,16 +120,34 @@ public class FreeSwitchDialplanXmlRenderer {
     }
 
     private String forceWaitAction(CallQueueDialplanResponse queue) {
+        StringBuilder builder = new StringBuilder();
         Integer seconds = queue.getForceWaitSeconds();
-        if (seconds == null || seconds <= 0) {
-            return "";
+        if (seconds != null && seconds > 0) {
+            builder.append("                      <action application=\"sleep\" data=\"")
+                .append(seconds * 1000)
+                .append("\"/>\n");
         }
-        return "                      <action application=\"sleep\" data=\"" + (seconds * 1000) + "\"/>\n";
+        if (queue.getForceWaitMediaPath() != null && !queue.getForceWaitMediaPath().isBlank()) {
+            builder.append("                      <action application=\"playback\" data=\"")
+                .append(FreeSwitchXmlRenderer.escape(queue.getForceWaitMediaPath()))
+                .append("\"/>\n");
+        }
+        return builder.toString();
     }
 
     private String queueExitActions(CallQueueDialplanResponse queue, String currentQueueName, String context) {
         String action = queue.getTimeoutAction() == null || queue.getTimeoutAction().isBlank() ? "HANGUP" : queue.getTimeoutAction();
         String target = queue.getTimeoutTarget();
+        String targetQueueCode = queue.getTimeoutTargetQueueCode();
+        if (queue.getNoAgentAction() != null && !queue.getNoAgentAction().isBlank() && !"WAIT".equals(queue.getNoAgentAction())) {
+            action = queue.getNoAgentAction();
+            target = queue.getNoAgentTarget();
+            targetQueueCode = queue.getNoAgentTargetQueueCode();
+        }
+        return renderQueuePostAction(action, target, targetQueueCode, currentQueueName, context);
+    }
+
+    private String renderQueuePostAction(String action, String target, String targetQueueCode, String currentQueueName, String context) {
         return switch (action) {
             case "CONTINUE" -> "                      <action application=\"callcenter\" data=\"" + currentQueueName + "\"/>\n"
                 + "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
@@ -139,7 +157,7 @@ public class FreeSwitchDialplanXmlRenderer {
                 + FreeSwitchXmlRenderer.escape(safeTarget(target)) + "@${domain_name}\"/>\n"
                 + "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
             case "QUEUE" -> "                      <action application=\"callcenter\" data=\""
-                + FreeSwitchXmlRenderer.escape(queue.getTimeoutTargetQueueCode() + "@default") + "\"/>\n"
+                + FreeSwitchXmlRenderer.escape(targetQueueCode + "@default") + "\"/>\n"
                 + "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
             default -> "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
         };

@@ -79,10 +79,11 @@ public class CallQueueConfigurationContributor implements FreeSwitchCallCenterCo
             + FreeSwitchXmlRenderer.escape(waitMediaPath == null ? "local_stream://moh" : waitMediaPath) + "\"/>\n"
             + "    <param name=\"time-base-score\" value=\"system\"/>\n"
             + "    <param name=\"max-wait-time\" value=\"" + queue.getMaxWaitSeconds() + "\"/>\n"
-            + "    <param name=\"max-wait-time-with-no-agent\" value=\"0\"/>\n"
-            + "    <param name=\"max-wait-time-with-no-agent-time-reached\" value=\"5\"/>\n"
+            + "    <param name=\"max-wait-time-with-no-agent\" value=\"" + noAgentWaitSeconds(queue) + "\"/>\n"
+            + "    <param name=\"max-wait-time-with-no-agent-time-reached\" value=\"" + noAgentWaitSeconds(queue) + "\"/>\n"
             + announceParams(queue, nodeId)
             + "    <param name=\"agent-no-answer-status\" value=\"" + agentNoAnswerStatus(queue.getAgentNoAnswerAction()) + "\"/>\n"
+            + "    <param name=\"skip-agents-with-external-calls\" value=\"true\"/>\n"
             + "    <param name=\"tier-rules-apply\" value=\"false\"/>\n"
             + "    <param name=\"tier-rule-wait-second\" value=\"300\"/>\n"
             + "    <param name=\"tier-rule-wait-multiply-level\" value=\"true\"/>\n"
@@ -143,6 +144,14 @@ public class CallQueueConfigurationContributor implements FreeSwitchCallCenterCo
 
     private String agentNoAnswerStatus(String action) {
         return "BREAK_AGENT".equals(action) ? "On Break" : "Available";
+    }
+
+    private int noAgentWaitSeconds(CallQueue queue) {
+        if ("WAIT".equals(queue.getNoAgentAction())) {
+            return 0;
+        }
+        Integer seconds = queue.getNoAgentWaitSeconds();
+        return seconds == null || seconds <= 0 ? 5 : seconds;
     }
 
     private String strategy(String strategy) {

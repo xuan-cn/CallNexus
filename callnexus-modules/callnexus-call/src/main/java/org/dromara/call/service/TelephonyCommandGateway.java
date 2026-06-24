@@ -13,6 +13,8 @@ public interface TelephonyCommandGateway {
     void mute(EslEndpoint endpoint, String callId);
     void unmute(EslEndpoint endpoint, String callId);
     void sendDtmf(EslEndpoint endpoint, String callId, String digits);
+    void broadcastPlayback(EslEndpoint endpoint, String callId, String mediaPath, String leg);
+    void broadcastSayNumber(EslEndpoint endpoint, String callId, String language, String number, String leg);
     void park(EslEndpoint endpoint, String callId);
     void recoverMedia(EslEndpoint endpoint, String callId);
     void setCallVariable(EslEndpoint endpoint, String callId, String name, String value);

@@ -70,6 +70,11 @@ public class QueueNodeCompiler implements IvrNodeCompiler {
                 .append(queue.getForceWaitSeconds() * 1000)
                 .append("\"/>\n");
         }
+        if (queue.getForceWaitMediaPath() != null && !queue.getForceWaitMediaPath().isBlank()) {
+            context.xml().append("      <action application=\"playback\" data=\"")
+                .append(context.renderSupport().escape(queue.getForceWaitMediaPath()))
+                .append("\"/>\n");
+        }
         context.xml().append("      <action application=\"set\" data=\"hangup_after_bridge=true\"/>\n");
         context.xml().append("      <action application=\"callcenter\" data=\"")
             .append(context.renderSupport().escape(queue.getQueueCode()))
@@ -80,6 +85,13 @@ public class QueueNodeCompiler implements IvrNodeCompiler {
 
     private void appendQueueExitAction(IvrNodeContext context, CallQueueDialplanResponse queue) {
         String action = queue.getTimeoutAction() == null ? "HANGUP" : queue.getTimeoutAction();
+        String target = queue.getTimeoutTarget();
+        String targetQueueCode = queue.getTimeoutTargetQueueCode();
+        if (queue.getNoAgentAction() != null && !queue.getNoAgentAction().isBlank() && !"WAIT".equals(queue.getNoAgentAction())) {
+            action = queue.getNoAgentAction();
+            target = queue.getNoAgentTarget();
+            targetQueueCode = queue.getNoAgentTargetQueueCode();
+        }
         switch (action) {
             case "CONTINUE" -> {
                 context.xml().append("      <action application=\"callcenter\" data=\"")
@@ -87,11 +99,11 @@ public class QueueNodeCompiler implements IvrNodeCompiler {
                     .append("@default\"/>\n");
                 context.renderSupport().appendHangup(context.xml(), "NORMAL_CLEARING");
             }
-            case "VOICEMAIL" -> appendInternalTransfer(context, "callnexus_queue_voicemail_" + safeTarget(queue.getTimeoutTarget()));
-            case "IVR" -> appendInternalTransfer(context, "callnexus_queue_ivr_" + safeTarget(queue.getTimeoutTarget()));
+            case "VOICEMAIL" -> appendInternalTransfer(context, "callnexus_queue_voicemail_" + safeTarget(target));
+            case "IVR" -> appendInternalTransfer(context, "callnexus_queue_ivr_" + safeTarget(target));
             case "EXTENSION" -> {
                 context.xml().append("      <action application=\"bridge\" data=\"user/")
-                    .append(context.renderSupport().escape(safeTarget(queue.getTimeoutTarget())))
+                    .append(context.renderSupport().escape(safeTarget(target)))
                     .append("@")
                     .append(context.renderSupport().escape(context.sipDomain()))
                     .append("\"/>\n");
@@ -99,7 +111,7 @@ public class QueueNodeCompiler implements IvrNodeCompiler {
             }
             case "QUEUE" -> {
                 context.xml().append("      <action application=\"callcenter\" data=\"")
-                    .append(context.renderSupport().escape(queue.getTimeoutTargetQueueCode()))
+                    .append(context.renderSupport().escape(targetQueueCode))
                     .append("@default\"/>\n");
                 context.renderSupport().appendHangup(context.xml(), "NORMAL_CLEARING");
             }

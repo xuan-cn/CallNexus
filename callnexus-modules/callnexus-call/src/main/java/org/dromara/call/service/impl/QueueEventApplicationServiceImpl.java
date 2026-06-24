@@ -52,6 +52,7 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
     private final CallSessionMapper sessionMapper;
     private final CallEventMapper eventMapper;
     private final CallCenterResourceQueryService resourceQueryService;
+    private final QueueAnswerActionExecutor queueAnswerActionExecutor;
 
     // ==================== Spring 事件消费（directory/dialplan 信号，推荐路径） ====================
 
@@ -230,6 +231,7 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
             log.info("已记录本次通话实际接听队列，sessionId={}，queueId={}，queueName={}",
                 sessionId, queueId, queueName);
         }
+        queueAnswerActionExecutor.executeAfterAgentAnswer(sessionId, leg, queueId, queueName);
         return queueId;
     }
 

@@ -14,6 +14,9 @@ import org.dromara.agent.mapper.AgentMapper;
 import org.dromara.agent.mapper.CallQueueMapper;
 import org.dromara.agent.mapper.SkillGroupMemberMapper;
 import org.dromara.agent.service.AgentApplicationService;
+import org.dromara.ai.domain.request.GenerateAgentPromptRequest;
+import org.dromara.ai.domain.response.AiGeneratedMediaResponse;
+import org.dromara.ai.service.AiSpeechApplicationService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -38,6 +41,7 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
     private final CallQueueMapper callQueueMapper;
     private final SipAccountQueryService sipAccountQueryService;
     private final SipAccountMapper sipAccountMapper;
+    private final AiSpeechApplicationService aiSpeechApplicationService;
 
     @Override
     public TableDataInfo<AgentResponse> page(AgentPageQuery query, PageQuery pageQuery) {
@@ -129,6 +133,71 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         markQueuesNotSynced(agentId);
     }
 
+    @Override
+    public AiGeneratedMediaResponse generatePrompt(Long agentId, GenerateAgentPromptRequest request) {
+        Agent agent = agentMapper.selectById(agentId);
+        if (agent == null) throw new ServiceException("坐席不存在");
+        AgentExtension binding = extensionMapper.selectOne(new LambdaQueryWrapper<AgentExtension>().eq(AgentExtension::getAgentId, agentId));
+        if (binding == null) throw new ServiceException("坐席未绑定 SIP 分机，无法生成工号提示音");
+        SipAccount sipAccount = sipAccountMapper.selectById(binding.getSipAccountId());
+        if (sipAccount == null || sipAccount.getExtension() == null || sipAccount.getExtension().isBlank()) {
+            throw new ServiceException("坐席绑定分机不存在，无法生成工号提示音");
+        }
+        return aiSpeechApplicationService.generateAgentNumberPrompt(agentId, sipAccount.getExtension(), request.getNodeGroupIds(), request.getTemplateId());
+    }
+
+    @Override
+    public int batchGeneratePrompts(BatchGenerateAgentPromptRequest request) {
+        LambdaQueryWrapper<Agent> wrapper = new LambdaQueryWrapper<Agent>()
+            .in(request.getAgentIds() != null && !request.getAgentIds().isEmpty(), Agent::getId, request.getAgentIds())
+            .like(request.getAgentCode() != null && !request.getAgentCode().isBlank(), Agent::getAgentCode, request.getAgentCode())
+            .like(request.getAgentName() != null && !request.getAgentName().isBlank(), Agent::getAgentName, request.getAgentName())
+            .eq(request.getEnabled() != null, Agent::getEnabled, request.getEnabled())
+            .orderByAsc(Agent::getAgentCode);
+        List<Agent> agents = agentMapper.selectList(wrapper);
+        if (agents.isEmpty()) {
+            throw new ServiceException("没有匹配的坐席");
+        }
+        int count = 0;
+        boolean onlyMissing = Boolean.TRUE.equals(request.getOnlyMissing());
+        for (Agent agent : agents) {
+            if (onlyMissing) {
+                AiGeneratedMediaResponse current = aiSpeechApplicationService.agentNumberPrompt(agent.getId(), null);
+                if (current != null && "SUCCESS".equals(current.getGenerationStatus())) {
+                    continue;
+                }
+            }
+            try {
+                SipAccount sipAccount = requireBoundSipAccount(agent.getId());
+                aiSpeechApplicationService.generateAgentNumberPrompt(agent.getId(), sipAccount.getExtension(), request.getNodeGroupIds(), request.getTemplateId());
+                count++;
+            } catch (ServiceException ignored) {
+                // 批量生成允许部分坐席跳过，失败明细可在 AI 生成任务中查看。
+            }
+        }
+        if (count == 0) {
+            throw new ServiceException("没有可生成提示音的坐席，请确认坐席已绑定分机且符合筛选条件");
+        }
+        return count;
+    }
+
+    @Override
+    public AiGeneratedMediaResponse prompt(Long agentId) {
+        return aiSpeechApplicationService.agentNumberPrompt(agentId, null);
+    }
+
+    private SipAccount requireBoundSipAccount(Long agentId) {
+        AgentExtension binding = extensionMapper.selectOne(new LambdaQueryWrapper<AgentExtension>().eq(AgentExtension::getAgentId, agentId));
+        if (binding == null) {
+            throw new ServiceException("坐席未绑定 SIP 分机，无法生成工号提示音");
+        }
+        SipAccount sipAccount = sipAccountMapper.selectById(binding.getSipAccountId());
+        if (sipAccount == null || sipAccount.getExtension() == null || sipAccount.getExtension().isBlank()) {
+            throw new ServiceException("坐席绑定分机不存在，无法生成工号提示音");
+        }
+        return sipAccount;
+    }
+
     private void ensureAgentCodeUnique(String agentCode, Long excludedId) {
         boolean exists = agentMapper.exists(new LambdaQueryWrapper<Agent>()
             .eq(Agent::getAgentCode, agentCode)
@@ -169,6 +238,13 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
             response.setSipExtension(sipAccount.getExtension());
             response.setSipDisplayName(sipAccount.getDisplayName());
             response.setSipDomain(sipAccount.getDomain());
+        }
+        AiGeneratedMediaResponse prompt = aiSpeechApplicationService.agentNumberPrompt(agent.getId(), sipAccount == null ? null : sipAccount.getNodeId());
+        if (prompt != null) {
+            response.setPromptMediaId(prompt.getMediaId());
+            response.setPromptGenerationStatus(prompt.getGenerationStatus());
+            response.setPromptFailureReason(prompt.getFailureReason());
+            response.setPromptSyncedPath(prompt.getSyncedPath());
         }
         response.setEnabled(agent.getEnabled());
         response.setVersion(agent.getVersion());

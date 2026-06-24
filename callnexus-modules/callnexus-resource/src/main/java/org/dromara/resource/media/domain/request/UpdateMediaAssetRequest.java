@@ -12,7 +12,7 @@ public class UpdateMediaAssetRequest {
     @Size(max = 128)
     private String assetName;
     @NotBlank
-    @Pattern(regexp = "^(IVR_PROMPT|QUEUE_WAIT_MUSIC|RINGBACK_TONE|USER_MUSIC|CALL_RECORDING)$")
+    @Pattern(regexp = "^(IVR_PROMPT|QUEUE_WAIT_MUSIC|RINGBACK_TONE|USER_MUSIC|CALL_RECORDING|AGENT_PROMPT)$")
     private String category;
     @Size(max = 16)
     private String languageCode;

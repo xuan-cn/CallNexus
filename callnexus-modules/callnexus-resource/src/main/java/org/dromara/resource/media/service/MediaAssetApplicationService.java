@@ -15,6 +15,12 @@ public interface MediaAssetApplicationService {
 
     Long upload(String assetName, MediaAssetCategory category, String languageCode, String remark, Long durationMs, MultipartFile file);
 
+    Long storeGenerated(String assetName, MediaAssetCategory category, String languageCode, String remark,
+                        Long durationMs, String sourceText, String voiceProvider, String voiceName, MultipartFile file);
+
+    Long storeGeneratedVersion(Long mediaId, String assetName, String languageCode, String remark,
+                               Long durationMs, String sourceText, String voiceProvider, String voiceName, MultipartFile file);
+
     MediaAssetResponse storeRecording(String businessCallId, Long durationMs, MultipartFile file);
 
     MediaAssetResponse storeVoicemail(String businessCallId, Long durationMs, MultipartFile file);

@@ -17,6 +17,7 @@ public class CallQueueRequest {
     @NotNull private Boolean busyTransferMobile;
     @Size(max = 32) private String busyTransferNumber;
     @NotNull @Min(0) @Max(3600) private Integer forceWaitSeconds;
+    private Long forceWaitMediaId;
     @NotBlank private String answerAction;
     private Long answerMediaId;
     @NotBlank private String hangupKeyAction;
@@ -24,6 +25,7 @@ public class CallQueueRequest {
     @Size(max = 64) private String timeoutTarget;
     @NotBlank private String noAgentAction;
     @Size(max = 64) private String noAgentTarget;
+    @NotNull @Min(0) @Max(3600) private Integer noAgentWaitSeconds;
     @NotBlank private String agentNoAnswerAction;
     @NotNull private Boolean agentTimeoutTransferMobile;
     @Size(max = 32) private String agentTimeoutTransferNumber;

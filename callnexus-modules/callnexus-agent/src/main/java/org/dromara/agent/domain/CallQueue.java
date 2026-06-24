@@ -22,6 +22,7 @@ public class CallQueue extends TenantEntity {
     private Boolean busyTransferMobile;
     private String busyTransferNumber;
     private Integer forceWaitSeconds;
+    private Long forceWaitMediaId;
     private String answerAction;
     private Long answerMediaId;
     private String hangupKeyAction;
@@ -29,6 +30,7 @@ public class CallQueue extends TenantEntity {
     private String timeoutTarget;
     private String noAgentAction;
     private String noAgentTarget;
+    private Integer noAgentWaitSeconds;
     private String agentNoAnswerAction;
     private Boolean agentTimeoutTransferMobile;
     private String agentTimeoutTransferNumber;

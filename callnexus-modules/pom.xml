@@ -16,6 +16,7 @@
         <module>callnexus-system</module>
         <module>callnexus-workflow</module>
         <module>callnexus-resource</module>
+        <module>callnexus-ai</module>
         <module>callnexus-agent</module>
         <module>callnexus-call</module>
         <module>callnexus-esl</module>

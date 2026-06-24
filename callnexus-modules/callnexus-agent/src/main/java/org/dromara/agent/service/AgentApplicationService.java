@@ -2,6 +2,8 @@ package org.dromara.agent.service;
 
 import org.dromara.agent.domain.request.*;
 import org.dromara.agent.domain.response.AgentResponse;
+import org.dromara.ai.domain.request.GenerateAgentPromptRequest;
+import org.dromara.ai.domain.response.AiGeneratedMediaResponse;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 
@@ -13,4 +15,7 @@ public interface AgentApplicationService {
     void delete(Long id);
     void bindExtension(Long agentId, BindAgentExtensionRequest request);
     void unbindExtension(Long agentId);
+    AiGeneratedMediaResponse generatePrompt(Long agentId, GenerateAgentPromptRequest request);
+    int batchGeneratePrompts(BatchGenerateAgentPromptRequest request);
+    AiGeneratedMediaResponse prompt(Long agentId);
 }

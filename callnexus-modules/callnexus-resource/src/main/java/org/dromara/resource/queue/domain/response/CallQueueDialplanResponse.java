@@ -9,10 +9,12 @@ public class CallQueueDialplanResponse {
     private String queueName;
     private Boolean maskCallerNumber;
     private Integer forceWaitSeconds;
+    private String forceWaitMediaPath;
     private String timeoutAction;
     private String timeoutTarget;
     private String timeoutTargetQueueCode;
     private String noAgentAction;
     private String noAgentTarget;
     private String noAgentTargetQueueCode;
+    private Integer noAgentWaitSeconds;
 }

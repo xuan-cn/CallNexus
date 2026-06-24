@@ -5,6 +5,8 @@ public enum MediaAssetCategory {
     QUEUE_WAIT_MUSIC,
     RINGBACK_TONE,
     USER_MUSIC,
+    AGENT_PROMPT,
     CALL_RECORDING,
     VOICEMAIL_RECORDING
+
 }

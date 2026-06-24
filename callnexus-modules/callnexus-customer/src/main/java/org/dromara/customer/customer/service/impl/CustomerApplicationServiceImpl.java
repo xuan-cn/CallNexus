@@ -86,6 +86,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         customer.setTemplateId(request.getTemplateId());
         customerMapper.updateById(customer);
         formSubmissionService.validateAndSave(request.getTemplateId(), FormBusinessType.CUSTOMER, id, request.getFormData());
+        callBusinessAssociationService.associateCustomer(request.getSourceCallId(), id);
     }
 
     @Override

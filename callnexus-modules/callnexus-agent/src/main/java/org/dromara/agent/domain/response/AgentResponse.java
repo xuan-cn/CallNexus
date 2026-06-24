@@ -14,6 +14,10 @@ public class AgentResponse {
     private String sipExtension;
     private String sipDisplayName;
     private String sipDomain;
+    private Long promptMediaId;
+    private String promptGenerationStatus;
+    private String promptFailureReason;
+    private String promptSyncedPath;
     private Boolean enabled;
     private Integer version;
     private Date createTime;

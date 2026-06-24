@@ -38,5 +38,9 @@ public class CallRecordResponse {
     private String recordingUrl;
     private List<CallLegResponse> legs;
     private List<CallEventResponse> events;
+    private List<CallBusinessTimelineResponse> businessTimeline;
     private List<VoiceMailMessageResponse> voicemailMessages;
+    private List<CallDiagnosticLegResponse> diagnosticLegs;
+    private List<CallDiagnosticBridgeResponse> diagnosticBridges;
+    private List<AgentCallSessionResponse> agentSessions;
 }

@@ -27,6 +27,17 @@ public interface CallCenterResourceQueryService {
     QueueInfo findQueueById(Long queueId);
 
     /**
+     * 根据队列 ID 和 FreeSWITCH 节点查询队列信息。
+     *
+     * <p>带节点时会解析接通提示音在该节点上的本地同步路径，供通话事件侧直接播放。
+     *
+     * @param queueId 队列 ID
+     * @param nodeId  FreeSWITCH 节点 ID
+     * @return 队列信息；未找到返回 null
+     */
+    QueueInfo findQueueById(Long queueId, Long nodeId);
+
+    /**
      * 根据坐席标识（分机@域名）和 FreeSWITCH 节点查询坐席 ID。
      *
      * @param agentWithDomain FreeSWITCH 上报的坐席标识，形如 1001@192.168.244.128
@@ -43,6 +54,7 @@ public interface CallCenterResourceQueryService {
      * @param queueName      队列名称
      * @param wrapUpSeconds  话后整理时长（秒）
      */
-    record QueueInfo(Long queueId, String queueCode, String queueName, Integer wrapUpSeconds, Integer maxWaitSeconds) {
+    record QueueInfo(Long queueId, String queueCode, String queueName, Integer wrapUpSeconds, Integer maxWaitSeconds,
+                     String answerAction, Long answerMediaId, String answerMediaPath, String hangupKeyAction) {
     }
 }

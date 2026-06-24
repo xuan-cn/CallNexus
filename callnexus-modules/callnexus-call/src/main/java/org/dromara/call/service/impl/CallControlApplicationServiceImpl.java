@@ -991,12 +991,15 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
         CallRealtimeMessage message = new CallRealtimeMessage();
         message.setType("CALL_BRIDGE");
-        message.setCallId(sourceCall.getCallId());
+        message.setCallId(targetCall.getCallId());
         message.setCallerNumber(sourceCall.getDestination());
         message.setCalledNumber(target.getExtension());
         message.setAgentExtension(target.getExtension());
         message.setOccurredAt(LocalDateTime.now());
         publishRealtimeMessage(target.getUserId(), JsonUtils.toJsonString(message));
+        log.info("已通知转接目标坐席接管通话，targetAgentId={}，targetExtension={}，businessCallId={}，frontendCallId={}，targetAgentLegUuid={}，sourceCallId={}",
+            target.getAgentId(), target.getExtension(), targetCall.getBusinessCallId(), targetCall.getCallId(),
+            targetCall.getAgentChannelId(), sourceCall.getCallId());
     }
 
     private void publishRealtimeMessage(Long userId, String realtimeMessage) {

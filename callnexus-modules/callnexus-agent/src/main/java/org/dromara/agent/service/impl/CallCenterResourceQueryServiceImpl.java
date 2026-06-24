@@ -9,7 +9,14 @@ import org.dromara.agent.mapper.AgentExtensionMapper;
 import org.dromara.agent.mapper.AgentMapper;
 import org.dromara.agent.mapper.CallQueueMapper;
 import org.dromara.agent.service.CallCenterResourceQueryService;
+import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.resource.media.domain.MediaAsset;
+import org.dromara.resource.media.domain.MediaNodeSync;
+import org.dromara.resource.media.domain.MediaPublication;
+import org.dromara.resource.media.mapper.MediaAssetMapper;
+import org.dromara.resource.media.mapper.MediaNodeSyncMapper;
+import org.dromara.resource.media.mapper.MediaPublicationMapper;
 import org.dromara.resource.node.group.domain.FreeSwitchNodeGroupMember;
 import org.dromara.resource.node.group.mapper.FreeSwitchNodeGroupMemberMapper;
 import org.dromara.resource.sip.domain.response.SipAccountRealtimeResponse;
@@ -32,6 +39,9 @@ public class CallCenterResourceQueryServiceImpl implements CallCenterResourceQue
     private final SipAccountQueryService sipAccountQueryService;
     private final AgentExtensionMapper extensionMapper;
     private final AgentMapper agentMapper;
+    private final MediaAssetMapper mediaAssetMapper;
+    private final MediaPublicationMapper mediaPublicationMapper;
+    private final MediaNodeSyncMapper mediaNodeSyncMapper;
 
     @Override
     public QueueInfo findQueueByCode(String queueCodeWithProfile, Long nodeId) {
@@ -45,19 +55,22 @@ public class CallCenterResourceQueryServiceImpl implements CallCenterResourceQue
             if (queue == null) return null;
             // 队列按节点组绑定，需确认当前上报节点属于该队列的节点组，避免跨节点串用配置。
             if (!nodeBelongsToGroup(queue.getNodeGroupId(), nodeId)) return null;
-            return new QueueInfo(queue.getId(), queue.getQueueCode(), queue.getQueueName(), queue.getWrapUpSeconds(),
-                queue.getMaxWaitSeconds());
+            return queueInfo(queue, nodeId);
         });
     }
 
     @Override
     public QueueInfo findQueueById(Long queueId) {
+        return findQueueById(queueId, null);
+    }
+
+    @Override
+    public QueueInfo findQueueById(Long queueId, Long nodeId) {
         if (queueId == null) return null;
         return TenantHelper.ignore(() -> {
             CallQueue queue = callQueueMapper.selectById(queueId);
             if (queue == null || !Boolean.TRUE.equals(queue.getEnabled())) return null;
-            return new QueueInfo(queue.getId(), queue.getQueueCode(), queue.getQueueName(), queue.getWrapUpSeconds(),
-                queue.getMaxWaitSeconds());
+            return queueInfo(queue, nodeId);
         });
     }
 
@@ -82,6 +95,49 @@ public class CallCenterResourceQueryServiceImpl implements CallCenterResourceQue
                 .eq(FreeSwitchNodeGroupMember::getGroupId, groupId))
             .stream().map(FreeSwitchNodeGroupMember::getNodeId).toList();
         return nodeIds.contains(nodeId);
+    }
+
+    private QueueInfo queueInfo(CallQueue queue, Long nodeId) {
+        return new QueueInfo(
+            queue.getId(),
+            queue.getQueueCode(),
+            queue.getQueueName(),
+            queue.getWrapUpSeconds(),
+            queue.getMaxWaitSeconds(),
+            queue.getAnswerAction(),
+            queue.getAnswerMediaId(),
+            mediaPath(queue.getAnswerMediaId(), nodeId),
+            queue.getHangupKeyAction()
+        );
+    }
+
+    private String mediaPath(Long mediaId, Long nodeId) {
+        if (mediaId == null || nodeId == null) {
+            return null;
+        }
+        MediaAsset media = mediaAssetMapper.selectById(mediaId);
+        if (media == null || media.getLatestVersionId() == null) {
+            return null;
+        }
+        List<Long> publicationIds = mediaPublicationMapper.selectList(new LambdaQueryWrapper<MediaPublication>()
+                .eq(MediaPublication::getMediaId, mediaId)
+                .eq(MediaPublication::getVersionId, media.getLatestVersionId())
+                .in(MediaPublication::getStatus, List.of("PUBLISHING", "PARTIAL", "PUBLISHED")))
+            .stream().map(MediaPublication::getId).toList();
+        if (publicationIds.isEmpty()) {
+            return null;
+        }
+        MediaNodeSync sync = mediaNodeSyncMapper.selectOne(new LambdaQueryWrapper<MediaNodeSync>()
+            .eq(MediaNodeSync::getMediaId, mediaId)
+            .in(MediaNodeSync::getPublicationId, publicationIds)
+            .eq(MediaNodeSync::getNodeId, nodeId)
+            .eq(MediaNodeSync::getStatus, "SUCCESS")
+            .orderByDesc(MediaNodeSync::getSyncedAt)
+            .last("limit 1"));
+        if (sync == null || StringUtils.isBlank(sync.getTargetPath())) {
+            return null;
+        }
+        return sync.getTargetPath();
     }
 
     /**

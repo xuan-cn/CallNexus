@@ -184,6 +184,9 @@ public class CallQueueService implements CallQueueQueryService {
         if (request.getWaitMediaId() != null) {
             validatePublishedMedia(request.getWaitMediaId(), "QUEUE_WAIT_MUSIC", "队列等待音不存在、未发布或分类不是队列等待音乐");
         }
+        if (request.getForceWaitMediaId() != null) {
+            validatePublishedMedia(request.getForceWaitMediaId(), "QUEUE_WAIT_MUSIC", "入队前提示音不存在、未发布或分类不是队列等待音");
+        }
         if (request.getQueueAnnounceMediaId() != null) {
             validatePublishedMedia(request.getQueueAnnounceMediaId(), "QUEUE_WAIT_MUSIC", "排队提醒音不存在、未发布或分类不是队列等待音乐");
         }
@@ -269,6 +272,7 @@ public class CallQueueService implements CallQueueQueryService {
         queue.setBusyTransferMobile(request.getBusyTransferMobile());
         queue.setBusyTransferNumber(request.getBusyTransferNumber());
         queue.setForceWaitSeconds(request.getForceWaitSeconds());
+        queue.setForceWaitMediaId(request.getForceWaitMediaId());
         queue.setAnswerAction(request.getAnswerAction());
         queue.setAnswerMediaId(request.getAnswerMediaId());
         queue.setHangupKeyAction(request.getHangupKeyAction());
@@ -276,6 +280,7 @@ public class CallQueueService implements CallQueueQueryService {
         queue.setTimeoutTarget(request.getTimeoutTarget());
         queue.setNoAgentAction(request.getNoAgentAction());
         queue.setNoAgentTarget(request.getNoAgentTarget());
+        queue.setNoAgentWaitSeconds(request.getNoAgentWaitSeconds());
         queue.setAgentNoAnswerAction(request.getAgentNoAnswerAction());
         queue.setAgentTimeoutTransferMobile(request.getAgentTimeoutTransferMobile());
         queue.setAgentTimeoutTransferNumber(request.getAgentTimeoutTransferNumber());
@@ -320,6 +325,7 @@ public class CallQueueService implements CallQueueQueryService {
         response.setBusyTransferMobile(queue.getBusyTransferMobile());
         response.setBusyTransferNumber(queue.getBusyTransferNumber());
         response.setForceWaitSeconds(queue.getForceWaitSeconds());
+        response.setForceWaitMediaId(queue.getForceWaitMediaId());
         response.setAnswerAction(queue.getAnswerAction());
         response.setAnswerMediaId(queue.getAnswerMediaId());
         response.setHangupKeyAction(queue.getHangupKeyAction());
@@ -327,6 +333,7 @@ public class CallQueueService implements CallQueueQueryService {
         response.setTimeoutTarget(queue.getTimeoutTarget());
         response.setNoAgentAction(queue.getNoAgentAction());
         response.setNoAgentTarget(queue.getNoAgentTarget());
+        response.setNoAgentWaitSeconds(queue.getNoAgentWaitSeconds());
         response.setAgentNoAnswerAction(queue.getAgentNoAnswerAction());
         response.setAgentTimeoutTransferMobile(queue.getAgentTimeoutTransferMobile());
         response.setAgentTimeoutTransferNumber(queue.getAgentTimeoutTransferNumber());
@@ -351,10 +358,12 @@ public class CallQueueService implements CallQueueQueryService {
     private void fillDialplanOptions(CallQueueDialplanResponse response, CallQueue queue, Long nodeId) {
         response.setMaskCallerNumber(Boolean.TRUE.equals(queue.getMaskCallerNumber()));
         response.setForceWaitSeconds(queue.getForceWaitSeconds() == null ? 0 : queue.getForceWaitSeconds());
+        response.setForceWaitMediaPath(mediaPath(queue.getForceWaitMediaId(), nodeId, "入队前提示音"));
         response.setTimeoutAction(blankDefault(queue.getTimeoutAction(), "HANGUP"));
         response.setTimeoutTarget(queue.getTimeoutTarget());
         response.setNoAgentAction(blankDefault(queue.getNoAgentAction(), "WAIT"));
         response.setNoAgentTarget(queue.getNoAgentTarget());
+        response.setNoAgentWaitSeconds(queue.getNoAgentWaitSeconds() == null ? 0 : queue.getNoAgentWaitSeconds());
         response.setTimeoutTargetQueueCode(resolveTargetQueueCode(queue.getTimeoutAction(), queue.getTimeoutTarget(), nodeId));
         response.setNoAgentTargetQueueCode(resolveTargetQueueCode(queue.getNoAgentAction(), queue.getNoAgentTarget(), nodeId));
     }

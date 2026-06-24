@@ -104,6 +104,29 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     }
 
     @Override
+    public void broadcastPlayback(EslEndpoint endpoint, String callId, String mediaPath, String leg) {
+        requireCallId(callId);
+        requireBroadcastMediaPath(mediaPath);
+        String safeLeg = requireBroadcastLeg(leg);
+        sendCommand(endpoint, "api uuid_broadcast " + callId + " " + mediaPath + " " + safeLeg);
+        log.info("FreeSWITCH 指定通话腿播放媒体命令已提交，callId={}，leg={}，mediaPath={}", callId, safeLeg, mediaPath);
+    }
+
+    @Override
+    public void broadcastSayNumber(EslEndpoint endpoint, String callId, String language, String number, String leg) {
+        requireCallId(callId);
+        requireDialValue(language);
+        requireDialValue(number);
+        String safeLeg = requireBroadcastLeg(leg);
+        String safeNumber = number.replaceAll("[^0-9]", "");
+        if (safeNumber.isBlank()) {
+            throw new ServiceException("FREESWITCH_BROADCAST_NUMBER_INVALID");
+        }
+        sendCommand(endpoint, "api uuid_broadcast " + callId + " say::" + language + "\\snumber\\siterated\\s" + safeNumber + " " + safeLeg);
+        log.info("FreeSWITCH 指定通话腿报号码命令已提交，callId={}，leg={}，language={}，number={}", callId, safeLeg, language, safeNumber);
+    }
+
+    @Override
     public void park(EslEndpoint endpoint, String callId) {
         requireCallId(callId);
         sendCommand(endpoint, "api uuid_park " + callId);
@@ -241,6 +264,24 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         if (endpoint.password().contains("\r") || endpoint.password().contains("\n")) {
             throw new ServiceException("FreeSWITCH ESL 密码错误");
         }
+    }
+
+    private void requireBroadcastMediaPath(String mediaPath) {
+        if (mediaPath == null || mediaPath.isBlank() || mediaPath.contains(" ") || mediaPath.contains(";")
+            || mediaPath.contains("&") || mediaPath.contains("|") || mediaPath.contains("\r") || mediaPath.contains("\n")) {
+            throw new ServiceException("FREESWITCH_BROADCAST_MEDIA_PATH_INVALID");
+        }
+    }
+
+    private String requireBroadcastLeg(String leg) {
+        if (leg == null || leg.isBlank()) {
+            return "aleg";
+        }
+        String safeLeg = leg.toLowerCase();
+        if (!"aleg".equals(safeLeg) && !"bleg".equals(safeLeg) && !"both".equals(safeLeg)) {
+            throw new ServiceException("FREESWITCH_BROADCAST_LEG_INVALID");
+        }
+        return safeLeg;
     }
 
     private void handleUnexpectedGreeting(EslEndpoint endpoint, EslFrame greeting) {

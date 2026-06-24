@@ -84,6 +84,88 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public Long storeGenerated(String assetName, MediaAssetCategory category, String languageCode, String remark,
+                               Long durationMs, String sourceText, String voiceProvider, String voiceName, MultipartFile file) {
+        if (category == MediaAssetCategory.CALL_RECORDING || category == MediaAssetCategory.VOICEMAIL_RECORDING) {
+            throw new ServiceException("录音类媒体不允许作为系统生成媒体保存");
+        }
+        validateAudio(file);
+        MediaAsset asset = store(assetName, category, "TTS", languageCode, remark, durationMs, 0, file);
+        asset.setSourceText(sourceText);
+        asset.setVoiceProvider(voiceProvider);
+        asset.setVoiceName(voiceName);
+        mapper.updateById(asset);
+        log.info("保存 TTS 生成声音媒体，mediaId={}，category={}，provider={}，voice={}，fileName={}",
+            asset.getId(), asset.getCategory(), voiceProvider, voiceName, asset.getOriginalFileName());
+        return asset.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long storeGeneratedVersion(Long mediaId, String assetName, String languageCode, String remark,
+                                      Long durationMs, String sourceText, String voiceProvider, String voiceName, MultipartFile file) {
+        MediaAsset asset = requireAsset(mediaId);
+        MediaAssetCategory category = MediaAssetCategory.valueOf(asset.getCategory());
+        if (category == MediaAssetCategory.CALL_RECORDING || category == MediaAssetCategory.VOICEMAIL_RECORDING) {
+            throw new ServiceException("录音类媒体不允许作为系统生成媒体保存");
+        }
+        validateAudio(file);
+        String checksum = checksum(file);
+        SysOssVo oss = sysOssService.upload(file, storageProperties.getConfigKey(category));
+        populateAudioMetadata(asset, durationMs, file);
+        if (asset.getDurationMs() == null) {
+            populateWavDuration(asset, file);
+        }
+
+        Integer next = versionMapper.selectList(new LambdaQueryWrapper<MediaAssetVersion>()
+                .eq(MediaAssetVersion::getMediaId, mediaId)
+                .orderByDesc(MediaAssetVersion::getVersionNo)
+                .last("limit 1"))
+            .stream()
+            .findFirst()
+            .map(version -> version.getVersionNo() + 1)
+            .orElse(1);
+
+        MediaAssetVersion mediaVersion = new MediaAssetVersion();
+        mediaVersion.setMediaId(asset.getId());
+        mediaVersion.setVersionNo(next);
+        mediaVersion.setOssId(oss.getOssId());
+        mediaVersion.setOriginalFileName(file.getOriginalFilename());
+        mediaVersion.setContentType(file.getContentType());
+        mediaVersion.setFileSuffix(oss.getFileSuffix());
+        mediaVersion.setFileSize(file.getSize());
+        mediaVersion.setDurationMs(asset.getDurationMs());
+        mediaVersion.setSampleRate(asset.getSampleRate());
+        mediaVersion.setChannels(asset.getChannels());
+        mediaVersion.setCodec(asset.getCodec());
+        mediaVersion.setChecksum(checksum);
+        mediaVersion.setStatus("DRAFT");
+        versionMapper.insert(mediaVersion);
+
+        if (StringUtils.isNotBlank(assetName)) {
+            asset.setAssetName(assetName);
+        }
+        asset.setSourceType("TTS");
+        asset.setOssId(oss.getOssId());
+        asset.setOriginalFileName(file.getOriginalFilename());
+        asset.setContentType(file.getContentType());
+        asset.setFileSuffix(oss.getFileSuffix());
+        asset.setFileSize(file.getSize());
+        asset.setLanguageCode(languageCode);
+        asset.setRemark(remark);
+        asset.setSourceText(sourceText);
+        asset.setVoiceProvider(voiceProvider);
+        asset.setVoiceName(voiceName);
+        asset.setLatestVersionId(mediaVersion.getId());
+        asset.setPublishStatus("DRAFT");
+        mapper.updateById(asset);
+        log.info("追加 TTS 生成声音媒体版本，mediaId={}，versionNo={}，category={}，provider={}，voice={}，fileName={}",
+            asset.getId(), next, asset.getCategory(), voiceProvider, voiceName, asset.getOriginalFileName());
+        return asset.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public MediaAssetResponse storeRecording(String businessCallId, Long durationMs, MultipartFile file) {
         validateAudio(file);
         MediaAsset asset = store("通话录音-" + businessCallId, MediaAssetCategory.CALL_RECORDING, "RECORDING",
