@@ -12,7 +12,7 @@ public interface CallCenterResourceQueryService {
     /**
      * 根据队列编码和 FreeSWITCH 节点查询队列信息。
      *
-     * @param queueCodeWithProfile FreeSWITCH 上报的队列编码，可能带 @default 后缀
+     * @param queueCodeWithProfile FreeSWITCH 上报的队列编码，可能带 {@code @default} 后缀
      * @param nodeId               FreeSWITCH 节点 ID
      * @return 队列信息；未找到返回 null
      */
@@ -20,9 +20,6 @@ public interface CallCenterResourceQueryService {
 
     /**
      * 根据队列 ID 查询队列信息，用于已知 handling_queue_id 时回查话后整理时长等参数。
-     *
-     * @param queueId 队列 ID
-     * @return 队列信息；未找到返回 null
      */
     QueueInfo findQueueById(Long queueId);
 
@@ -30,31 +27,30 @@ public interface CallCenterResourceQueryService {
      * 根据队列 ID 和 FreeSWITCH 节点查询队列信息。
      *
      * <p>带节点时会解析接通提示音在该节点上的本地同步路径，供通话事件侧直接播放。
-     *
-     * @param queueId 队列 ID
-     * @param nodeId  FreeSWITCH 节点 ID
-     * @return 队列信息；未找到返回 null
      */
     QueueInfo findQueueById(Long queueId, Long nodeId);
 
     /**
      * 根据坐席标识（分机@域名）和 FreeSWITCH 节点查询坐席 ID。
-     *
-     * @param agentWithDomain FreeSWITCH 上报的坐席标识，形如 1001@192.168.244.128
-     * @param nodeId          FreeSWITCH 节点 ID
-     * @return 坐席 ID；未找到返回 null
      */
     Long findAgentIdByIdentity(String agentWithDomain, Long nodeId);
 
     /**
-     * 队列基本信息。
+     * 队列基础信息。
      *
-     * @param queueId        队列 ID
-     * @param queueCode      队列编码
-     * @param queueName      队列名称
-     * @param wrapUpSeconds  话后整理时长（秒）
+     * @param queueId             队列 ID
+     * @param queueCode           队列编码
+     * @param queueName           队列名称
+     * @param wrapUpSeconds       话后整理时长（秒）
+     * @param maxWaitSeconds      最大等待时长（秒）
+     * @param answerAction        接通时动作：NONE / PLAY_AGENT_NUMBER / PLAY_MEDIA
+     * @param answerMediaId       接通提示音媒体 ID
+     * @param answerMediaPath     接通提示音在节点上的本地路径
+     * @param hangupKeyAction     挂机按键采集模式：NONE / AGENT / CALLER
+     * @param stickyAgentEnabled  是否启用记忆坐席
      */
     record QueueInfo(Long queueId, String queueCode, String queueName, Integer wrapUpSeconds, Integer maxWaitSeconds,
-                     String answerAction, Long answerMediaId, String answerMediaPath, String hangupKeyAction) {
+                     String answerAction, Long answerMediaId, String answerMediaPath, String hangupKeyAction,
+                     Boolean stickyAgentEnabled) {
     }
 }

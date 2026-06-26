@@ -107,7 +107,8 @@ public class CallCenterResourceQueryServiceImpl implements CallCenterResourceQue
             queue.getAnswerAction(),
             queue.getAnswerMediaId(),
             mediaPath(queue.getAnswerMediaId(), nodeId),
-            queue.getHangupKeyAction()
+            queue.getHangupKeyAction(),
+            queue.getStickyAgentEnabled()
         );
     }
 

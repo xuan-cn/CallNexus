@@ -6,6 +6,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationCommand;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationResult;
 import org.dromara.resource.outboundauth.service.OutboundAuthorizationService;
+import org.dromara.resource.outboundline.service.OutboundLinePolicyService;
 import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
 import org.dromara.resource.sip.service.SipAccountQueryService;
@@ -18,6 +19,7 @@ public class OutboundAuthorizationServiceImpl implements OutboundAuthorizationSe
 
     private final SipAccountQueryService sipAccountQueryService;
     private final PhoneNumberQueryService phoneNumberQueryService;
+    private final OutboundLinePolicyService outboundLinePolicyService;
 
     @Override
     public OutboundAuthorizationResult authorize(OutboundAuthorizationCommand command) {
@@ -49,9 +51,9 @@ public class OutboundAuthorizationServiceImpl implements OutboundAuthorizationSe
             return OutboundAuthorizationResult.reject("OUTBOUND_ROUTE_NOT_CONFIGURED", "未配置默认外呼号码路由", normalizedCallee);
         }
 
-        log.info("外呼授权通过：使用默认外呼号码路由，sourceType={}，nodeId={}，caller={}，callee={}，gatewayCode={}，callerIdNumber={}，tenantId={}",
+        log.info("外呼授权通过：使用外呼号码路由，sourceType={}，nodeId={}，caller={}，callee={}，gatewayCode={}，callerIdNumber={}，policyCode={}，policyType={}，tenantId={}",
             command.sourceType(), command.nodeId(), command.callerExtension(), normalizedCallee,
-            route.getGatewayCode(), route.getNumber(), command.tenantId());
+            route.getGatewayCode(), route.getNumber(), route.getPolicyCode(), route.getPolicyType(), command.tenantId());
         return OutboundAuthorizationResult.allowExternal(normalizedCallee, route);
     }
 
@@ -60,7 +62,8 @@ public class OutboundAuthorizationServiceImpl implements OutboundAuthorizationSe
             return phoneNumberQueryService.findOutboundRouteByNumberId(command.tenantId(), command.nodeId(), command.callerNumberId());
         }
         if (command.nodeId() != null) {
-            return phoneNumberQueryService.findDefaultOutboundRoute(command.tenantId(), command.nodeId());
+            PhoneNumberOutboundRouteResponse policyRoute = outboundLinePolicyService.selectRoute(command.tenantId(), command.nodeId());
+            return policyRoute != null ? policyRoute : phoneNumberQueryService.findDefaultOutboundRoute(command.tenantId(), command.nodeId());
         }
         return phoneNumberQueryService.findDefaultOutboundRoute(command.tenantId(), command.sipDomain(), command.switchIpv4());
     }

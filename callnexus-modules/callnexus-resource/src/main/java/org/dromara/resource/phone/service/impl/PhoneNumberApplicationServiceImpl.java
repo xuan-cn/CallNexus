@@ -168,15 +168,8 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     public PhoneNumberOutboundRouteResponse findDefaultOutboundRoute(String tenantId, Long nodeId) {
         if (nodeId == null) return null;
         return TenantHelper.dynamic(tenantId, () -> {
-            PhoneNumber number = mapper.selectOne(new LambdaQueryWrapper<PhoneNumber>()
-                .eq(PhoneNumber::getNodeId, nodeId)
-                .eq(PhoneNumber::getEnabled, true)
-                .eq(PhoneNumber::getOutboundDefault, true)
-                .isNotNull(PhoneNumber::getGatewayId)
-                .in(PhoneNumber::getNumberType, "CALLER_ID", "BOTH")
-                .orderByAsc(PhoneNumber::getId)
-                .last("limit 1"));
-            if (number == null) {
+            PhoneNumber number = findDefaultOutboundNumber(nodeId);
+            if (number == null && (number = findFirstOutboundNumber(nodeId)) == null) {
                 log.warn("未找到默认外呼号码路由，tenantId={}，nodeId={}", tenantId, nodeId);
                 return null;
             }
@@ -195,6 +188,28 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
             response.setGatewayName(gateway.getGatewayName());
             return response;
         });
+    }
+
+    private PhoneNumber findDefaultOutboundNumber(Long nodeId) {
+        return mapper.selectOne(new LambdaQueryWrapper<PhoneNumber>()
+            .eq(PhoneNumber::getNodeId, nodeId)
+            .eq(PhoneNumber::getEnabled, true)
+            .eq(PhoneNumber::getOutboundDefault, true)
+            .isNotNull(PhoneNumber::getGatewayId)
+            .in(PhoneNumber::getNumberType, "CALLER_ID", "BOTH")
+            .orderByAsc(PhoneNumber::getId)
+            .last("limit 1"));
+    }
+
+    private PhoneNumber findFirstOutboundNumber(Long nodeId) {
+        return mapper.selectOne(new LambdaQueryWrapper<PhoneNumber>()
+            .eq(PhoneNumber::getNodeId, nodeId)
+            .eq(PhoneNumber::getEnabled, true)
+            .isNotNull(PhoneNumber::getGatewayId)
+            .in(PhoneNumber::getNumberType, "CALLER_ID", "BOTH")
+            .orderByDesc(PhoneNumber::getOutboundDefault)
+            .orderByAsc(PhoneNumber::getId)
+            .last("limit 1"));
     }
 
     @Override

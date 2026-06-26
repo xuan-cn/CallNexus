@@ -47,6 +47,11 @@ public class FreeSwitchDialplanXmlRenderer {
         String number = FreeSwitchXmlRenderer.escape(route.getNumber());
         String queueName = FreeSwitchXmlRenderer.escape(queue.getQueueCode() + "@default");
         String dialplanContext = FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "public" : context);
+        // 记忆坐席命中：客户号码在 Redis 中绑定了上次接听坐席，且坐席当前 IDLE，直接 bridge 分机，跳过 mod_callcenter。
+        if (Boolean.TRUE.equals(queue.getStickyAgentEnabled()) && queue.getStickyAgentTarget() != null
+            && !queue.getStickyAgentTarget().isBlank()) {
+            return renderQueueStickyBridgeRoute(route, queue, dialplanContext, number);
+        }
         return """
             <document type="freeswitch/xml">
               <section name="dialplan" description="CallNexus Dynamic Dialplan">
@@ -66,8 +71,7 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
                       <action application="record_session" data="${callnexus_recording_path}"/>
-                      <action application="answer"/>
-                      %s%s
+                      %s%s%s
                       <action application="set" data="hangup_after_bridge=true"/>
                       <action application="callcenter" data="%s"/>
                       %s
@@ -77,7 +81,7 @@ public class FreeSwitchDialplanXmlRenderer {
               </section>
             </document>
             """.formatted(dialplanContext, number, number, route.getId(), queue.getId(), queueName, route.getNodeId(), number,
-            maskCallerActions(queue), forceWaitAction(queue), queueName, queueExitActions(queue, queueName, context));
+            queueAnswerAction(queue), maskCallerActions(queue), forceWaitAction(queue), queueName, queueExitActions(queue, queueName, context));
     }
 
     public String renderInternalVoiceMailRoute(String destinationNumber, VoiceMailDialplanResponse box, String context) {
@@ -109,6 +113,26 @@ public class FreeSwitchDialplanXmlRenderer {
             box.getMaxSeconds(), box.getSilenceThreshold(), box.getSilenceHits());
     }
 
+    /**
+     * 队列入口客户腿接通方式。
+     *
+     * <p>"手动接听"打开时返回 {@code pre_answer}，客户腿进入早媒体即可播放等待音/提醒音，
+     * 但运营商侧仍处于"振铃中"，不计费；当 mod_callcenter 把客户腿桥接到坐席时
+     * FreeSWITCH 会自动 answer 客户腿，此时才进入正式接通状态。
+     *
+     * <p>关闭时保持历史行为，直接 {@code answer} 客户腿。
+     *
+     * <p>同时设置 {@code callnexus_queue_manual_answer} 通道变量，
+     * 便于后续 ESL 事件处理时识别该通话采用了手动接听模式。
+     */
+    private String queueAnswerAction(CallQueueDialplanResponse queue) {
+        boolean manualAnswer = Boolean.TRUE.equals(queue.getManualAnswer());
+        String flag = "                      <action application=\"set\" data=\"callnexus_queue_manual_answer=" + manualAnswer + "\"/>\n";
+        String connect = manualAnswer
+            ? "                      <action application=\"pre_answer\"/>\n"
+            : "                      <action application=\"answer\"/>\n";
+        return flag + connect;
+    }
     private String maskCallerActions(CallQueueDialplanResponse queue) {
         if (!Boolean.TRUE.equals(queue.getMaskCallerNumber())) {
             return "";
@@ -144,7 +168,98 @@ public class FreeSwitchDialplanXmlRenderer {
             target = queue.getNoAgentTarget();
             targetQueueCode = queue.getNoAgentTargetQueueCode();
         }
-        return renderQueuePostAction(action, target, targetQueueCode, currentQueueName, context);
+        // 转手机能力依靠 mod_callcenter 退出后的 ${cc_cause} 分支决定；
+        // 命中转手机时跳过传统 HANGUP/IVR/QUEUE 的 noAgentAction，避免重复执行。
+        StringBuilder builder = new StringBuilder();
+        String mobileFallback = mobileTransferActions(queue);
+        if (!mobileFallback.isEmpty()) {
+            builder.append(mobileFallback);
+        }
+        builder.append(renderQueuePostAction(action, target, targetQueueCode, currentQueueName, context));
+        return builder.toString();
+    }
+
+    /**
+     * 转手机分支：mod_callcenter 退出时 FreeSWITCH 会设置 {@code ${cc_cause}}，
+     * 我们在原 noAgentAction 之前追加 {@code <action application="bridge" data="${cond(...)}"/>}，
+     * 命中 {@code max-wait}（无可用坐席）或 {@code max-no-answer}（所有坐席均未接）时桥接到手机。
+     *
+     * <p>说明：{@code hangup_after_bridge=true} 已在主流程设置，坐席接通后通话自然结束，
+     * 不会进入此分支；只有 mod_callcenter 主动退出且原通道仍存活时才会触发。
+     */
+    private String mobileTransferActions(CallQueueDialplanResponse queue) {
+        boolean busy = Boolean.TRUE.equals(queue.getBusyTransferMobile())
+            && queue.getBusyTransferNumber() != null && !queue.getBusyTransferNumber().isBlank();
+        boolean timeoutMobile = Boolean.TRUE.equals(queue.getAgentTimeoutTransferMobile())
+            && queue.getAgentTimeoutTransferNumber() != null && !queue.getAgentTimeoutTransferNumber().isBlank();
+        if (!busy && !timeoutMobile) {
+            return "";
+        }
+        if (queue.getOutboundGatewayCode() == null || queue.getOutboundGatewayCode().isBlank()) {
+            // 没有可用外呼网关：保留配置但忽略动作，避免渲染出错误的 dialplan。
+            return "";
+        }
+        String gateway = FreeSwitchXmlRenderer.escape(queue.getOutboundGatewayCode());
+        StringBuilder builder = new StringBuilder();
+        if (busy) {
+            builder.append(mobileBranch("max-wait", gateway, queue.getBusyTransferNumber()));
+        }
+        if (timeoutMobile) {
+            builder.append(mobileBranch("max-no-answer", gateway, queue.getAgentTimeoutTransferNumber()));
+        }
+        return builder.toString();
+    }
+
+    private String mobileBranch(String ccCause, String gatewayCode, String mobile) {
+        String mobileEscaped = FreeSwitchXmlRenderer.escape(mobile);
+        // 使用 cond() 内联条件：仅当 ${cc_cause} 等于目标值时返回真实桥接串，
+        // 否则返回当前 channel 自身的 originate string（user/${destination_number}）让 bridge 立即失败但不阻塞下一动作。
+        // 这里通过 ${cond(... ? real : '')} + execute_string 模式实现"满足条件才执行 bridge"。
+        return "                      <action application=\"execute_string\" data=\"${cond(${cc_cause} == '"
+            + ccCause + "' ? 'bridge sofia/gateway/" + gatewayCode + "/" + mobileEscaped + "' : 'log NOTICE [CallNexus] skip mobile branch ccCause=${cc_cause}')}\"/>\n";
+    }
+
+    /**
+     * 记忆坐席命中时直接桥接分机的拨号计划。
+     *
+     * <p>跳过 mod_callcenter，因此遇忙/超时转手机、挂机按键采集等队列动作均不生效；
+     * 这些能力仅作用于队列分配路径。桥接目标必须包含 {@code 分机@域名}，由 {@code StickyAgentRegistry} 校验。
+     */
+    private String renderQueueStickyBridgeRoute(PhoneNumberDialplanRouteResponse route, CallQueueDialplanResponse queue,
+                                                String dialplanContext, String number) {
+        String stickyTarget = FreeSwitchXmlRenderer.escape(queue.getStickyAgentTarget());
+        return """
+            <document type="freeswitch/xml">
+              <section name="dialplan" description="CallNexus Dynamic Dialplan">
+                <context name="%s">
+                  <extension name="callnexus_inbound_queue_sticky_%s" continue="false">
+                    <condition field="destination_number" expression="^%s$">
+                      <action application="set" data="callnexus_route_id=%s"/>
+                      <action application="set" data="callnexus_route_type=QUEUE"/>
+                      <action application="set" data="callnexus_queue_id=%s"/>
+                      <action application="set" data="callnexus_queue_code=%s"/>
+                      <action application="set" data="callnexus_node_id=%s"/>
+                      <action application="set" data="callnexus_queue_sticky_hit=true"/>
+                      <action application="export" data="callnexus_business_call_id=${uuid}"/>
+                      <action application="export" data="callnexus_direction=INBOUND"/>
+                      <action application="export" data="callnexus_original_caller=${caller_id_number}"/>
+                      <action application="export" data="callnexus_original_called=%s"/>
+                      <action application="set" data="callnexus_recording_path=/var/lib/freeswitch/recordings/${callnexus_business_call_id}.wav"/>
+                      <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
+                      <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
+                      <action application="record_session" data="${callnexus_recording_path}"/>
+                      %s%s
+                      <action application="set" data="hangup_after_bridge=true"/>
+                      <action application="bridge" data="user/%s"/>
+                      <action application="hangup" data="NORMAL_CLEARING"/>
+                    </condition>
+                  </extension>
+                </context>
+              </section>
+            </document>
+            """.formatted(dialplanContext, number, number, route.getId(), queue.getId(),
+                FreeSwitchXmlRenderer.escape(queue.getQueueCode() + "@default"), route.getNodeId(), number,
+                queueAnswerAction(queue), maskCallerActions(queue), stickyTarget);
     }
 
     private String renderQueuePostAction(String action, String target, String targetQueueCode, String currentQueueName, String context) {

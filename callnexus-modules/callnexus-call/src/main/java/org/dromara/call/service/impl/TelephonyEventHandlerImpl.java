@@ -84,6 +84,18 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             publishCallCenterAgentRealtimeEvent(event);
             return;
         }
+        // DTMF 按键事件单独走队列通话按键采集，不进入通话记录/状态机/实时推送流程。
+        if (EslEventNames.DTMF.equals(event.eventName())) {
+            String digit = event.headers().get(EslHeaders.DTMF_DIGIT);
+            String source = event.headers().get(EslHeaders.DTMF_SOURCE);
+            try {
+                queueEventApplicationService.recordQueueDtmfIfApplicable(event.uuid(), digit, source);
+            } catch (Exception exception) {
+                log.warn("处理通话 DTMF 按键事件失败，不影响实时通话状态处理，nodeId={}，uuid={}，digit={}",
+                    event.nodeId(), event.uuid(), digit, exception);
+            }
+            return;
+        }
         try {
             callRecordApplicationService.handleEvent(event);
         } catch (Exception exception) {

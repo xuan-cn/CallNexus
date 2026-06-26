@@ -70,6 +70,7 @@ public class CallQueueService implements CallQueueQueryService {
     private final MediaPublicationMapper mediaPublicationMapper;
     private final SipAccountQueryService sipAccountQueryService;
     private final CallQueueRuntimeSyncService runtimeSyncService;
+    private final StickyAgentRegistry stickyAgentRegistry;
 
     public List<CallQueueResponse> list() {
         return queueMapper.selectList(new LambdaQueryWrapper<CallQueue>().orderByAsc(CallQueue::getQueueCode))
@@ -81,7 +82,7 @@ public class CallQueueService implements CallQueueQueryService {
     }
 
     @Override
-    public CallQueueDialplanResponse findAvailableQueue(String tenantId, Long queueId, Long nodeId) {
+    public CallQueueDialplanResponse findAvailableQueue(String tenantId, Long queueId, Long nodeId, String callerNumber) {
         if (queueId == null || nodeId == null) return null;
         return TenantHelper.dynamic(tenantId, () -> {
             CallQueue queue = queueMapper.selectById(queueId);
@@ -97,6 +98,8 @@ public class CallQueueService implements CallQueueQueryService {
             response.setQueueCode(queue.getQueueCode());
             response.setQueueName(queue.getQueueName());
             fillDialplanOptions(response, queue, nodeId);
+            fillStickyAgentTarget(response, queue, tenantId, callerNumber, nodeId);
+            fillMobileTransferOptions(response, queue, tenantId, nodeId);
             return response;
         });
     }
@@ -357,6 +360,7 @@ public class CallQueueService implements CallQueueQueryService {
 
     private void fillDialplanOptions(CallQueueDialplanResponse response, CallQueue queue, Long nodeId) {
         response.setMaskCallerNumber(Boolean.TRUE.equals(queue.getMaskCallerNumber()));
+        response.setManualAnswer(Boolean.TRUE.equals(queue.getManualAnswer()));
         response.setForceWaitSeconds(queue.getForceWaitSeconds() == null ? 0 : queue.getForceWaitSeconds());
         response.setForceWaitMediaPath(mediaPath(queue.getForceWaitMediaId(), nodeId, "入队前提示音"));
         response.setTimeoutAction(blankDefault(queue.getTimeoutAction(), "HANGUP"));
@@ -471,5 +475,34 @@ public class CallQueueService implements CallQueueQueryService {
     private AgentPresenceStatus presenceStatus(Long agentId) {
         AgentPresence presence = RedisUtils.getCacheObject("callnexus:agent:presence:" + LoginHelper.getTenantId() + ":" + agentId);
         return presence == null ? AgentPresenceStatus.OFFLINE : presence.getStatus();
+    }
+
+    /**
+     * 记忆坐席命中：把 {@link StickyAgentRegistry} 返回的桥接目标写到 dialplan 响应上，
+     * 供 {@code QueueDialplanRouteHandler} 渲染直拨分机的 XML，绕过 mod_callcenter。
+     */
+    private void fillStickyAgentTarget(CallQueueDialplanResponse response, CallQueue queue,
+                                       String tenantId, String callerNumber, Long nodeId) {
+        boolean enabled = Boolean.TRUE.equals(queue.getStickyAgentEnabled());
+        response.setStickyAgentEnabled(enabled);
+        if (!enabled || org.apache.commons.lang3.StringUtils.isBlank(callerNumber)) {
+            return;
+        }
+        String target = stickyAgentRegistry.findStickyAgentTarget(tenantId, queue.getId(), callerNumber, nodeId);
+        response.setStickyAgentTarget(target);
+    }
+
+    /**
+     * 转手机能力：把队列上配置的遇忙/超时手机号回填到 dialplan 响应上。
+     *
+     * <p>默认外呼网关编码由 {@code QueueDialplanRouteHandler} 在 dialplan 渲染前补全，
+     * 避免 agent 模块依赖 {@code PhoneNumberQueryService}（其实现链路反向依赖到 agent）。
+     */
+    private void fillMobileTransferOptions(CallQueueDialplanResponse response, CallQueue queue,
+                                            String tenantId, Long nodeId) {
+        response.setBusyTransferMobile(Boolean.TRUE.equals(queue.getBusyTransferMobile()));
+        response.setBusyTransferNumber(queue.getBusyTransferNumber());
+        response.setAgentTimeoutTransferMobile(Boolean.TRUE.equals(queue.getAgentTimeoutTransferMobile()));
+        response.setAgentTimeoutTransferNumber(queue.getAgentTimeoutTransferNumber());
     }
 }

@@ -15,6 +15,10 @@ public final class EslEventNames {
     public static final String CHANNEL_HANGUP = "CHANNEL_HANGUP";
     public static final String CHANNEL_HANGUP_COMPLETE = "CHANNEL_HANGUP_COMPLETE";
     public static final String CHANNEL_DESTROY = "CHANNEL_DESTROY";
+    /**
+     * DTMF 接收事件。通道收到 DTMF 按键时由 FreeSWITCH 上报，事件头 {@code DTMF-Digit}/{@code DTMF-Duration} 携带按键信息。
+     */
+    public static final String DTMF = "DTMF";
 
     /**
      * FreeSWITCH 自定义事件，mod_callcenter 队列事件通过 CUSTOM + Event-Subclass 携带。
@@ -39,7 +43,7 @@ public final class EslEventNames {
 
     public static List<String> subscribedChannelEvents() {
         return List.of(CHANNEL_CREATE, CHANNEL_PROGRESS, CHANNEL_PROGRESS_MEDIA, CHANNEL_ANSWER, CHANNEL_BRIDGE,
-            CHANNEL_UNBRIDGE, CHANNEL_HOLD, CHANNEL_UNHOLD, CHANNEL_HANGUP, CHANNEL_HANGUP_COMPLETE, CHANNEL_DESTROY);
+            CHANNEL_UNBRIDGE, CHANNEL_HOLD, CHANNEL_UNHOLD, CHANNEL_HANGUP, CHANNEL_HANGUP_COMPLETE, CHANNEL_DESTROY, DTMF);
     }
 
     /**

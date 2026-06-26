@@ -6,13 +6,16 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.agent.service.CallCenterResourceQueryService;
 import org.dromara.agent.service.HandlingQueueResolver;
+import org.dromara.agent.service.StickyAgentRegistry;
 import org.dromara.call.constant.EslEventNames;
 import org.dromara.call.constant.EslHeaders;
 import org.dromara.call.domain.CallEvent;
+import org.dromara.call.domain.CallLeg;
 import org.dromara.call.domain.CallRecord;
 import org.dromara.call.domain.CallSession;
 import org.dromara.call.domain.TelephonyEvent;
 import org.dromara.call.mapper.CallEventMapper;
+import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallRecordMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.service.QueueEventApplicationService;
@@ -49,10 +52,12 @@ import java.util.Map;
 @Slf4j
 public class QueueEventApplicationServiceImpl implements QueueEventApplicationService, HandlingQueueResolver {
     private final CallRecordMapper recordMapper;
+    private final CallLegMapper legMapper;
     private final CallSessionMapper sessionMapper;
     private final CallEventMapper eventMapper;
     private final CallCenterResourceQueryService resourceQueryService;
     private final QueueAnswerActionExecutor queueAnswerActionExecutor;
+    private final StickyAgentRegistry stickyAgentRegistry;
 
     // ==================== Spring 事件消费（directory/dialplan 信号，推荐路径） ====================
 
@@ -213,14 +218,28 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         String queueName = entry != null ? entry.queueName() : null;
         String queueCode = entry != null ? entry.queueCode() : null;
 
+        boolean hasAgentAnswer = eventMapper.exists(new LambdaQueryWrapper<CallEvent>()
+            .eq(CallEvent::getSessionId, sessionId)
+            .eq(CallEvent::getEventType, "AGENT_ANSWER"));
+        if (hasAgentAnswer) {
+            return queueId;
+        }
+
+        CallRecord agentLeg = resolveQueueAnswerAgentLeg(sessionId, leg, channelUuid);
+        if (agentLeg == null || agentLeg.getAgentId() == null) {
+            log.warn("队列坐席接听事件未解析到坐席腿，已跳过接通动作和记忆坐席登记，sessionId={}，bridgeUuid={}，queueId={}",
+                sessionId, channelUuid, queueId);
+            return queueId;
+        }
+
         appendQueueTimelineEvent(
             sessionId,
             channelUuid,
-            leg.getAgentExtension() != null ? leg.getAgentExtension() + "@" + leg.getTenantId() : null,
+            agentLeg.getAgentExtension() != null ? agentLeg.getAgentExtension() + "@" + agentLeg.getTenantId() : null,
             "AGENT_ANSWER",
             queueName != null ? queueName : queueCode,
-            formatAgentLabel(leg.getAgentExtension(), leg.getAgentId()),
-            buildAgentAnswerMetadata(leg, queueId, queueName)
+            formatAgentLabel(agentLeg.getAgentExtension(), agentLeg.getAgentId()),
+            buildAgentAnswerMetadata(agentLeg, queueId, queueName)
         );
 
         if (queueId != null) {
@@ -231,8 +250,112 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
             log.info("已记录本次通话实际接听队列，sessionId={}，queueId={}，queueName={}",
                 sessionId, queueId, queueName);
         }
-        queueAnswerActionExecutor.executeAfterAgentAnswer(sessionId, leg, queueId, queueName);
+        recordStickyAgentIfEnabled(sessionId, agentLeg, queueId);
+        queueAnswerActionExecutor.executeAfterAgentAnswer(sessionId, agentLeg, queueId, queueName);
         return queueId;
+    }
+
+    /**
+     * CHANNEL_BRIDGE 的事件 UUID 不稳定：有时是客户腿，有时是坐席腿。
+     * 队列接听、记忆坐席和接通动作必须使用真正的坐席腿，避免 agentId 为空导致记忆失败。
+     */
+    private CallRecord resolveQueueAnswerAgentLeg(Long sessionId, CallRecord bridgedLeg, String bridgeUuid) {
+        if (bridgedLeg != null && bridgedLeg.getAgentId() != null) {
+            return bridgedLeg;
+        }
+        CallRecord recordLeg = recordMapper.selectOne(new LambdaQueryWrapper<CallRecord>()
+            .eq(CallRecord::getSessionId, sessionId)
+            .isNotNull(CallRecord::getAgentId)
+            .isNotNull(CallRecord::getAgentExtension)
+            .and(wrapper -> wrapper.ne(CallRecord::getCallStatus, "ENDED").or().isNull(CallRecord::getCallStatus))
+            .orderByDesc(CallRecord::getAnsweredAt)
+            .orderByDesc(CallRecord::getRingingAt)
+            .orderByDesc(CallRecord::getId)
+            .last("limit 1"));
+        if (recordLeg != null) {
+            return recordLeg;
+        }
+        CallLeg stableLeg = legMapper.selectOne(new LambdaQueryWrapper<CallLeg>()
+            .eq(CallLeg::getSessionId, sessionId)
+            .eq(CallLeg::getLegRole, "AGENT")
+            .isNotNull(CallLeg::getAgentId)
+            .isNotNull(CallLeg::getAgentExtension)
+            .orderByDesc(CallLeg::getActive)
+            .orderByDesc(CallLeg::getAnsweredAt)
+            .orderByDesc(CallLeg::getBridgedAt)
+            .orderByDesc(CallLeg::getRingingAt)
+            .orderByDesc(CallLeg::getId)
+            .last("limit 1"));
+        if (stableLeg != null) {
+            return toCallRecord(stableLeg);
+        }
+        return resolveAgentLegFromLatestRingEvent(sessionId, bridgeUuid);
+    }
+
+    private CallRecord toCallRecord(CallLeg leg) {
+        CallRecord record = new CallRecord();
+        record.setTenantId(leg.getTenantId());
+        record.setSessionId(leg.getSessionId());
+        record.setNodeId(leg.getNodeId());
+        record.setChannelUuid(leg.getLegUuid());
+        record.setCallUuid(leg.getBusinessCallId());
+        record.setCallerNumber(leg.getCallerNumber());
+        record.setCalledNumber(leg.getCalledNumber());
+        record.setAgentId(leg.getAgentId());
+        record.setAgentExtension(leg.getAgentExtension());
+        record.setCallStatus(leg.getLegState());
+        record.setRingingAt(leg.getRingingAt());
+        record.setAnsweredAt(leg.getAnsweredAt());
+        record.setEndedAt(leg.getEndedAt());
+        record.setHangupCause(leg.getHangupCause());
+        return record;
+    }
+
+    private CallRecord resolveAgentLegFromLatestRingEvent(Long sessionId, String bridgeUuid) {
+        CallEvent ringEvent = eventMapper.selectOne(new LambdaQueryWrapper<CallEvent>()
+            .eq(CallEvent::getSessionId, sessionId)
+            .eq(CallEvent::getEventType, "AGENT_RING")
+            .orderByDesc(CallEvent::getOccurredAt)
+            .last("limit 1"));
+        if (ringEvent == null || StringUtils.isBlank(ringEvent.getMetadataJson())) {
+            return null;
+        }
+        try {
+            Map<String, Object> metadata = JsonUtils.parseMap(ringEvent.getMetadataJson());
+            Object agentIdValue = metadata.get("agentId");
+            Object ccAgentValue = metadata.get("ccAgent");
+            if (agentIdValue == null || ccAgentValue == null || StringUtils.isBlank(ccAgentValue.toString())) {
+                return null;
+            }
+            CallSession session = sessionMapper.selectById(sessionId);
+            String agentIdentity = ccAgentValue.toString();
+            CallRecord record = new CallRecord();
+            record.setTenantId(session == null ? null : session.getTenantId());
+            record.setSessionId(sessionId);
+            record.setNodeId(session == null ? null : session.getNodeId());
+            record.setChannelUuid(bridgeUuid);
+            record.setCallUuid(session == null ? null : session.getBusinessCallId());
+            record.setCallerNumber(session == null ? null : session.getCallerNumber());
+            record.setCalledNumber(extensionFromIdentity(agentIdentity));
+            record.setAgentId(Long.valueOf(agentIdValue.toString()));
+            record.setAgentExtension(extensionFromIdentity(agentIdentity));
+            record.setAnsweredAt(ringEvent.getOccurredAt());
+            log.info("通过最近坐席振铃事件兜底解析队列接听坐席，sessionId={}，bridgeUuid={}，agentIdentity={}，agentId={}",
+                sessionId, bridgeUuid, agentIdentity, record.getAgentId());
+            return record;
+        } catch (Exception exception) {
+            log.warn("通过坐席振铃事件兜底解析队列接听坐席失败，sessionId={}，bridgeUuid={}",
+                sessionId, bridgeUuid, exception);
+            return null;
+        }
+    }
+
+    private String extensionFromIdentity(String agentIdentity) {
+        if (StringUtils.isBlank(agentIdentity)) {
+            return null;
+        }
+        int domainIndex = agentIdentity.indexOf('@');
+        return domainIndex > 0 ? agentIdentity.substring(0, domainIndex) : agentIdentity;
     }
 
     // ==================== 业务通话聚合结束：推断队列超时/放弃 ====================
@@ -284,6 +407,69 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         return JsonUtils.toJsonString(metadata);
     }
 
+    // ==================== 队列 DTMF 按键采集 ====================
+
+    /**
+     * 实现说明：只在队列已接通的通话腿上落 {@code QUEUE_DTMF} 时间线事件，第一版仅做记录，不参与挂机决策。
+     * 按 {@code cc_call_leg} 的 {@code leg_role} 判断按键来源是坐席腿还是客户腿，再与队列配置的
+     * {@code hangupKeyAction} 校验是否需要落库。
+     */
+    @Override
+    public void recordQueueDtmfIfApplicable(String channelUuid, String digit, String source) {
+        if (StringUtils.isBlank(channelUuid) || StringUtils.isBlank(digit)) return;
+        CallRecord leg = recordMapper.selectOne(new LambdaQueryWrapper<CallRecord>()
+            .and(wrapper -> wrapper.eq(CallRecord::getChannelUuid, channelUuid).or().eq(CallRecord::getCallUuid, channelUuid))
+            .last("limit 1"));
+        if (leg == null || leg.getSessionId() == null) return;
+        if (StringUtils.isBlank(leg.getTenantId())) {
+            log.warn("队列 DTMF 按键所在通话腿缺少租户标识，跳过落库，channelUuid={}，digit={}", channelUuid, digit);
+            return;
+        }
+        Long sessionId = leg.getSessionId();
+
+        CallSession session = sessionMapper.selectById(sessionId);
+        if (session == null || session.getHandlingQueueId() == null) return;
+
+        CallCenterResourceQueryService.QueueInfo queue = resourceQueryService.findQueueById(session.getHandlingQueueId());
+        String collectMode = queue == null ? "NONE" : safeCollectMode(queue.hangupKeyAction());
+        if ("NONE".equals(collectMode)) return;
+
+        String legSource = leg.getAgentExtension() != null ? "AGENT" : "CUSTOMER";
+        if ("AGENT".equals(collectMode) && !"AGENT".equals(legSource)) return;
+        if ("CALLER".equals(collectMode) && !"CUSTOMER".equals(legSource)) return;
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("source", "channel_dtmf");
+        metadata.put("dtmfDigit", digit);
+        metadata.put("dtmfSource", source);
+        metadata.put("collectMode", collectMode);
+        metadata.put("legRole", legSource);
+        metadata.put("agentId", leg.getAgentId());
+        metadata.put("agentExtension", leg.getAgentExtension());
+        metadata.put("queueId", session.getHandlingQueueId());
+        metadata.put("queueName", session.getHandlingQueueName());
+
+        TenantHelper.dynamic(leg.getTenantId(), () -> appendQueueTimelineEvent(
+            sessionId,
+            channelUuid,
+            null,
+            "QUEUE_DTMF",
+            "AGENT".equals(legSource) ? leg.getAgentExtension() : session.getCallerNumber(),
+            digit,
+            JsonUtils.toJsonString(metadata)
+        ));
+        log.info("已记录队列通话 DTMF 按键，sessionId={}，queueId={}，legRole={}，digit={}，source={}",
+            sessionId, session.getHandlingQueueId(), legSource, digit, source);
+    }
+
+    private String safeCollectMode(String action) {
+        if (StringUtils.isBlank(action)) return "NONE";
+        String normalized = action.trim().toUpperCase();
+        return switch (normalized) {
+            case "AGENT", "CALLER", "NONE" -> normalized;
+            default -> "NONE";
+        };
+    }
     // ==================== HandlingQueueResolver 契约（话后整理时长查询） ====================
 
     @Override
@@ -440,6 +626,33 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         metadata.put("queueId", queueId);
         metadata.put("queueName", queueName);
         return JsonUtils.toJsonString(metadata);
+    }
+
+    /**
+     * 在坐席成功桥接后登记记忆坐席。
+     *
+     * <p>仅当 {@code stickyAgentEnabled} 已对当前队列开启、客户主叫号码可识别且接听坐席 ID 存在时落 Redis；
+     * 任一条件不满足直接跳过，不影响通话流程。
+     */
+    private void recordStickyAgentIfEnabled(Long sessionId, CallRecord leg, Long queueId) {
+        if (queueId == null || leg == null || leg.getAgentId() == null) {
+            log.info("跳过登记队列记忆坐席，缺少队列或坐席信息，sessionId={}，queueId={}，agentId={}",
+                sessionId, queueId, leg == null ? null : leg.getAgentId());
+            return;
+        }
+        CallCenterResourceQueryService.QueueInfo queue = resourceQueryService.findQueueById(queueId);
+        if (queue == null || !Boolean.TRUE.equals(queue.stickyAgentEnabled())) {
+            log.info("跳过登记队列记忆坐席，队列未开启记忆坐席，sessionId={}，queueId={}，queueExists={}",
+                sessionId, queueId, queue != null);
+            return;
+        }
+        CallSession session = sessionMapper.selectById(sessionId);
+        if (session == null || StringUtils.isBlank(session.getCallerNumber())) {
+            log.info("跳过登记队列记忆坐席，未识别客户主叫号码，sessionId={}，queueId={}", sessionId, queueId);
+            return;
+        }
+        String tenantId = StringUtils.isNotBlank(leg.getTenantId()) ? leg.getTenantId() : session.getTenantId();
+        stickyAgentRegistry.recordStickyAgent(tenantId, queueId, session.getCallerNumber(), leg.getAgentId());
     }
 
     private record QueueEntryInfo(Long queueId, String queueCode, String queueName, LocalDateTime occurredAt) {

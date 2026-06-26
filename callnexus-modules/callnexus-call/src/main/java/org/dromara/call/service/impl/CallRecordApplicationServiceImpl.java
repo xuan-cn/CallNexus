@@ -725,6 +725,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             case "ABANDON" -> "客户放弃";
             case "VOICEMAIL_RECORDED" -> "语音留言";
             case "DTMF_SENT" -> "发送 DTMF";
+            case "QUEUE_DTMF" -> "按键采集";
             default -> safeText(eventType);
         };
     }
@@ -748,7 +749,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         return switch (safeText(eventType)) {
             case "ANSWERED", "BRIDGED", "AGENT_ANSWER", "TRANSFERRED", "UNHELD" -> "success";
             case "CALL_LEG_ENDED", "QUEUE_TIMEOUT", "ABANDON", "AGENT_NO_ANSWER" -> "danger";
-            case "RINGING", "AGENT_RING", "QUEUE_IN", "QUEUE_WAIT", "HELD" -> "warning";
+            case "RINGING", "AGENT_RING", "QUEUE_IN", "QUEUE_WAIT", "HELD", "QUEUE_DTMF" -> "warning";
             default -> "primary";
         };
     }

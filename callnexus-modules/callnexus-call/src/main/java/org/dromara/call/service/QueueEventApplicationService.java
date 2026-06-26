@@ -40,5 +40,23 @@ public interface QueueEventApplicationService {
      * @param channelUuid  入站腿 channel uuid（用于落库关联）
      * @param hangupCause  最终挂断原因
      */
+    /**
+     * 队列接通后客户/坐席按下 DTMF 时，根据队列"挂机按键采集"配置落库为通话时间线事件。
+     *
+     * <p>由 {@link org.dromara.call.service.impl.CallRecordApplicationServiceImpl} 在收到 ESL DTMF 事件时调用。
+     * 仅对队列来电（已有 QUEUE_IN 时间线节点）且已接听（{@code cc_call_session.handling_queue_id} 非空）的通话生效。
+     * 队列配置 {@code hangupKeyAction} 取值：
+     * <ul>
+     *   <li>{@code NONE}：不落库；</li>
+     *   <li>{@code AGENT}：仅当按键来自坐席腿才落库；</li>
+     *   <li>{@code CALLER}：仅当按键来自客户腿才落库。</li>
+     * </ul>
+     * 当前第一版仅做记录，不参与挂机决策；后续满意度/按键流可基于该事件扩展。
+     *
+     * @param channelUuid 上报 DTMF 的 FreeSWITCH channel uuid
+     * @param digit       按键数字
+     * @param source      FreeSWITCH 上报的 DTMF-Source，{@code endpoint}/{@code inband}/{@code app} 等
+     */
+    void recordQueueDtmfIfApplicable(String channelUuid, String digit, String source);
     void recordQueueTerminationIfUnanswered(Long sessionId, String channelUuid, String hangupCause);
 }

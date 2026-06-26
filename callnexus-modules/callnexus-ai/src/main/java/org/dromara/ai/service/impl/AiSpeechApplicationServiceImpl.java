@@ -13,6 +13,7 @@ import org.dromara.ai.service.AiGeneratedMediaQueryService;
 import org.dromara.ai.service.AiSpeechApplicationService;
 import org.dromara.ai.support.ByteArrayAudioMultipartFile;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -25,6 +26,14 @@ import org.dromara.resource.node.group.mapper.FreeSwitchNodeGroupMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.temporal.ChronoUnit;
+import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -39,20 +48,30 @@ import java.util.Map;
 @Slf4j
 public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationService {
     public static final String BUSINESS_AGENT_NUMBER_PROMPT = "AGENT_NUMBER_PROMPT";
+    private static final String BUSINESS_CALL_TRANSCRIPT = "CALL_TRANSCRIPT";
     private static final String TASK_TTS = "TTS";
+    private static final String TASK_ASR = "ASR";
+    private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_SUCCESS = "SUCCESS";
     private static final String STATUS_FAILED = "FAILED";
     private static final String DEFAULT_AGENT_TEMPLATE = "工号{extension}为您服务";
+    private static final Duration RECORDING_DOWNLOAD_TTL = Duration.ofHours(2);
 
     private final AiTtsProviderMapper providerMapper;
     private final AiSpeechTemplateMapper templateMapper;
     private final AiSpeechTaskMapper taskMapper;
     private final AiGeneratedMediaMapper generatedMediaMapper;
+    private final AiCallTranscriptMapper transcriptMapper;
+    private final AiCallTranscriptSegmentMapper transcriptSegmentMapper;
+    private final AiCallRecordingSourceMapper recordingSourceMapper;
+    private final AiCallEventMapper callEventMapper;
     private final FreeSwitchNodeGroupMapper nodeGroupMapper;
     private final MediaAssetApplicationService mediaAssetService;
     private final MediaPublicationService mediaPublicationService;
     private final AiGeneratedMediaQueryService generatedMediaQueryService;
     private final TtsProviderRegistry providerRegistry;
+    private final AsrProviderRegistry asrProviderRegistry;
+    private final OssService ossService;
 
     @Override
     public List<AiTtsProviderResponse> providers() {
@@ -201,6 +220,60 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         return bindingResponse(binding, generatedMediaQueryService.findSyncedPath(BUSINESS_AGENT_NUMBER_PROMPT, agentId, nodeId));
     }
 
+    @Override
+    public AiCallTranscriptResponse callTranscript(Long callSessionId) {
+        AiCallTranscript transcript = transcriptMapper.selectOne(new LambdaQueryWrapper<AiCallTranscript>()
+            .eq(AiCallTranscript::getCallSessionId, callSessionId)
+            .last("limit 1"));
+        return transcript == null ? null : transcriptResponse(transcript);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AiCallTranscriptResponse transcribeCallRecording(Long callSessionId) {
+        AiCallRecordingSource source = recordingSourceMapper.selectById(callSessionId);
+        if (source == null) {
+            throw new ServiceException("通话记录不存在");
+        }
+        if (source.getRecordingOssId() == null) {
+            throw new ServiceException("通话录音不存在，无法转写");
+        }
+        AiTtsProvider provider = defaultAsrProvider();
+        AiSpeechTask task = createAsrTask(source, provider);
+        AiCallTranscript transcript = prepareTranscript(source, provider);
+        try {
+            AudioClip audioClip = asrAudioClip(source, downloadRecording(source.getRecordingOssId()));
+            AsrTranscribeResult result = asrProviderRegistry.get(provider.getProviderType()).transcribe(provider,
+                new AsrTranscribeRequest(audioClip.audioBytes(), recordingFormat(source), provider.getDefaultSampleRate(),
+                    BUSINESS_CALL_TRANSCRIPT, Map.of(
+                    "callSessionId", callSessionId,
+                    "businessCallId", source.getBusinessCallId(),
+                    "trimStartMs", audioClip.offsetMs()
+                )));
+            saveTranscriptSuccess(transcript, result, audioClip.offsetMs());
+            task.setTextContent(result.fullText());
+            task.setStatus(STATUS_SUCCESS);
+            task.setFinishedAt(LocalDateTime.now());
+            taskMapper.updateById(task);
+            log.info("通话录音转写完成，callSessionId={}，businessCallId={}，providerCode={}，segments={}",
+                source.getId(), source.getBusinessCallId(), provider.getProviderCode(), result.segments().size());
+            return transcriptResponse(transcriptMapper.selectById(transcript.getId()));
+        } catch (Exception exception) {
+            String message = StringUtils.blankToDefault(exception.getMessage(), "未知错误");
+            transcript.setStatus(STATUS_FAILED);
+            transcript.setFailureReason(message);
+            transcript.setFinishedAt(LocalDateTime.now());
+            transcriptMapper.updateById(transcript);
+            task.setStatus(STATUS_FAILED);
+            task.setFailureReason(message);
+            task.setFinishedAt(LocalDateTime.now());
+            taskMapper.updateById(task);
+            log.warn("通话录音转写失败，callSessionId={}，businessCallId={}，providerCode={}，error={}",
+                source.getId(), source.getBusinessCallId(), provider.getProviderCode(), message);
+            throw exception instanceof ServiceException ? (ServiceException) exception : new ServiceException("通话录音转写失败：" + message);
+        }
+    }
+
     private TtsGenerateResult generateAudio(AiTtsProvider provider, String text, String voice, String businessType, Map<String, Object> metadata) {
         taskSanity(text);
         TtsGenerateRequest request = new TtsGenerateRequest(text, voice,
@@ -208,6 +281,207 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             provider.getDefaultSampleRate() == null ? 8000 : provider.getDefaultSampleRate(),
             businessType, metadata);
         return providerRegistry.get(provider.getProviderType()).generate(provider, request);
+    }
+
+    private AiTtsProvider defaultAsrProvider() {
+        AiTtsProvider provider = providerMapper.selectOne(new LambdaQueryWrapper<AiTtsProvider>()
+            .eq(AiTtsProvider::getEnabled, true)
+            .eq(AiTtsProvider::getProviderType, "ALIYUN_NLS")
+            .orderByAsc(AiTtsProvider::getCreateTime)
+            .last("limit 1"));
+        if (provider == null) {
+            throw new ServiceException("未配置启用的阿里云 NLS ASR Provider");
+        }
+        asrProviderRegistry.get(provider.getProviderType());
+        return provider;
+    }
+
+    private AiSpeechTask createAsrTask(AiCallRecordingSource source, AiTtsProvider provider) {
+        AiSpeechTask task = new AiSpeechTask();
+        task.setTaskType(TASK_ASR);
+        task.setBusinessType(BUSINESS_CALL_TRANSCRIPT);
+        task.setBusinessId(source.getId());
+        task.setProviderId(provider.getId());
+        task.setProviderType(provider.getProviderType());
+        task.setInputMediaId(source.getRecordingMediaId());
+        task.setStatus(STATUS_PROCESSING);
+        task.setRetryCount(0);
+        task.setStartedAt(LocalDateTime.now());
+        taskMapper.insert(task);
+        return task;
+    }
+
+    private AiCallTranscript prepareTranscript(AiCallRecordingSource source, AiTtsProvider provider) {
+        AiCallTranscript transcript = transcriptMapper.selectOne(new LambdaQueryWrapper<AiCallTranscript>()
+            .eq(AiCallTranscript::getCallSessionId, source.getId())
+            .last("limit 1"));
+        if (transcript == null) {
+            transcript = new AiCallTranscript();
+            transcript.setCallSessionId(source.getId());
+            transcript.setBusinessCallId(source.getBusinessCallId());
+        }
+        transcript.setProviderId(provider.getId());
+        transcript.setProviderType(provider.getProviderType());
+        transcript.setInputMediaId(source.getRecordingMediaId());
+        transcript.setRecordingOssId(source.getRecordingOssId());
+        transcript.setStatus(STATUS_PROCESSING);
+        transcript.setFullText(null);
+        transcript.setFailureReason(null);
+        transcript.setStartedAt(LocalDateTime.now());
+        transcript.setFinishedAt(null);
+        if (transcript.getId() == null) {
+            transcriptMapper.insert(transcript);
+        } else {
+            transcriptMapper.updateById(transcript);
+        }
+        transcriptSegmentMapper.delete(new LambdaQueryWrapper<AiCallTranscriptSegment>()
+            .eq(AiCallTranscriptSegment::getTranscriptId, transcript.getId()));
+        return transcript;
+    }
+
+    private void saveTranscriptSuccess(AiCallTranscript transcript, AsrTranscribeResult result, int offsetMs) {
+        transcript.setStatus(STATUS_SUCCESS);
+        transcript.setFullText(result.fullText());
+        transcript.setFailureReason(null);
+        transcript.setFinishedAt(LocalDateTime.now());
+        transcriptMapper.updateById(transcript);
+        if (result.segments() != null) {
+            for (AsrSegment segment : result.segments()) {
+                if (StringUtils.isBlank(segment.text())) {
+                    continue;
+                }
+                AiCallTranscriptSegment entity = new AiCallTranscriptSegment();
+                entity.setTranscriptId(transcript.getId());
+                entity.setCallSessionId(transcript.getCallSessionId());
+                entity.setBusinessCallId(transcript.getBusinessCallId());
+                entity.setSpeaker("UNKNOWN");
+                entity.setSentenceIndex(segment.sentenceIndex());
+                entity.setStartMs(offsetTime(segment.startMs(), offsetMs));
+                entity.setEndMs(offsetTime(segment.endMs(), offsetMs));
+                entity.setTextContent(segment.text());
+                entity.setFinalResult(segment.finalResult());
+                entity.setConfidence(segment.confidence());
+                transcriptSegmentMapper.insert(entity);
+            }
+        }
+    }
+
+    private Integer offsetTime(Integer value, int offsetMs) {
+        return value == null ? null : value + offsetMs;
+    }
+
+    private byte[] downloadRecording(Long recordingOssId) {
+        String url = ossService.selectUrlById(recordingOssId, RECORDING_DOWNLOAD_TTL);
+        if (StringUtils.isBlank(url)) {
+            throw new ServiceException("录音文件访问地址为空");
+        }
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                .timeout(RECORDING_DOWNLOAD_TTL)
+                .GET()
+                .build();
+            HttpResponse<byte[]> response = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build()
+                .send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new ServiceException("下载录音文件失败，HTTP状态码=" + response.statusCode());
+            }
+            return response.body();
+        } catch (ServiceException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw new ServiceException("下载录音文件失败：" + exception.getMessage());
+        }
+    }
+
+    private AudioClip asrAudioClip(AiCallRecordingSource source, byte[] audioBytes) {
+        int trimStartMs = resolveTrimStartMs(source);
+        if (trimStartMs <= 0) {
+            return new AudioClip(audioBytes, 0);
+        }
+        try {
+            byte[] trimmed = trimAudio(audioBytes, recordingFormat(source), trimStartMs);
+            log.info("通话录音 ASR 已跳过等待音片段，callSessionId={}，businessCallId={}，trimStartMs={}，originalBytes={}，trimmedBytes={}",
+                source.getId(), source.getBusinessCallId(), trimStartMs, audioBytes.length, trimmed.length);
+            return new AudioClip(trimmed, trimStartMs);
+        } catch (Exception exception) {
+            log.warn("通话录音 ASR 裁剪等待音失败，降级整段识别，callSessionId={}，businessCallId={}，trimStartMs={}，error={}",
+                source.getId(), source.getBusinessCallId(), trimStartMs, exception.getMessage());
+            return new AudioClip(audioBytes, 0);
+        }
+    }
+
+    private int resolveTrimStartMs(AiCallRecordingSource source) {
+        if (source.getStartedAt() == null) {
+            return 0;
+        }
+        LocalDateTime speechStartedAt = resolveAgentAnswerTime(source.getId());
+        if (speechStartedAt == null) {
+            speechStartedAt = source.getAnsweredAt();
+        }
+        if (speechStartedAt == null || !speechStartedAt.isAfter(source.getStartedAt())) {
+            return 0;
+        }
+        long millis = ChronoUnit.MILLIS.between(source.getStartedAt(), speechStartedAt);
+        if (millis < 1000) {
+            return 0;
+        }
+        return millis > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) millis;
+    }
+
+    private LocalDateTime resolveAgentAnswerTime(Long callSessionId) {
+        AiCallEvent event = callEventMapper.selectOne(new LambdaQueryWrapper<AiCallEvent>()
+            .eq(AiCallEvent::getSessionId, callSessionId)
+            .eq(AiCallEvent::getEventType, "AGENT_ANSWER")
+            .orderByAsc(AiCallEvent::getOccurredAt)
+            .last("limit 1"));
+        return event == null ? null : event.getOccurredAt();
+    }
+
+    private byte[] trimAudio(byte[] audioBytes, String format, int trimStartMs) throws Exception {
+        String suffix = "." + (StringUtils.isBlank(format) ? "wav" : format.toLowerCase());
+        Path input = Files.createTempFile("callnexus-asr-source-", suffix);
+        Path output = Files.createTempFile("callnexus-asr-trimmed-", ".wav");
+        try {
+            Files.write(input, audioBytes);
+            Process process = new ProcessBuilder(
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel", "error",
+                "-y",
+                "-ss", String.format(java.util.Locale.ROOT, "%.3f", trimStartMs / 1000.0),
+                "-i", input.toString(),
+                "-ac", "1",
+                "-ar", "8000",
+                "-acodec", "pcm_s16le",
+                output.toString()
+            ).redirectErrorStream(true).start();
+            byte[] processOutput = process.getInputStream().readAllBytes();
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                throw new IllegalStateException("ffmpeg 退出码=" + exitCode + "，输出=" + new String(processOutput, StandardCharsets.UTF_8));
+            }
+            byte[] trimmed = Files.readAllBytes(output);
+            if (trimmed.length == 0) {
+                throw new IllegalStateException("ffmpeg 裁剪后音频为空");
+            }
+            return trimmed;
+        } finally {
+            Files.deleteIfExists(input);
+            Files.deleteIfExists(output);
+        }
+    }
+
+    private String recordingFormat(AiCallRecordingSource source) {
+        String fileName = source.getRecordingFileName();
+        if (StringUtils.isBlank(fileName) || !fileName.contains(".")) {
+            return "wav";
+        }
+        return fileName.substring(fileName.lastIndexOf('.') + 1);
+    }
+
+    private record AudioClip(byte[] audioBytes, int offsetMs) {
     }
 
     private Long storeGeneratedMedia(String assetName, MediaAssetCategory category, String text, AiTtsProvider provider,
@@ -499,6 +773,42 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         response.setGeneratedAt(binding.getGeneratedAt());
         response.setFailureReason(binding.getFailureReason());
         response.setSyncedPath(syncedPath);
+        return response;
+    }
+
+    private AiCallTranscriptResponse transcriptResponse(AiCallTranscript transcript) {
+        AiCallTranscriptResponse response = new AiCallTranscriptResponse();
+        response.setId(transcript.getId());
+        response.setCallSessionId(transcript.getCallSessionId());
+        response.setBusinessCallId(transcript.getBusinessCallId());
+        response.setProviderId(transcript.getProviderId());
+        response.setProviderType(transcript.getProviderType());
+        response.setInputMediaId(transcript.getInputMediaId());
+        response.setRecordingOssId(transcript.getRecordingOssId());
+        response.setStatus(transcript.getStatus());
+        response.setFullText(transcript.getFullText());
+        response.setFailureReason(transcript.getFailureReason());
+        response.setStartedAt(transcript.getStartedAt());
+        response.setFinishedAt(transcript.getFinishedAt());
+        response.setCreateTime(transcript.getCreateTime());
+        List<AiCallTranscriptSegmentResponse> segments = transcriptSegmentMapper.selectList(new LambdaQueryWrapper<AiCallTranscriptSegment>()
+                .eq(AiCallTranscriptSegment::getTranscriptId, transcript.getId())
+                .orderByAsc(AiCallTranscriptSegment::getSentenceIndex))
+            .stream().map(this::segmentResponse).toList();
+        response.setSegments(segments);
+        return response;
+    }
+
+    private AiCallTranscriptSegmentResponse segmentResponse(AiCallTranscriptSegment segment) {
+        AiCallTranscriptSegmentResponse response = new AiCallTranscriptSegmentResponse();
+        response.setId(segment.getId());
+        response.setSpeaker(segment.getSpeaker());
+        response.setSentenceIndex(segment.getSentenceIndex());
+        response.setStartMs(segment.getStartMs());
+        response.setEndMs(segment.getEndMs());
+        response.setTextContent(segment.getTextContent());
+        response.setFinalResult(segment.getFinalResult());
+        response.setConfidence(segment.getConfidence());
         return response;
     }
 }

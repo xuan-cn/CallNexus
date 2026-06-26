@@ -22,4 +22,6 @@ public interface AiSpeechApplicationService {
     TableDataInfo<AiSpeechTaskResponse> tasks(AiSpeechTaskPageQuery query, PageQuery pageQuery);
     AiGeneratedMediaResponse generateAgentNumberPrompt(Long agentId, String extension, List<Long> nodeGroupIds, Long templateId);
     AiGeneratedMediaResponse agentNumberPrompt(Long agentId, Long nodeId);
+    AiCallTranscriptResponse callTranscript(Long callSessionId);
+    AiCallTranscriptResponse transcribeCallRecording(Long callSessionId);
 }

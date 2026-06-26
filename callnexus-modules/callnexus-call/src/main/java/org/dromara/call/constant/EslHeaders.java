@@ -41,6 +41,19 @@ public final class EslHeaders {
     public static final String EVENT_SUBCLASS = "Event-Subclass";
 
     /**
+     * DTMF 事件按键头，单次事件代表一次按键。
+     */
+    public static final String DTMF_DIGIT = "DTMF-Digit";
+    /**
+     * DTMF 事件按键持续时间（采样数）。
+     */
+    public static final String DTMF_DURATION = "DTMF-Duration";
+    /**
+     * DTMF 事件按键来源（{@code endpoint}=来自终端、{@code inband}=带内识别、{@code app}=应用注入）。
+     */
+    public static final String DTMF_SOURCE = "DTMF-Source";
+
+    /**
      * mod_callcenter 队列事件公共头。
      */
     public static final String CC_QUEUE = "CC-Queue";
