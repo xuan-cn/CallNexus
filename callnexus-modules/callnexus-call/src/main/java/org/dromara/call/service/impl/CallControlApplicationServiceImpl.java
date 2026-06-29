@@ -234,6 +234,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
                 callId, customerCallId, businessCallId);
         }
         prepareCustomerLegForBlindTransfer(endpoint, customerCallId);
+        telephonyCommandGateway.setCallVariable(endpoint, customerCallId, "callnexus_satisfaction_skip", "true");
         telephonyCommandGateway.blindTransfer(endpoint, customerCallId, targetExtension);
         notifyBlindTransferTargetAgent(agent, activeCall, targetExtension, businessCallId, customerCallId);
         RedisUtils.deleteObject(activeCallKey(agent.getAgentId()));
@@ -284,6 +285,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         consultCall.setPhoneMode(normalizePhoneMode(phoneMode));
         consultCall.setStartedAt(LocalDateTime.now());
         try {
+            telephonyCommandGateway.setCallVariable(endpoint, customerCallId, "callnexus_satisfaction_skip", "true");
             prepareConsultBridge(endpoint, customerCallId, sourceAgentCallId);
             telephonyCommandGateway.hold(endpoint, customerCallId);
             parkSourceAgentChannelIfExists(endpoint, consultCall);

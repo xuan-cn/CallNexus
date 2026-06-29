@@ -58,5 +58,7 @@ public interface QueueEventApplicationService {
      * @param source      FreeSWITCH 上报的 DTMF-Source，{@code endpoint}/{@code inband}/{@code app} 等
      */
     void recordQueueDtmfIfApplicable(String channelUuid, String digit, String source);
+    void recordQueueSatisfaction(TelephonyEvent event);
+
     void recordQueueTerminationIfUnanswered(Long sessionId, String channelUuid, String hangupCause);
 }

@@ -30,6 +30,9 @@ public class CallQueueDialplanResponse {
     private String noAgentTarget;
     private String noAgentTargetQueueCode;
     private Integer noAgentWaitSeconds;
+    private Boolean satisfactionEnabled;
+    private String satisfactionMediaPath;
+    private Integer satisfactionTimeoutSeconds;
 
     /**
      * 记忆坐席：true 时尝试把同一客户号码再次路由到上次接听的坐席。

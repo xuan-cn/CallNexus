@@ -21,6 +21,9 @@ public class CallQueueRequest {
     @NotBlank private String answerAction;
     private Long answerMediaId;
     @NotBlank private String hangupKeyAction;
+    @NotNull private Boolean satisfactionEnabled;
+    private Long satisfactionMediaId;
+    @NotNull @Min(3) @Max(60) private Integer satisfactionTimeoutSeconds;
     @NotBlank private String timeoutAction;
     @Size(max = 64) private String timeoutTarget;
     @NotBlank private String noAgentAction;

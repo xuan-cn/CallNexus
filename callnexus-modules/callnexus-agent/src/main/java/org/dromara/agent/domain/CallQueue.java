@@ -26,6 +26,9 @@ public class CallQueue extends TenantEntity {
     private String answerAction;
     private Long answerMediaId;
     private String hangupKeyAction;
+    private Boolean satisfactionEnabled;
+    private Long satisfactionMediaId;
+    private Integer satisfactionTimeoutSeconds;
     private String timeoutAction;
     private String timeoutTarget;
     private String noAgentAction;

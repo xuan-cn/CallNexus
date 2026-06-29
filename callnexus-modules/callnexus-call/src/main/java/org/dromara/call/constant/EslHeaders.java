@@ -65,6 +65,10 @@ public final class EslHeaders {
     public static final String CC_MEMBER_UUID = "CC-Member-UUID";
     public static final String VARIABLE_CC_MEMBER_SESSION_UUID = "variable_cc_member_session_uuid";
     public static final String VARIABLE_CC_MEMBER_UUID = "variable_cc_member_uuid";
+    public static final String CALLNEXUS_BUSINESS_CALL_ID = "CallNexus-Business-Call-ID";
+    public static final String CALLNEXUS_QUEUE_ID = "CallNexus-Queue-ID";
+    public static final String CALLNEXUS_CUSTOMER_LEG_UUID = "CallNexus-Customer-Leg-UUID";
+    public static final String CALLNEXUS_SATISFACTION_DIGIT = "CallNexus-Satisfaction-Digit";
 
     private EslHeaders() {
     }

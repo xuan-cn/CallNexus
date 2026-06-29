@@ -13,17 +13,20 @@ import org.dromara.call.domain.CallEvent;
 import org.dromara.call.domain.CallLeg;
 import org.dromara.call.domain.CallRecord;
 import org.dromara.call.domain.CallSession;
+import org.dromara.call.domain.CallSatisfaction;
 import org.dromara.call.domain.TelephonyEvent;
 import org.dromara.call.mapper.CallEventMapper;
 import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallRecordMapper;
 import org.dromara.call.mapper.CallSessionMapper;
+import org.dromara.call.mapper.CallSatisfactionMapper;
 import org.dromara.call.service.QueueEventApplicationService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.event.queue.AgentRingSignalEvent;
 import org.dromara.resource.event.queue.QueueEntrySignalEvent;
+import org.dromara.resource.event.queue.QueueSatisfactionSignalEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
@@ -55,6 +58,7 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
     private final CallLegMapper legMapper;
     private final CallSessionMapper sessionMapper;
     private final CallEventMapper eventMapper;
+    private final CallSatisfactionMapper satisfactionMapper;
     private final CallCenterResourceQueryService resourceQueryService;
     private final QueueAnswerActionExecutor queueAnswerActionExecutor;
     private final StickyAgentRegistry stickyAgentRegistry;
@@ -95,6 +99,17 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         } catch (Exception exception) {
             log.error("处理坐席振铃信号事件失败，memberSessionUuid={}，queueCode={}",
                 event.memberSessionUuid(), event.queueCode(), exception);
+        }
+    }
+
+    @EventListener
+    public void onQueueSatisfaction(QueueSatisfactionSignalEvent event) {
+        try {
+            recordQueueSatisfaction(event.nodeId(), event.businessCallId(), event.queueId(),
+                event.customerLegUuid(), event.digit());
+        } catch (Exception exception) {
+            log.error("处理队列挂机评价信号失败，businessCallId={}，queueId={}，digit={}",
+                event.businessCallId(), event.queueId(), event.digit(), exception);
         }
     }
 
@@ -460,6 +475,86 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         ));
         log.info("已记录队列通话 DTMF 按键，sessionId={}，queueId={}，legRole={}，digit={}，source={}",
             sessionId, session.getHandlingQueueId(), legSource, digit, source);
+    }
+
+    @Override
+    public void recordQueueSatisfaction(TelephonyEvent event) {
+        String businessCallId = event.headers().get(EslHeaders.CALLNEXUS_BUSINESS_CALL_ID);
+        String customerLegUuid = event.headers().get(EslHeaders.CALLNEXUS_CUSTOMER_LEG_UUID);
+        String digit = StringUtils.trim(event.headers().get(EslHeaders.CALLNEXUS_SATISFACTION_DIGIT));
+        Long queueId = parseLong(event.headers().get(EslHeaders.CALLNEXUS_QUEUE_ID));
+        recordQueueSatisfaction(event.nodeId(), businessCallId, queueId, customerLegUuid, digit);
+    }
+
+    private void recordQueueSatisfaction(Long nodeId, String businessCallId, Long queueId,
+                                         String customerLegUuid, String digit) {
+        if (StringUtils.isBlank(businessCallId) || StringUtils.isBlank(customerLegUuid) || queueId == null) {
+            log.warn("忽略字段不完整的队列满意度事件，nodeId={}，businessCallId={}，queueId={}，customerLegUuid={}",
+                nodeId, businessCallId, queueId, customerLegUuid);
+            return;
+        }
+
+        CallSession session = TenantHelper.ignore(() -> sessionMapper.selectOne(new LambdaQueryWrapper<CallSession>()
+            .eq(CallSession::getBusinessCallId, businessCallId)
+            .last("limit 1")));
+        if (session == null || !queueId.equals(session.getHandlingQueueId())) {
+            log.warn("忽略无法匹配业务通话的队列满意度事件，nodeId={}，businessCallId={}，queueId={}，sessionQueueId={}",
+                nodeId, businessCallId, queueId, session == null ? null : session.getHandlingQueueId());
+            return;
+        }
+        boolean customerLegMatched = TenantHelper.ignore(() -> legMapper.exists(new LambdaQueryWrapper<CallLeg>()
+            .eq(CallLeg::getSessionId, session.getId())
+            .eq(CallLeg::getLegUuid, customerLegUuid)
+            .eq(CallLeg::getLegRole, "CUSTOMER")));
+        if (!customerLegMatched) {
+            log.warn("忽略客户腿不匹配的队列满意度事件，sessionId={}，businessCallId={}，customerLegUuid={}",
+                session.getId(), businessCallId, customerLegUuid);
+            return;
+        }
+
+        TenantHelper.dynamic(session.getTenantId(), () -> persistQueueSatisfaction(session, queueId, customerLegUuid, digit));
+    }
+
+    private void persistQueueSatisfaction(CallSession session, Long queueId, String customerLegUuid, String digit) {
+        if (satisfactionMapper.exists(new LambdaQueryWrapper<CallSatisfaction>()
+            .eq(CallSatisfaction::getSessionId, session.getId()))) {
+            log.info("队列满意度评价已存在，跳过重复事件，sessionId={}，businessCallId={}",
+                session.getId(), session.getBusinessCallId());
+            return;
+        }
+        Integer score = digit != null && digit.matches("^[1-5]$") ? Integer.valueOf(digit) : null;
+        String status = score == null ? "NO_INPUT" : "SUBMITTED";
+        LocalDateTime now = LocalDateTime.now();
+
+        CallSatisfaction satisfaction = new CallSatisfaction();
+        satisfaction.setSessionId(session.getId());
+        satisfaction.setBusinessCallId(session.getBusinessCallId());
+        satisfaction.setQueueId(queueId);
+        satisfaction.setCustomerLegUuid(customerLegUuid);
+        satisfaction.setScore(score);
+        satisfaction.setDigit(StringUtils.isBlank(digit) ? null : digit);
+        satisfaction.setStatus(status);
+        satisfaction.setSubmittedAt(score == null ? null : now);
+        satisfactionMapper.insert(satisfaction);
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("source", "queue_satisfaction");
+        metadata.put("queueId", queueId);
+        metadata.put("score", score);
+        metadata.put("status", status);
+        appendQueueTimelineEvent(session.getId(), customerLegUuid, null, "QUEUE_SATISFACTION",
+            session.getCallerNumber(), score == null ? "NO_INPUT" : String.valueOf(score), JsonUtils.toJsonString(metadata));
+        log.info("已记录队列满意度评价，sessionId={}，businessCallId={}，queueId={}，score={}，status={}",
+            session.getId(), session.getBusinessCallId(), queueId, score, status);
+    }
+
+    private Long parseLong(String value) {
+        if (StringUtils.isBlank(value)) return null;
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException exception) {
+            return null;
+        }
     }
 
     private String safeCollectMode(String action) {

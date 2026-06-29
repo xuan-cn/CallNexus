@@ -72,6 +72,15 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     public void onEvent(TelephonyEvent event) {
         // mod_callcenter 队列事件走独立的队列事件处理服务，不参与坐席实时状态机和 WebSocket 推送。
         if (EslEventNames.CUSTOM.equals(event.eventName())) {
+            if (EslEventNames.isQueueSatisfactionEvent(event.eventName(), event.eventSubclass())) {
+                try {
+                    queueEventApplicationService.recordQueueSatisfaction(event);
+                } catch (Exception exception) {
+                    log.error("队列满意度评价落库失败，不影响通话结束处理，nodeId={}，uuid={}",
+                        event.nodeId(), event.uuid(), exception);
+                }
+                return;
+            }
             if (!EslEventNames.isCallCenterQueueEvent(event.eventName(), event.eventSubclass())) {
                 return;
             }

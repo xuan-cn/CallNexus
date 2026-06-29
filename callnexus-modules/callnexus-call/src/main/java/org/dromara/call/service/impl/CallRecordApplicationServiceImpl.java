@@ -15,6 +15,7 @@ import org.dromara.call.domain.CallEvent;
 import org.dromara.call.domain.CallLeg;
 import org.dromara.call.domain.CallRecord;
 import org.dromara.call.domain.CallSession;
+import org.dromara.call.domain.CallSatisfaction;
 import org.dromara.call.domain.CallSessionCompletedEvent;
 import org.dromara.call.domain.TelephonyEvent;
 import org.dromara.call.domain.VoiceMailMessage;
@@ -26,6 +27,7 @@ import org.dromara.call.domain.response.CallDiagnosticBridgeResponse;
 import org.dromara.call.domain.response.CallDiagnosticLegResponse;
 import org.dromara.call.domain.response.CallLegResponse;
 import org.dromara.call.domain.response.CallRecordResponse;
+import org.dromara.call.domain.response.CallSatisfactionResponse;
 import org.dromara.call.domain.response.VoiceMailMessageResponse;
 import org.dromara.call.mapper.AgentCallSessionMapper;
 import org.dromara.call.mapper.CallBridgeMapper;
@@ -33,6 +35,7 @@ import org.dromara.call.mapper.CallEventMapper;
 import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallRecordMapper;
 import org.dromara.call.mapper.CallSessionMapper;
+import org.dromara.call.mapper.CallSatisfactionMapper;
 import org.dromara.call.mapper.VoiceMailMessageMapper;
 import org.dromara.call.service.CallRecordApplicationService;
 import org.dromara.call.service.CallSessionCompletedListener;
@@ -69,6 +72,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private final CallBridgeMapper callBridgeMapper;
     private final AgentCallSessionMapper agentCallSessionMapper;
     private final VoiceMailMessageMapper voiceMailMessageMapper;
+    private final CallSatisfactionMapper satisfactionMapper;
     private final AgentRealtimeQueryService agentQueryService;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final OssService ossService;
@@ -637,6 +641,10 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             response.setDiagnosticLegs(diagnosticLegs.stream().map(this::toDiagnosticLegResponse).toList());
             response.setDiagnosticBridges(diagnosticBridges.stream().map(this::toDiagnosticBridgeResponse).toList());
             response.setAgentSessions(agentSessions.stream().map(this::toAgentCallSessionResponse).toList());
+            CallSatisfaction satisfaction = satisfactionMapper.selectOne(new LambdaQueryWrapper<CallSatisfaction>()
+                .eq(CallSatisfaction::getSessionId, session.getId())
+                .last("limit 1"));
+            response.setSatisfaction(toSatisfactionResponse(satisfaction));
         }
         return response;
     }
@@ -726,11 +734,15 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             case "VOICEMAIL_RECORDED" -> "语音留言";
             case "DTMF_SENT" -> "发送 DTMF";
             case "QUEUE_DTMF" -> "按键采集";
+            case "QUEUE_SATISFACTION" -> "满意度评价";
             default -> safeText(eventType);
         };
     }
 
     private String eventDescription(CallEvent event) {
+        if ("QUEUE_SATISFACTION".equals(event.getEventType())) {
+            return "NO_INPUT".equals(event.getToTarget()) ? "客户未提交评价" : "客户评分：" + event.getToTarget() + " 分";
+        }
         String from = safeText(event.getFromTarget());
         String to = safeText(event.getToTarget());
         if (!"-".equals(from) && !"-".equals(to)) {
@@ -747,7 +759,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
 
     private String eventTone(String eventType) {
         return switch (safeText(eventType)) {
-            case "ANSWERED", "BRIDGED", "AGENT_ANSWER", "TRANSFERRED", "UNHELD" -> "success";
+            case "ANSWERED", "BRIDGED", "AGENT_ANSWER", "TRANSFERRED", "UNHELD", "QUEUE_SATISFACTION" -> "success";
             case "CALL_LEG_ENDED", "QUEUE_TIMEOUT", "ABANDON", "AGENT_NO_ANSWER" -> "danger";
             case "RINGING", "AGENT_RING", "QUEUE_IN", "QUEUE_WAIT", "HELD", "QUEUE_DTMF" -> "warning";
             default -> "primary";
@@ -973,6 +985,16 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         response.setFromTarget(event.getFromTarget());
         response.setToTarget(event.getToTarget());
         response.setOccurredAt(event.getOccurredAt());
+        return response;
+    }
+
+    private CallSatisfactionResponse toSatisfactionResponse(CallSatisfaction satisfaction) {
+        if (satisfaction == null) return null;
+        CallSatisfactionResponse response = new CallSatisfactionResponse();
+        response.setScore(satisfaction.getScore());
+        response.setDigit(satisfaction.getDigit());
+        response.setStatus(satisfaction.getStatus());
+        response.setSubmittedAt(satisfaction.getSubmittedAt());
         return response;
     }
 }

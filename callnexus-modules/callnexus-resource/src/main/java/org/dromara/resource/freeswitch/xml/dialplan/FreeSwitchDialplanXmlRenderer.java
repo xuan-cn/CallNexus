@@ -63,6 +63,7 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="set" data="callnexus_queue_id=%s"/>
                       <action application="set" data="callnexus_queue_code=%s"/>
                       <action application="set" data="callnexus_node_id=%s"/>
+                      <action application="set" data="callnexus_satisfaction_skip=false"/>
                       <action application="export" data="callnexus_business_call_id=${uuid}"/>
                       <action application="export" data="callnexus_direction=INBOUND"/>
                       <action application="export" data="callnexus_original_caller=${caller_id_number}"/>
@@ -71,8 +72,7 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
                       <action application="record_session" data="${callnexus_recording_path}"/>
-                      %s%s%s
-                      <action application="set" data="hangup_after_bridge=true"/>
+                      %s%s%s%s
                       <action application="callcenter" data="%s"/>
                       %s
                     </condition>
@@ -81,7 +81,8 @@ public class FreeSwitchDialplanXmlRenderer {
               </section>
             </document>
             """.formatted(dialplanContext, number, number, route.getId(), queue.getId(), queueName, route.getNodeId(), number,
-            queueAnswerAction(queue), maskCallerActions(queue), forceWaitAction(queue), queueName, queueExitActions(queue, queueName, context));
+            queueAnswerAction(queue), maskCallerActions(queue), forceWaitAction(queue), queueBridgeControlActions(queue), queueName,
+            queuePostTransfer(queue.getId(), context));
     }
 
     public String renderInternalVoiceMailRoute(String destinationNumber, VoiceMailDialplanResponse box, String context) {
@@ -159,6 +160,95 @@ public class FreeSwitchDialplanXmlRenderer {
         return builder.toString();
     }
 
+    private String queueBridgeControlActions(CallQueueDialplanResponse queue) {
+        return "                      <action application=\"set\" data=\"hangup_after_bridge="
+            + (!isQueueSatisfactionReady(queue)) + "\"/>\n";
+    }
+
+    private String queueSatisfactionActions(CallQueueDialplanResponse queue, String context) {
+        if (!isQueueSatisfactionReady(queue)) {
+            return "";
+        }
+        String prompt = FreeSwitchXmlRenderer.escape(queue.getSatisfactionMediaPath());
+        int timeoutMillis = Math.max(3, Math.min(60,
+            queue.getSatisfactionTimeoutSeconds() == null ? 8 : queue.getSatisfactionTimeoutSeconds())) * 1000;
+        String playAndGetDigits = "1 1 1 " + timeoutMillis
+            + " # " + prompt + " silence_stream://250 callnexus_satisfaction_digit [1-5] " + timeoutMillis;
+        return "                      <action application=\"log\" data=\"NOTICE [CallNexus] start queue satisfaction, queue=${callnexus_queue_code}, call=${callnexus_business_call_id}\"/>\n"
+            + "                      <action application=\"play_and_get_digits\" data=\"" + playAndGetDigits + "\"/>\n"
+            + "                      <action application=\"set\" data=\"callnexus_internal_transfer=QUEUE_SATISFACTION\"/>\n"
+            + "                      <action application=\"transfer\" data=\"callnexus_queue_satisfaction_" + queue.getId()
+            + " XML " + FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "public" : context) + "\"/>\n";
+    }
+
+    private boolean isQueueSatisfactionReady(CallQueueDialplanResponse queue) {
+        return Boolean.TRUE.equals(queue.getSatisfactionEnabled())
+            && queue.getSatisfactionMediaPath() != null
+            && !queue.getSatisfactionMediaPath().isBlank();
+    }
+
+    private String queuePostTransfer(Long queueId, String context) {
+        return "                      <action application=\"set\" data=\"callnexus_internal_transfer=QUEUE_POST\"/>\n"
+            + "                      <action application=\"transfer\" data=\"callnexus_queue_post_" + queueId
+            + " XML " + FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "public" : context) + "\"/>\n";
+    }
+
+    public String renderQueuePostRoute(String destinationNumber, CallQueueDialplanResponse queue, String context,
+                                       boolean agentBridged, boolean satisfactionSkipped,
+                                       boolean stickyInitialAttempt, boolean stickyDirectSucceeded) {
+        String destination = FreeSwitchXmlRenderer.escape(destinationNumber);
+        String dialplanContext = FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "public" : context);
+        String queueName = FreeSwitchXmlRenderer.escape(queue.getQueueCode() + "@default");
+        String actions;
+        if (stickyInitialAttempt && !stickyDirectSucceeded) {
+            actions = "                      <action application=\"set\" data=\"callnexus_queue_sticky_hit=false\"/>\n"
+                + "                      <action application=\"set\" data=\"callnexus_queue_sticky_fallback=true\"/>\n"
+                + "                      <action application=\"log\" data=\"NOTICE [CallNexus] sticky agent bridge failed, fallback queue "
+                + queueName + ", cause=${originate_disposition}\"/>\n"
+                + forceWaitAction(queue)
+                + queueBridgeControlActions(queue)
+                + "                      <action application=\"callcenter\" data=\"" + queueName + "\"/>\n"
+                + queuePostTransfer(queue.getId(), context);
+        } else if (agentBridged || stickyDirectSucceeded) {
+            actions = isQueueSatisfactionReady(queue) && !satisfactionSkipped
+                ? queueSatisfactionActions(queue, context)
+                : "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
+        } else {
+            actions = queueExitActions(queue, queueName, context);
+        }
+        return """
+            <document type="freeswitch/xml">
+              <section name="dialplan" description="CallNexus Queue Post Processing">
+                <context name="%s">
+                  <extension name="callnexus_queue_post_%s" continue="false">
+                    <condition field="destination_number" expression="^%s$">
+                      %s
+                    </condition>
+                  </extension>
+                </context>
+              </section>
+            </document>
+            """.formatted(dialplanContext, queue.getId(), destination, actions);
+    }
+
+    public String renderQueueSatisfactionResultRoute(String destinationNumber, String context) {
+        String destination = FreeSwitchXmlRenderer.escape(destinationNumber);
+        String dialplanContext = FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "public" : context);
+        return """
+            <document type="freeswitch/xml">
+              <section name="dialplan" description="CallNexus Queue Satisfaction Result">
+                <context name="%s">
+                  <extension name="callnexus_queue_satisfaction_result" continue="false">
+                    <condition field="destination_number" expression="^%s$">
+                      <action application="hangup" data="NORMAL_CLEARING"/>
+                    </condition>
+                  </extension>
+                </context>
+              </section>
+            </document>
+            """.formatted(dialplanContext, destination);
+    }
+
     private String queueExitActions(CallQueueDialplanResponse queue, String currentQueueName, String context) {
         String action = queue.getTimeoutAction() == null || queue.getTimeoutAction().isBlank() ? "HANGUP" : queue.getTimeoutAction();
         String target = queue.getTimeoutTarget();
@@ -228,6 +318,7 @@ public class FreeSwitchDialplanXmlRenderer {
     private String renderQueueStickyBridgeRoute(PhoneNumberDialplanRouteResponse route, CallQueueDialplanResponse queue,
                                                 String dialplanContext, String number) {
         String stickyTarget = FreeSwitchXmlRenderer.escape(queue.getStickyAgentTarget());
+        String queueName = FreeSwitchXmlRenderer.escape(queue.getQueueCode() + "@default");
         return """
             <document type="freeswitch/xml">
               <section name="dialplan" description="CallNexus Dynamic Dialplan">
@@ -240,6 +331,7 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="set" data="callnexus_queue_code=%s"/>
                       <action application="set" data="callnexus_node_id=%s"/>
                       <action application="set" data="callnexus_queue_sticky_hit=true"/>
+                      <action application="set" data="callnexus_satisfaction_skip=false"/>
                       <action application="export" data="callnexus_business_call_id=${uuid}"/>
                       <action application="export" data="callnexus_direction=INBOUND"/>
                       <action application="export" data="callnexus_original_caller=${caller_id_number}"/>
@@ -249,17 +341,19 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
                       <action application="record_session" data="${callnexus_recording_path}"/>
                       %s%s
-                      <action application="set" data="hangup_after_bridge=true"/>
+                      %s
+                      <action application="set" data="continue_on_fail=true"/>
                       <action application="bridge" data="user/%s"/>
-                      <action application="hangup" data="NORMAL_CLEARING"/>
+                      %s
                     </condition>
                   </extension>
                 </context>
               </section>
             </document>
             """.formatted(dialplanContext, number, number, route.getId(), queue.getId(),
-                FreeSwitchXmlRenderer.escape(queue.getQueueCode() + "@default"), route.getNodeId(), number,
-                queueAnswerAction(queue), maskCallerActions(queue), stickyTarget);
+                queueName, route.getNodeId(), number, queueAnswerAction(queue), maskCallerActions(queue),
+                queueBridgeControlActions(queue), stickyTarget,
+                queuePostTransfer(queue.getId(), dialplanContext));
     }
 
     private String renderQueuePostAction(String action, String target, String targetQueueCode, String currentQueueName, String context) {

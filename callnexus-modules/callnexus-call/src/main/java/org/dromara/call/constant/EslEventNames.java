@@ -37,6 +37,7 @@ public final class EslEventNames {
     public static final String SUBCLASS_CC_ABANDON = "callcenter::call-abandon";
     public static final String SUBCLASS_CC_REJECTED = "callcenter::call-rejected";
     public static final String SUBCLASS_CC_NO_ANSWER = "callcenter::call-no-answer";
+    public static final String SUBCLASS_QUEUE_SATISFACTION = "callnexus::queue-satisfaction";
 
     private EslEventNames() {
     }
@@ -67,5 +68,9 @@ public final class EslEventNames {
     public static boolean isCallCenterQueueEvent(String eventName, String eventSubclass) {
         if (!CUSTOM.equals(eventName) || eventSubclass == null) return false;
         return eventSubclass.startsWith("callcenter::");
+    }
+
+    public static boolean isQueueSatisfactionEvent(String eventName, String eventSubclass) {
+        return CUSTOM.equals(eventName) && SUBCLASS_QUEUE_SATISFACTION.equals(eventSubclass);
     }
 }

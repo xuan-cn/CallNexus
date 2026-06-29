@@ -43,4 +43,5 @@ public class CallRecordResponse {
     private List<CallDiagnosticLegResponse> diagnosticLegs;
     private List<CallDiagnosticBridgeResponse> diagnosticBridges;
     private List<AgentCallSessionResponse> agentSessions;
+    private CallSatisfactionResponse satisfaction;
 }

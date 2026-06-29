@@ -7,17 +7,22 @@ import org.dromara.resource.freeswitch.xml.dialplan.FreeSwitchDialplanXmlRendere
 import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteContext;
 import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteHandler;
 import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteHandlerRegistry;
+import org.dromara.resource.event.queue.QueueSatisfactionSignalEvent;
 import org.dromara.resource.ivr.service.IvrDialplanQueryService;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationCommand;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationResult;
 import org.dromara.resource.outboundauth.service.OutboundAuthorizationService;
 import org.dromara.resource.phone.domain.response.PhoneNumberDialplanRouteResponse;
+import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
+import org.dromara.resource.queue.domain.response.CallQueueDialplanResponse;
+import org.dromara.resource.queue.service.CallQueueQueryService;
 import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
 import org.dromara.resource.sip.service.SipAccountQueryService;
 import org.dromara.resource.voicemail.domain.response.VoiceMailDialplanResponse;
 import org.dromara.resource.voicemail.service.VoiceMailBoxQueryService;
 import org.springframework.stereotype.Component;
+import org.springframework.context.ApplicationEventPublisher;
 
 @Component
 @Slf4j
@@ -30,6 +35,8 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
     private final VoiceMailBoxQueryService voiceMailBoxQueryService;
     private final DialplanRouteHandlerRegistry routeHandlerRegistry;
     private final OutboundAuthorizationService outboundAuthorizationService;
+    private final CallQueueQueryService callQueueQueryService;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     public boolean supports(FreeSwitchXmlCurlRequest request) {
@@ -41,6 +48,60 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         String destinationNumber = destinationNumber(request);
         String domain = domain(request);
         String context = context(request);
+        Long queueSatisfactionId = queueTransferId(destinationNumber, "callnexus_queue_satisfaction_");
+        if (queueSatisfactionId != null) {
+            if (!"QUEUE_SATISFACTION".equals(firstValue(request,
+                "variable_callnexus_internal_transfer", "callnexus_internal_transfer"))) {
+                log.warn("拒绝未携带队列评价标记的内部目标，destinationNumber={}，tenantId={}",
+                    destinationNumber, request.tenantId());
+                return FreeSwitchXmlRenderer.notFound();
+            }
+            String businessCallId = firstValue(request,
+                "variable_callnexus_business_call_id", "callnexus_business_call_id");
+            String customerLegUuid = firstValue(request, "variable_uuid", "Unique-ID");
+            String digit = firstValue(request,
+                "variable_callnexus_satisfaction_digit", "callnexus_satisfaction_digit");
+            eventPublisher.publishEvent(new QueueSatisfactionSignalEvent(
+                request.tenantId(), businessCallId, customerLegUuid, queueSatisfactionId, nodeId(request), digit));
+            log.info("FreeSWITCH 队列挂机评价结果已接收，businessCallId={}，queueId={}，customerLegUuid={}，digit={}，tenantId={}",
+                businessCallId, queueSatisfactionId, customerLegUuid, digit, request.tenantId());
+            return dialplanXmlRenderer.renderQueueSatisfactionResultRoute(destinationNumber, context);
+        }
+        Long queuePostId = queueTransferId(destinationNumber, "callnexus_queue_post_");
+        if (queuePostId != null) {
+            if (!isQueuePostTransfer(request)) {
+                log.warn("拒绝未携带队列后处理标记的内部目标，destinationNumber={}，tenantId={}",
+                    destinationNumber, request.tenantId());
+                return FreeSwitchXmlRenderer.notFound();
+            }
+            Long freeSwitchNodeId = nodeId(request);
+            CallQueueDialplanResponse queue = callQueueQueryService.findAvailableQueue(
+                request.tenantId(), queuePostId, freeSwitchNodeId, callerNumber(request));
+            if (queue == null) {
+                log.warn("队列后处理失败，未找到当前节点可用队列，queueId={}，nodeId={}，tenantId={}",
+                    queuePostId, freeSwitchNodeId, request.tenantId());
+                return FreeSwitchXmlRenderer.notFound();
+            }
+            fillQueueOutboundGateway(queue, request.tenantId(), freeSwitchNodeId);
+            boolean agentBridged = requestBoolean(request, "variable_cc_agent_bridged", "cc_agent_bridged");
+            boolean satisfactionSkipped = requestBoolean(request,
+                "variable_callnexus_satisfaction_skip", "callnexus_satisfaction_skip");
+            boolean stickyHit = requestBoolean(request,
+                "variable_callnexus_queue_sticky_hit", "callnexus_queue_sticky_hit");
+            boolean stickyFallback = requestBoolean(request,
+                "variable_callnexus_queue_sticky_fallback", "callnexus_queue_sticky_fallback");
+            String originateDisposition = firstValue(request,
+                "variable_originate_disposition", "originate_disposition");
+            boolean stickyDirectSucceeded = "SUCCESS".equalsIgnoreCase(originateDisposition);
+            String xml = dialplanXmlRenderer.renderQueuePostRoute(destinationNumber, queue, context,
+                agentBridged, satisfactionSkipped, stickyHit && !stickyFallback, stickyDirectSucceeded);
+            log.info("FreeSWITCH 队列后处理路由已生成，queueId={}，nodeId={}，agentBridged={}，ccCause={}，"
+                    + "satisfactionSkipped={}，stickyHit={}，stickyFallback={}，originateDisposition={}，tenantId={}",
+                queuePostId, freeSwitchNodeId, agentBridged,
+                firstValue(request, "variable_cc_cause", "cc_cause"), satisfactionSkipped,
+                stickyHit, stickyFallback, originateDisposition, request.tenantId());
+            return xml;
+        }
         Long queueTransferIvrFlowId = queueTransferId(destinationNumber, "callnexus_queue_ivr_");
         if (queueTransferIvrFlowId != null) {
             if (!isQueueInternalTransfer(request)) {
@@ -186,6 +247,34 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         String value = request.firstValue("variable_callnexus_internal_transfer");
         if (value == null || value.isBlank()) value = request.firstValue("callnexus_internal_transfer");
         return "QUEUE".equals(value);
+    }
+
+    private boolean isQueuePostTransfer(FreeSwitchXmlCurlRequest request) {
+        return "QUEUE_POST".equals(firstValue(request,
+            "variable_callnexus_internal_transfer", "callnexus_internal_transfer"));
+    }
+
+    private boolean requestBoolean(FreeSwitchXmlCurlRequest request, String... names) {
+        return "true".equalsIgnoreCase(firstValue(request, names));
+    }
+
+    private String firstValue(FreeSwitchXmlCurlRequest request, String... names) {
+        for (String name : names) {
+            String value = request.firstValue(name);
+            if (value != null && !value.isBlank()) return value;
+        }
+        return null;
+    }
+
+    private void fillQueueOutboundGateway(CallQueueDialplanResponse queue, String tenantId, Long freeSwitchNodeId) {
+        if (!Boolean.TRUE.equals(queue.getBusyTransferMobile())
+            && !Boolean.TRUE.equals(queue.getAgentTimeoutTransferMobile())) {
+            return;
+        }
+        PhoneNumberOutboundRouteResponse outbound = phoneNumberQueryService.findDefaultOutboundRoute(tenantId, freeSwitchNodeId);
+        if (outbound != null) {
+            queue.setOutboundGatewayCode(outbound.getGatewayCode());
+        }
     }
 
     private String normalizeDialedNumber(String value) {

@@ -199,6 +199,13 @@ public class CallQueueService implements CallQueueQueryService {
             }
             validatePublishedMedia(request.getAnswerMediaId(), "IVR_PROMPT", "接通提示音不存在、未发布或分类不是 IVR 提示音");
         }
+        if (Boolean.TRUE.equals(request.getSatisfactionEnabled())) {
+            if (request.getSatisfactionMediaId() == null) {
+                throw new ServiceException("启用满意度评价时必须选择评价提示音");
+            }
+            validatePublishedMedia(request.getSatisfactionMediaId(), "IVR_PROMPT",
+                "满意度评价提示音不存在、未发布或分类不是 IVR 提示音");
+        }
     }
 
     private void validateEnhancedOptions(CallQueueRequest request) {
@@ -279,6 +286,9 @@ public class CallQueueService implements CallQueueQueryService {
         queue.setAnswerAction(request.getAnswerAction());
         queue.setAnswerMediaId(request.getAnswerMediaId());
         queue.setHangupKeyAction(request.getHangupKeyAction());
+        queue.setSatisfactionEnabled(request.getSatisfactionEnabled());
+        queue.setSatisfactionMediaId(request.getSatisfactionMediaId());
+        queue.setSatisfactionTimeoutSeconds(request.getSatisfactionTimeoutSeconds());
         queue.setTimeoutAction(request.getTimeoutAction());
         queue.setTimeoutTarget(request.getTimeoutTarget());
         queue.setNoAgentAction(request.getNoAgentAction());
@@ -332,6 +342,9 @@ public class CallQueueService implements CallQueueQueryService {
         response.setAnswerAction(queue.getAnswerAction());
         response.setAnswerMediaId(queue.getAnswerMediaId());
         response.setHangupKeyAction(queue.getHangupKeyAction());
+        response.setSatisfactionEnabled(Boolean.TRUE.equals(queue.getSatisfactionEnabled()));
+        response.setSatisfactionMediaId(queue.getSatisfactionMediaId());
+        response.setSatisfactionTimeoutSeconds(queue.getSatisfactionTimeoutSeconds() == null ? 8 : queue.getSatisfactionTimeoutSeconds());
         response.setTimeoutAction(queue.getTimeoutAction());
         response.setTimeoutTarget(queue.getTimeoutTarget());
         response.setNoAgentAction(queue.getNoAgentAction());
@@ -368,6 +381,11 @@ public class CallQueueService implements CallQueueQueryService {
         response.setNoAgentAction(blankDefault(queue.getNoAgentAction(), "WAIT"));
         response.setNoAgentTarget(queue.getNoAgentTarget());
         response.setNoAgentWaitSeconds(queue.getNoAgentWaitSeconds() == null ? 0 : queue.getNoAgentWaitSeconds());
+        String satisfactionMediaPath = mediaPath(queue.getSatisfactionMediaId(), nodeId, "满意度评价提示音");
+        response.setSatisfactionEnabled(Boolean.TRUE.equals(queue.getSatisfactionEnabled())
+            && org.apache.commons.lang3.StringUtils.isNotBlank(satisfactionMediaPath));
+        response.setSatisfactionMediaPath(satisfactionMediaPath);
+        response.setSatisfactionTimeoutSeconds(queue.getSatisfactionTimeoutSeconds() == null ? 8 : queue.getSatisfactionTimeoutSeconds());
         response.setTimeoutTargetQueueCode(resolveTargetQueueCode(queue.getTimeoutAction(), queue.getTimeoutTarget(), nodeId));
         response.setNoAgentTargetQueueCode(resolveTargetQueueCode(queue.getNoAgentAction(), queue.getNoAgentTarget(), nodeId));
     }
