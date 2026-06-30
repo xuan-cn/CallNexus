@@ -17,6 +17,10 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Component
@@ -24,6 +28,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     private static final int CONNECT_TIMEOUT_MILLIS = 5000;
     private static final int READ_TIMEOUT_MILLIS = 5000;
     private static final String OUTBOUND_GATEWAY_CODEC = "PCMA";
+    private static final Pattern REGISTERED_USER_PATTERN = Pattern.compile("(?m)^User:\\s*([^@\\s]+)@.+$");
 
     @Override
     public void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination, OutboundRoute outboundRoute,
@@ -213,6 +218,98 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         requireCallId(callId);
         EslFrame response = executeCommand(endpoint, "api uuid_exists " + callId);
         return "true".equalsIgnoreCase(response.body().trim());
+    }
+
+    @Override
+    public Set<String> listRegisteredExtensions(EslEndpoint endpoint) {
+        EslFrame response = executeCommand(endpoint, "api sofia status profile internal reg");
+        Set<String> extensions = new LinkedHashSet<>();
+        Matcher matcher = REGISTERED_USER_PATTERN.matcher(response.body());
+        while (matcher.find()) {
+            extensions.add(matcher.group(1));
+        }
+        return extensions;
+    }
+
+    @Override
+    public void originateMonitor(EslEndpoint endpoint, String businessCallId, String monitorLegUuid,
+                                 String supervisorExtension, String targetAgentLegUuid, String targetExtension) {
+        requireDialValue(businessCallId);
+        requireCallId(monitorLegUuid);
+        requireCallId(targetAgentLegUuid);
+        requireDialValue(supervisorExtension);
+        requireDialValue(targetExtension);
+        requireDialValue(endpoint.sipDomain());
+        String variables = "{origination_uuid=" + monitorLegUuid
+            + ",callnexus_business_call_id=" + businessCallId
+            + ",callnexus_direction=INTERNAL"
+            + ",callnexus_call_purpose=DISPATCH_MONITOR"
+            + ",callnexus_monitor_target_leg_uuid=" + targetAgentLegUuid
+            + ",callnexus_original_caller=" + supervisorExtension
+            + ",callnexus_original_called=" + targetExtension
+            + ",eavesdrop_enable_dtmf=true"
+            + ",origination_caller_id_number=" + targetExtension
+            + ",origination_caller_id_name=调度监听"
+            + ",hangup_after_bridge=true}";
+        String command = "bgapi originate " + variables + userDialString(supervisorExtension, endpoint.sipDomain())
+            + " &eavesdrop(" + targetAgentLegUuid + ")";
+        sendCommand(endpoint, command);
+        log.info("FreeSWITCH 调度监听呼叫已提交，businessCallId={}，monitorLegUuid={}，supervisorExtension={}，targetAgentLegUuid={}，targetExtension={}",
+            businessCallId, monitorLegUuid, supervisorExtension, targetAgentLegUuid, targetExtension);
+    }
+
+    @Override
+    public void originateWhisper(EslEndpoint endpoint, String businessCallId, String whisperLegUuid,
+                                 String supervisorExtension, String targetAgentLegUuid, String targetExtension) {
+        requireDialValue(businessCallId);
+        requireCallId(whisperLegUuid);
+        requireCallId(targetAgentLegUuid);
+        requireDialValue(supervisorExtension);
+        requireDialValue(targetExtension);
+        requireDialValue(endpoint.sipDomain());
+        String variables = "{origination_uuid=" + whisperLegUuid
+            + ",callnexus_business_call_id=" + businessCallId
+            + ",callnexus_direction=INTERNAL"
+            + ",callnexus_call_purpose=DISPATCH_WHISPER"
+            + ",callnexus_monitor_target_leg_uuid=" + targetAgentLegUuid
+            + ",callnexus_original_caller=" + supervisorExtension
+            + ",callnexus_original_called=" + targetExtension
+            + ",eavesdrop_enable_dtmf=true"
+            + ",origination_caller_id_number=" + targetExtension
+            + ",origination_caller_id_name=调度耳语"
+            + ",hangup_after_bridge=true}";
+        String command = "bgapi originate " + variables + userDialString(supervisorExtension, endpoint.sipDomain())
+            + " 'queue_dtmf:w2@500,eavesdrop:" + targetAgentLegUuid + "' inline";
+        sendCommand(endpoint, command);
+        log.info("FreeSWITCH 调度耳语呼叫已提交，businessCallId={}，whisperLegUuid={}，supervisorExtension={}，targetAgentLegUuid={}，targetExtension={}",
+            businessCallId, whisperLegUuid, supervisorExtension, targetAgentLegUuid, targetExtension);
+    }
+
+    @Override
+    public void originateBarge(EslEndpoint endpoint, String businessCallId, String bargeLegUuid,
+                               String supervisorExtension, String targetAgentLegUuid, String targetExtension) {
+        requireDialValue(businessCallId);
+        requireCallId(bargeLegUuid);
+        requireCallId(targetAgentLegUuid);
+        requireDialValue(supervisorExtension);
+        requireDialValue(targetExtension);
+        requireDialValue(endpoint.sipDomain());
+        String variables = "{origination_uuid=" + bargeLegUuid
+            + ",callnexus_business_call_id=" + businessCallId
+            + ",callnexus_direction=INTERNAL"
+            + ",callnexus_call_purpose=DISPATCH_BARGE"
+            + ",callnexus_monitor_target_leg_uuid=" + targetAgentLegUuid
+            + ",callnexus_original_caller=" + supervisorExtension
+            + ",callnexus_original_called=" + targetExtension
+            + ",eavesdrop_enable_dtmf=true"
+            + ",origination_caller_id_number=" + targetExtension
+            + ",origination_caller_id_name=调度强插"
+            + ",hangup_after_bridge=true}";
+        String command = "bgapi originate " + variables + userDialString(supervisorExtension, endpoint.sipDomain())
+            + " 'queue_dtmf:w3@500,eavesdrop:" + targetAgentLegUuid + "' inline";
+        sendCommand(endpoint, command);
+        log.info("FreeSWITCH 调度强插呼叫已提交，businessCallId={}，bargeLegUuid={}，supervisorExtension={}，targetAgentLegUuid={}，targetExtension={}",
+            businessCallId, bargeLegUuid, supervisorExtension, targetAgentLegUuid, targetExtension);
     }
 
     void executeApiCommand(EslEndpoint endpoint, String command) {

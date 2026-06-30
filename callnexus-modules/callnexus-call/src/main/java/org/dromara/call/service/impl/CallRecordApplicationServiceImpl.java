@@ -226,6 +226,18 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         eventMapper.update(null, new LambdaUpdateWrapper<CallEvent>()
             .eq(CallEvent::getSessionId, duplicate.getId())
             .set(CallEvent::getSessionId, primary.getId()));
+        callLegMapper.update(null, new LambdaUpdateWrapper<CallLeg>()
+            .eq(CallLeg::getSessionId, duplicate.getId())
+            .set(CallLeg::getSessionId, primary.getId())
+            .set(CallLeg::getBusinessCallId, primary.getBusinessCallId()));
+        callBridgeMapper.update(null, new LambdaUpdateWrapper<CallBridge>()
+            .eq(CallBridge::getSessionId, duplicate.getId())
+            .set(CallBridge::getSessionId, primary.getId())
+            .set(CallBridge::getBusinessCallId, primary.getBusinessCallId()));
+        agentCallSessionMapper.update(null, new LambdaUpdateWrapper<AgentCallSession>()
+            .eq(AgentCallSession::getSessionId, duplicate.getId())
+            .set(AgentCallSession::getSessionId, primary.getId())
+            .set(AgentCallSession::getBusinessCallId, primary.getBusinessCallId()));
         sessionMapper.deleteById(duplicate.getId());
         log.info("合并同一业务通话的临时会话，primarySessionId={}，mergedSessionId={}", primary.getId(), duplicate.getId());
     }

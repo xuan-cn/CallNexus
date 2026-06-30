@@ -105,6 +105,15 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             }
             return;
         }
+        if (isDispatchSupervisionEvent(event)) {
+            try {
+                callStateRuntimeService.handleEvent(event);
+            } catch (Exception exception) {
+                log.error("调度监听或耳语电话腿状态写入失败，nodeId={}，eventName={}，uuid={}",
+                    event.nodeId(), event.eventName(), event.uuid(), exception);
+            }
+            return;
+        }
         try {
             callRecordApplicationService.handleEvent(event);
         } catch (Exception exception) {
@@ -180,6 +189,13 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         sseMessage.setUserIds(List.of(userId));
         sseMessage.setMessage(realtimeMessage);
         SseMessageUtils.publishMessage(sseMessage);
+    }
+
+    private boolean isDispatchSupervisionEvent(TelephonyEvent event) {
+        String purpose = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE);
+        return "DISPATCH_MONITOR".equalsIgnoreCase(purpose)
+            || "DISPATCH_WHISPER".equalsIgnoreCase(purpose)
+            || "DISPATCH_BARGE".equalsIgnoreCase(purpose);
     }
 
     private void updateTargetState(TelephonyEvent event, AgentRealtimeTargetResponse target) {

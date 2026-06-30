@@ -2,6 +2,7 @@ package org.dromara.call.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.dromara.call.domain.AgentCallSession;
 import org.dromara.call.domain.CallBridge;
 import org.dromara.call.domain.CallLeg;
@@ -11,12 +12,28 @@ import org.dromara.call.domain.response.CallDiagnosticBridgeResponse;
 import org.dromara.call.domain.response.CallDiagnosticLegResponse;
 import org.dromara.call.domain.response.DispatchActiveCallResponse;
 import org.dromara.call.domain.response.DispatchCallTopologyResponse;
+import org.dromara.call.domain.response.DispatchExtensionStatusResponse;
 import org.dromara.call.mapper.AgentCallSessionMapper;
 import org.dromara.call.mapper.CallBridgeMapper;
 import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.service.DispatchCallMonitorService;
+import org.dromara.call.service.TelephonyCommandGateway;
+import org.dromara.call.domain.EslEndpoint;
+import org.dromara.agent.domain.Agent;
+import org.dromara.agent.domain.AgentExtension;
+import org.dromara.agent.domain.AgentPresence;
+import org.dromara.agent.mapper.AgentExtensionMapper;
+import org.dromara.agent.mapper.AgentMapper;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.redis.utils.RedisUtils;
+import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.resource.node.domain.FreeSwitchNode;
+import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionResponse;
+import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
+import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.dromara.resource.sip.domain.SipAccount;
+import org.dromara.resource.sip.mapper.SipAccountMapper;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -28,16 +45,88 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.HashMap;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorService {
     private static final int MAX_ACTIVE_CALLS = 500;
+    private static final String PRESENCE_KEY_PREFIX = "callnexus:agent:presence:";
 
     private final CallSessionMapper sessionMapper;
     private final CallLegMapper legMapper;
     private final CallBridgeMapper bridgeMapper;
     private final AgentCallSessionMapper agentCallSessionMapper;
+    private final SipAccountMapper sipAccountMapper;
+    private final FreeSwitchNodeMapper nodeMapper;
+    private final AgentExtensionMapper agentExtensionMapper;
+    private final AgentMapper agentMapper;
+    private final FreeSwitchNodeQueryService nodeQueryService;
+    private final TelephonyCommandGateway commandGateway;
+
+    @Override
+    public List<DispatchExtensionStatusResponse> listExtensionStatuses() {
+        List<SipAccount> accounts = sipAccountMapper.selectList(new LambdaQueryWrapper<SipAccount>()
+            .orderByAsc(SipAccount::getNodeId)
+            .orderByAsc(SipAccount::getExtension));
+        if (accounts.isEmpty()) {
+            return List.of();
+        }
+
+        Map<Long, FreeSwitchNode> nodes = nodeMapper.selectBatchIds(accounts.stream()
+                .map(SipAccount::getNodeId).filter(java.util.Objects::nonNull).distinct().toList())
+            .stream().collect(Collectors.toMap(FreeSwitchNode::getId, Function.identity()));
+        Map<Long, AgentExtension> bindings = agentExtensionMapper.selectList(new LambdaQueryWrapper<AgentExtension>()
+                .in(AgentExtension::getSipAccountId, accounts.stream().map(SipAccount::getId).toList()))
+            .stream().collect(Collectors.toMap(AgentExtension::getSipAccountId, Function.identity(), (left, right) -> left));
+        List<Long> agentIds = bindings.values().stream()
+            .map(AgentExtension::getAgentId).filter(java.util.Objects::nonNull).distinct().toList();
+        Map<Long, Agent> agents = agentIds.isEmpty() ? Map.of() : agentMapper.selectBatchIds(agentIds)
+            .stream().collect(Collectors.toMap(Agent::getId, Function.identity()));
+        Map<Long, Set<String>> registrations = loadRegistrations(nodes.keySet());
+
+        List<CallLeg> activeAgentLegs = legMapper.selectList(new LambdaQueryWrapper<CallLeg>()
+            .eq(CallLeg::getActive, true)
+            .isNull(CallLeg::getEndedAt)
+            .in(CallLeg::getLegRole, List.of("AGENT", "CONSULT_AGENT"))
+            .isNotNull(CallLeg::getAgentExtension));
+        Map<String, CallLeg> activeLegByExtension = activeAgentLegs.stream()
+            .collect(Collectors.toMap(leg -> extensionKey(leg.getNodeId(), leg.getAgentExtension()), Function.identity(),
+                this::preferActiveLeg));
+
+        return accounts.stream().map(account -> {
+            DispatchExtensionStatusResponse response = new DispatchExtensionStatusResponse();
+            response.setSipAccountId(account.getId());
+            response.setNodeId(account.getNodeId());
+            FreeSwitchNode node = nodes.get(account.getNodeId());
+            response.setNodeName(node == null ? null : node.getNodeName());
+            response.setExtension(account.getExtension());
+            response.setDisplayName(account.getDisplayName());
+            response.setDomain(account.getDomain());
+            response.setEnabled(account.getEnabled());
+            if (!Boolean.TRUE.equals(account.getEnabled())) {
+                response.setRegistrationStatus("DISABLED");
+            } else if (!registrations.containsKey(account.getNodeId())) {
+                response.setRegistrationStatus("NODE_UNAVAILABLE");
+            } else {
+                response.setRegistrationStatus(registrations.get(account.getNodeId()).contains(account.getExtension())
+                    ? "REGISTERED" : "UNREGISTERED");
+            }
+            AgentExtension binding = bindings.get(account.getId());
+            Agent agent = binding == null ? null : agents.get(binding.getAgentId());
+            if (agent != null) {
+                response.setAgentId(agent.getId());
+                response.setAgentName(agent.getAgentName());
+                AgentPresence presence = RedisUtils.getCacheObject(PRESENCE_KEY_PREFIX + LoginHelper.getTenantId() + ":" + agent.getId());
+                response.setAgentPresenceStatus(presence == null ? "OFFLINE" : presence.getStatus().name());
+            }
+            CallLeg activeLeg = activeLegByExtension.get(extensionKey(account.getNodeId(), account.getExtension()));
+            response.setCallStatus(resolveCallStatus(activeLeg));
+            response.setBusinessCallId(activeLeg == null ? null : activeLeg.getBusinessCallId());
+            return response;
+        }).toList();
+    }
 
     @Override
     public List<DispatchActiveCallResponse> listActiveCalls() {
@@ -98,7 +187,9 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
             .toList();
         Set<String> extensions = new LinkedHashSet<>();
         visibleAgents.stream().map(AgentCallSession::getAgentExtension).filter(this::hasText).forEach(extensions::add);
-        activeLegs.stream().map(CallLeg::getAgentExtension).filter(this::hasText).forEach(extensions::add);
+        activeLegs.stream()
+            .filter(leg -> "AGENT".equals(leg.getLegRole()) || "CONSULT_AGENT".equals(leg.getLegRole()))
+            .map(CallLeg::getAgentExtension).filter(this::hasText).forEach(extensions::add);
 
         DispatchActiveCallResponse response = new DispatchActiveCallResponse();
         response.setSessionId(session.getId());
@@ -205,5 +296,43 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private Map<Long, Set<String>> loadRegistrations(Set<Long> nodeIds) {
+        Map<Long, Set<String>> result = new HashMap<>();
+        for (Long nodeId : nodeIds) {
+            try {
+                FreeSwitchNodeConnectionResponse node = nodeQueryService.getEnabledConnection(nodeId);
+                EslEndpoint endpoint = new EslEndpoint(node.getEslHost(), node.getEslPort(), node.getEslPassword(), node.getSipDomain());
+                result.put(nodeId, commandGateway.listRegisteredExtensions(endpoint));
+            } catch (Exception exception) {
+                log.warn("调度台读取 FreeSWITCH 分机注册状态失败，nodeId={}，error={}", nodeId, exception.getMessage());
+            }
+        }
+        return result;
+    }
+
+    private String extensionKey(Long nodeId, String extension) {
+        return String.valueOf(nodeId) + ":" + extension;
+    }
+
+    private CallLeg preferActiveLeg(CallLeg left, CallLeg right) {
+        return callStatePriority(right) > callStatePriority(left) ? right : left;
+    }
+
+    private int callStatePriority(CallLeg leg) {
+        if (leg == null) return 0;
+        if ("HELD".equals(leg.getLegState())) return 3;
+        if (leg.getBridgedAt() != null || "BRIDGED".equals(leg.getLegState())) return 2;
+        return 1;
+    }
+
+    private String resolveCallStatus(CallLeg leg) {
+        if (leg == null) return "IDLE";
+        if ("HELD".equals(leg.getLegState())) return "HELD";
+        if (leg.getBridgedAt() != null || "BRIDGED".equals(leg.getLegState()) || "ANSWERED".equals(leg.getLegState())) {
+            return "TALKING";
+        }
+        return "RINGING";
     }
 }
