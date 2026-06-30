@@ -22,6 +22,8 @@ import org.dromara.call.service.CallStateRuntimeService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.dromara.resource.sip.domain.response.SipAccountRealtimeResponse;
+import org.dromara.resource.sip.service.SipAccountQueryService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
@@ -41,6 +43,7 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     private final AgentCallSessionMapper agentCallSessionMapper;
     private final AgentRealtimeQueryService agentQueryService;
     private final FreeSwitchNodeQueryService nodeQueryService;
+    private final SipAccountQueryService sipAccountQueryService;
 
     @Override
     public void handleEvent(TelephonyEvent event) {
@@ -173,8 +176,9 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
             leg.setBusinessCallId(businessCallId);
             leg.setNodeId(event.nodeId());
             leg.setLegUuid(event.uuid());
-            leg.setLegRole(resolveLegRole(event));
+            leg.setEndpointExtension(resolveEndpointExtension(event));
             applyAgent(leg, event);
+            leg.setLegRole(resolveLegRole(event, leg));
             leg.setCallerNumber(event.callerNumber());
             leg.setCalledNumber(event.destinationNumber());
             leg.setLegState("CREATED");
@@ -201,11 +205,14 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         if (StringUtils.isBlank(leg.getBusinessCallId())) {
             leg.setBusinessCallId(businessCallId);
         }
-        if (StringUtils.isBlank(leg.getLegRole()) || "UNKNOWN".equals(leg.getLegRole())) {
-            leg.setLegRole(resolveLegRole(event));
+        if (StringUtils.isBlank(leg.getEndpointExtension())) {
+            leg.setEndpointExtension(resolveEndpointExtension(event));
         }
         if (leg.getAgentId() == null) {
             applyAgent(leg, event);
+        }
+        if (StringUtils.isBlank(leg.getLegRole()) || "UNKNOWN".equals(leg.getLegRole())) {
+            leg.setLegRole(resolveLegRole(event, leg));
         }
         if (StringUtils.isBlank(leg.getCallerNumber())) {
             leg.setCallerNumber(event.callerNumber());
@@ -230,8 +237,10 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     private void applyLegEvent(CallLeg leg, TelephonyEvent event, LocalDateTime now) {
         switch (event.eventName()) {
             case EslEventNames.CHANNEL_PROGRESS, EslEventNames.CHANNEL_PROGRESS_MEDIA -> {
-                leg.setLegState("RINGING");
-                if (leg.getRingingAt() == null) {
+                boolean originatingEndpoint = StringUtils.isNotBlank(leg.getEndpointExtension())
+                    && "inbound".equalsIgnoreCase(event.headers().get(EslHeaders.CALL_DIRECTION));
+                leg.setLegState(originatingEndpoint ? "DIALING" : "RINGING");
+                if (!originatingEndpoint && leg.getRingingAt() == null) {
                     leg.setRingingAt(now);
                 }
             }
@@ -381,7 +390,8 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     }
 
     private void updateSessionOwner(TelephonyEvent event, CallSession session, CallLeg leg) {
-        if (leg.getAgentId() == null || !Boolean.TRUE.equals(leg.getActive()) || isSupervisionRole(leg.getLegRole())) {
+        if (leg.getAgentId() == null || !Boolean.TRUE.equals(leg.getActive())
+            || isSupervisionRole(leg.getLegRole()) || isDispatchCallRole(leg.getLegRole())) {
             return;
         }
         if (!EslEventNames.CHANNEL_ANSWER.equals(event.eventName()) && !EslEventNames.CHANNEL_BRIDGE.equals(event.eventName())) {
@@ -461,7 +471,7 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     }
 
     private void applyAgent(CallLeg leg, TelephonyEvent event) {
-        AgentRealtimeTargetResponse agent = resolveAgent(event);
+        AgentRealtimeTargetResponse agent = resolveAgent(event, leg.getEndpointExtension());
         if (agent == null) {
             return;
         }
@@ -469,7 +479,7 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         leg.setAgentExtension(agent.getExtension());
     }
 
-    private AgentRealtimeTargetResponse resolveAgent(TelephonyEvent event) {
+    private AgentRealtimeTargetResponse resolveAgent(TelephonyEvent event, String endpointExtension) {
         String consultLegUuid = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CONSULT_LEG_UUID);
         String sourceLegUuid = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_SOURCE_AGENT_LEG_UUID);
         if (event.uuid().equals(consultLegUuid)) {
@@ -478,15 +488,55 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         if (event.uuid().equals(sourceLegUuid)) {
             return findAgentByExtension(event, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_SOURCE_AGENT_EXTENSION));
         }
-        AgentRealtimeTargetResponse ccAgent = findAgentByExtension(event, event.headers().get(EslHeaders.CC_AGENT));
-        if (ccAgent != null) {
-            return ccAgent;
+        return findAgentByExtension(event, endpointExtension);
+    }
+
+    private String resolveEndpointExtension(TelephonyEvent event) {
+        String channelExtension = extensionFromChannelName(event.headers().get(EslHeaders.CHANNEL_NAME));
+        String enabledChannelExtension = enabledSipExtension(event.nodeId(), channelExtension);
+        if (enabledChannelExtension != null) {
+            return enabledChannelExtension;
         }
-        AgentRealtimeTargetResponse calledAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber());
-        if (calledAgent != null) {
-            return calledAgent;
+        String callDirection = event.headers().get(EslHeaders.CALL_DIRECTION);
+        if ("inbound".equalsIgnoreCase(callDirection)) {
+            return enabledSipExtension(event.nodeId(), event.callerNumber());
         }
-        return agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber());
+        if ("outbound".equalsIgnoreCase(callDirection)) {
+            return firstNotBlank(
+                enabledSipExtension(event.nodeId(), event.destinationNumber()),
+                enabledSipExtension(event.nodeId(), event.headers().get(EslHeaders.CC_AGENT))
+            );
+        }
+        return firstNotBlank(
+            enabledSipExtension(event.nodeId(), event.destinationNumber()),
+            enabledSipExtension(event.nodeId(), event.callerNumber()),
+            enabledSipExtension(event.nodeId(), event.headers().get(EslHeaders.CC_AGENT))
+        );
+    }
+
+    private String extensionFromChannelName(String channelName) {
+        if (StringUtils.isBlank(channelName)) {
+            return null;
+        }
+        String lowerChannelName = channelName.toLowerCase();
+        String endpoint;
+        if (lowerChannelName.startsWith("sofia/internal/")) {
+            endpoint = channelName.substring("sofia/internal/".length());
+        } else if (lowerChannelName.startsWith("user/")) {
+            endpoint = channelName.substring("user/".length());
+        } else {
+            return null;
+        }
+        return normalizeExtension(endpoint);
+    }
+
+    private String enabledSipExtension(Long nodeId, String value) {
+        String extension = normalizeExtension(value);
+        if (extension == null) {
+            return null;
+        }
+        SipAccountRealtimeResponse account = sipAccountQueryService.findEnabledByNodeAndExtension(nodeId, extension);
+        return account == null ? null : account.getExtension();
     }
 
     private AgentRealtimeTargetResponse findAgentByExtension(TelephonyEvent event, String value) {
@@ -494,20 +544,35 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         return extension == null ? null : agentQueryService.findByNodeAndExtension(event.nodeId(), extension);
     }
 
-    private String resolveLegRole(TelephonyEvent event) {
+    private String resolveLegRole(TelephonyEvent event, CallLeg leg) {
+        if (isDispatchCallEvent(event)) {
+            return dispatchCallRole(event);
+        }
+        if (isDispatchPickupEvent(event)) {
+            return "PICKUP";
+        }
         if (isDispatchSupervisionEvent(event)) {
             return supervisionRole(event);
         }
         if (isConsultEvent(event) && event.uuid().equals(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CONSULT_LEG_UUID))) {
             return "CONSULT_AGENT";
         }
-        if (resolveAgent(event) != null) {
+        if (leg.getAgentId() != null) {
             return "AGENT";
+        }
+        if (StringUtils.isNotBlank(leg.getEndpointExtension())) {
+            return "EXTENSION";
         }
         return "CUSTOMER";
     }
 
     private String resolveAgentCallRole(TelephonyEvent event, CallLeg leg) {
+        if (isDispatchCallRole(leg.getLegRole())) {
+            return leg.getLegRole();
+        }
+        if ("PICKUP".equals(leg.getLegRole())) {
+            return "PICKUP";
+        }
         if (isSupervisionRole(leg.getLegRole())) {
             return leg.getLegRole();
         }
@@ -521,6 +586,9 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     }
 
     private String resolveBridgeType(TelephonyEvent event, String leftLegUuid, String rightLegUuid) {
+        if (isDispatchPickupEvent(event)) {
+            return "PICKUP";
+        }
         if (isDispatchSupervisionEvent(event)) {
             return supervisionRole(event);
         }
@@ -531,6 +599,10 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         }
         if (isSupervisionRole(rightRole)) {
             return rightRole;
+        }
+        if (("CUSTOMER".equals(leftRole) && "PICKUP".equals(rightRole))
+            || ("PICKUP".equals(leftRole) && "CUSTOMER".equals(rightRole))) {
+            return "PICKUP";
         }
         if (isConsultEvent(event)) {
             return "CONSULT";
@@ -577,6 +649,27 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         return "DISPATCH_MONITOR".equalsIgnoreCase(purpose)
             || "DISPATCH_WHISPER".equalsIgnoreCase(purpose)
             || "DISPATCH_BARGE".equalsIgnoreCase(purpose);
+    }
+
+    private boolean isDispatchPickupEvent(TelephonyEvent event) {
+        return "DISPATCH_PICKUP".equalsIgnoreCase(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE));
+    }
+
+    private boolean isDispatchCallEvent(TelephonyEvent event) {
+        String purpose = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE);
+        return "DISPATCH_CALL_OPERATOR".equalsIgnoreCase(purpose)
+            || "DISPATCH_CALL_TARGET".equalsIgnoreCase(purpose);
+    }
+
+    private String dispatchCallRole(TelephonyEvent event) {
+        return "DISPATCH_CALL_OPERATOR".equalsIgnoreCase(
+            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE))
+            ? "DISPATCH_OPERATOR"
+            : "DISPATCH_TARGET";
+    }
+
+    private boolean isDispatchCallRole(String role) {
+        return "DISPATCH_OPERATOR".equals(role) || "DISPATCH_TARGET".equals(role);
     }
 
     private String supervisionRole(TelephonyEvent event) {

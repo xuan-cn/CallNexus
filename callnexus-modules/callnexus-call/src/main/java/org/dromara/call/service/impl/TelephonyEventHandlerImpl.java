@@ -19,6 +19,7 @@ import org.dromara.call.domain.response.CallRealtimeMessage;
 import org.dromara.call.service.TelephonyEventHandler;
 import org.dromara.call.service.CallRecordApplicationService;
 import org.dromara.call.service.CallStateRuntimeService;
+import org.dromara.call.service.DispatchCallTaskService;
 import org.dromara.call.service.QueueEventApplicationService;
 import org.dromara.call.service.TelephonyCommandGateway;
 import org.dromara.common.json.utils.JsonUtils;
@@ -66,6 +67,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private final CallQueueRuntimeSyncService queueRuntimeSyncService;
     private final CallRecordApplicationService callRecordApplicationService;
     private final CallStateRuntimeService callStateRuntimeService;
+    private final DispatchCallTaskService dispatchCallTaskService;
     private final QueueEventApplicationService queueEventApplicationService;
 
     @Override
@@ -126,6 +128,12 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             log.error("稳定通话状态写入失败，不影响实时通话状态处理，nodeId={}，eventName={}，uuid={}",
                 event.nodeId(), event.eventName(), event.uuid(), exception);
         }
+        try {
+            dispatchCallTaskService.handleEvent(event);
+        } catch (Exception exception) {
+            log.error("调度呼叫任务状态更新失败，不影响通话实时状态处理，nodeId={}，eventName={}，uuid={}",
+                event.nodeId(), event.eventName(), event.uuid(), exception);
+        }
         handleConsultLifecycleEvent(event);
         if (EslEventNames.isTerminalEvent(event.eventName())
             && !EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
@@ -134,8 +142,13 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         if (!EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName()) && isEndedCallEvent(event)) {
             return;
         }
-        Map<Long, AgentRealtimeTargetResponse> targets = resolveTargets(event);
-        mergeMappedTargets(event, targets);
+        boolean dispatchParticipantEvent = isDispatchCallParticipantEvent(event);
+        Map<Long, AgentRealtimeTargetResponse> targets = dispatchParticipantEvent
+            ? resolveDispatchParticipantTarget(event)
+            : resolveTargets(event);
+        if (!dispatchParticipantEvent) {
+            mergeMappedTargets(event, targets);
+        }
         removeConsultSourceTarget(event, targets);
         removeCompletedTransferSourceTargets(event, targets);
         boolean completedTransferSourceLegHangup = isCompletedTransferSourceLegHangup(event);
@@ -196,6 +209,25 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         return "DISPATCH_MONITOR".equalsIgnoreCase(purpose)
             || "DISPATCH_WHISPER".equalsIgnoreCase(purpose)
             || "DISPATCH_BARGE".equalsIgnoreCase(purpose);
+    }
+
+    private boolean isDispatchCallParticipantEvent(TelephonyEvent event) {
+        String purpose = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE);
+        return "DISPATCH_CALL_OPERATOR".equalsIgnoreCase(purpose)
+            || "DISPATCH_CALL_TARGET".equalsIgnoreCase(purpose);
+    }
+
+    private Map<Long, AgentRealtimeTargetResponse> resolveDispatchParticipantTarget(TelephonyEvent event) {
+        Map<Long, AgentRealtimeTargetResponse> targets = new LinkedHashMap<>();
+        String participantExtension = normalizeExtension(
+            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLED));
+        addTargetByExtension(targets, event.nodeId(), participantExtension);
+        if (targets.isEmpty()) {
+            log.debug("调度呼叫参与腿未匹配到坐席，仅维护分机与任务状态，nodeId={}，eventName={}，uuid={}，purpose={}，extension={}",
+                event.nodeId(), event.eventName(), event.uuid(),
+                event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE), participantExtension);
+        }
+        return targets;
     }
 
     private void updateTargetState(TelephonyEvent event, AgentRealtimeTargetResponse target) {

@@ -8,8 +8,15 @@ import org.dromara.call.domain.response.DispatchCallTopologyResponse;
 import org.dromara.call.domain.response.DispatchExtensionStatusResponse;
 import org.dromara.call.domain.request.TransferCallRequest;
 import org.dromara.call.domain.request.DispatchMonitorRequest;
+import org.dromara.call.domain.request.BindDispatchOperatorExtensionRequest;
+import org.dromara.call.domain.request.DispatchGroupCallRequest;
+import org.dromara.call.domain.request.DispatchSingleCallRequest;
+import org.dromara.call.domain.response.DispatchCallTaskResponse;
+import org.dromara.call.domain.response.DispatchOperatorExtensionResponse;
 import org.dromara.call.service.DispatchCallControlService;
 import org.dromara.call.service.DispatchCallMonitorService;
+import org.dromara.call.service.DispatchCallTaskService;
+import org.dromara.call.service.DispatchOperatorExtensionService;
 import org.dromara.common.core.domain.R;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -26,6 +33,21 @@ import java.util.List;
 public class DispatchCallMonitorController {
     private final DispatchCallMonitorService monitorService;
     private final DispatchCallControlService controlService;
+    private final DispatchCallTaskService taskService;
+    private final DispatchOperatorExtensionService operatorExtensionService;
+
+    @GetMapping("/operator-extension")
+    @SaCheckPermission("callcenter:dispatch-monitor:list")
+    public R<DispatchOperatorExtensionResponse> getOperatorExtension() {
+        return R.ok(operatorExtensionService.current());
+    }
+
+    @PostMapping("/operator-extension")
+    @SaCheckPermission("callcenter:dispatch-control:operator-extension")
+    public R<DispatchOperatorExtensionResponse> bindOperatorExtension(
+        @Valid @RequestBody BindDispatchOperatorExtensionRequest request) {
+        return R.ok(operatorExtensionService.bindCurrent(request.getSipAccountId()));
+    }
 
     @GetMapping("/active")
     @SaCheckPermission("callcenter:dispatch-monitor:list")
@@ -37,6 +59,37 @@ public class DispatchCallMonitorController {
     @SaCheckPermission("callcenter:dispatch-monitor:list")
     public R<List<DispatchExtensionStatusResponse>> listExtensionStatuses() {
         return R.ok(monitorService.listExtensionStatuses());
+    }
+
+    @PostMapping("/single")
+    @SaCheckPermission("callcenter:dispatch-control:call")
+    public R<DispatchCallTaskResponse> startSingleCall(@Valid @RequestBody DispatchSingleCallRequest request) {
+        return R.ok(taskService.startSingleCall(request.getTargetExtension()));
+    }
+
+    @PostMapping("/group")
+    @SaCheckPermission("callcenter:dispatch-control:group-call")
+    public R<DispatchCallTaskResponse> startGroupCall(@Valid @RequestBody DispatchGroupCallRequest request) {
+        return R.ok(taskService.startGroupCall(request.getTargetExtensions()));
+    }
+
+    @GetMapping("/tasks")
+    @SaCheckPermission("callcenter:dispatch-call-task:list")
+    public R<List<DispatchCallTaskResponse>> listTasks() {
+        return R.ok(taskService.listRecent(30));
+    }
+
+    @GetMapping("/tasks/{taskId}")
+    @SaCheckPermission("callcenter:dispatch-call-task:query")
+    public R<DispatchCallTaskResponse> getTask(@PathVariable Long taskId) {
+        return R.ok(taskService.get(taskId));
+    }
+
+    @PostMapping("/tasks/{taskId}/stop-unanswered")
+    @SaCheckPermission("callcenter:dispatch-control:stop-group")
+    public R<Void> stopUnanswered(@PathVariable Long taskId) {
+        taskService.stopUnanswered(taskId);
+        return R.ok();
     }
 
     @GetMapping("/{businessCallId}/topology")
@@ -79,5 +132,12 @@ public class DispatchCallMonitorController {
     public R<String> startBarge(@PathVariable String businessCallId,
                                 @Valid @RequestBody DispatchMonitorRequest request) {
         return R.ok(controlService.startBarge(businessCallId, request.getTargetExtension()));
+    }
+
+    @PostMapping("/{businessCallId}/pickup")
+    @SaCheckPermission("callcenter:dispatch-control:pickup")
+    public R<String> pickupRingingCall(@PathVariable String businessCallId,
+                                       @Valid @RequestBody DispatchMonitorRequest request) {
+        return R.ok(controlService.pickupRingingCall(businessCallId, request.getTargetExtension()));
     }
 }

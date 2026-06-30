@@ -11,6 +11,7 @@ public class CallDiagnosticLegResponse {
     private Long nodeId;
     private String legUuid;
     private String legRole;
+    private String endpointExtension;
     private Long agentId;
     private String agentExtension;
     private String callerNumber;

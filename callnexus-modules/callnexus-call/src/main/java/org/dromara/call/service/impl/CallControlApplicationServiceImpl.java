@@ -23,6 +23,7 @@ import org.dromara.call.mapper.CallEventMapper;
 import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.service.CallControlApplicationService;
+import org.dromara.call.service.DispatchCallTaskService;
 import org.dromara.call.service.TelephonyCommandGateway;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.json.utils.JsonUtils;
@@ -73,6 +74,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     private final CallLegMapper callLegMapper;
     private final CallEventMapper callEventMapper;
     private final CallSessionMapper callSessionMapper;
+    private final DispatchCallTaskService dispatchCallTaskService;
 
     @Override
     public CallControlResponse originate(String destination) {
@@ -119,7 +121,20 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     public void hangup(String callId) {
         CurrentAgentResponse agent = requireSignedInAgent();
         requireActiveCall(agent, callId);
-        telephonyCommandGateway.hangup(endpoint(agent.getNodeId()), callId);
+        EslEndpoint endpoint = endpoint(agent.getNodeId());
+        try {
+            if (!dispatchCallTaskService.terminateByOperatorLeg(callId)) {
+                telephonyCommandGateway.hangup(endpoint, callId);
+            }
+        } catch (Exception exception) {
+            if (telephonyCommandGateway.callExists(endpoint, callId)) {
+                throw exception instanceof RuntimeException runtimeException
+                    ? runtimeException
+                    : new ServiceException("挂机失败：" + exception.getMessage());
+            }
+            log.info("挂机时电话腿已在 FreeSWITCH 侧结束，按幂等成功处理，callId={}，agentId={}，extension={}",
+                callId, agent.getAgentId(), agent.getExtension());
+        }
         RedisUtils.deleteObject(activeCallKey(agent.getAgentId()));
         agentSessionService.changeStatus(AgentPresenceStatus.AFTER_CALL);
     }
@@ -590,7 +605,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             .eq(CallLeg::getBusinessCallId, businessCallId)
             .eq(CallLeg::getAgentId, agent.getAgentId())
             .eq(CallLeg::getActive, true)
-            .in(CallLeg::getLegRole, List.of("AGENT", "CONSULT_AGENT"))
+            .in(CallLeg::getLegRole, List.of("AGENT", "CONSULT_AGENT", "PICKUP"))
             .last("order by create_time desc limit 1"));
     }
 

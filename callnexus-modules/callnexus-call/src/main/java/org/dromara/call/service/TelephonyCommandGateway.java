@@ -32,4 +32,11 @@ public interface TelephonyCommandGateway {
                           String supervisorExtension, String targetAgentLegUuid, String targetExtension);
     void originateBarge(EslEndpoint endpoint, String businessCallId, String bargeLegUuid,
                         String supervisorExtension, String targetAgentLegUuid, String targetExtension);
+    void originatePickup(EslEndpoint endpoint, String businessCallId, String pickupLegUuid,
+                         String supervisorExtension, String interceptSourceLegUuid,
+                         String targetRingingLegUuid, String callerNumber);
+    void originateDispatchParticipant(EslEndpoint endpoint, String businessCallId, String participantLegUuid,
+                                      String conferenceName, String extension, String callerIdNumber,
+                                      String purpose, Long dispatchTaskId, Long dispatchTargetId);
+    void terminateConference(EslEndpoint endpoint, String conferenceName);
 }

@@ -86,13 +86,13 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
             .stream().collect(Collectors.toMap(Agent::getId, Function.identity()));
         Map<Long, Set<String>> registrations = loadRegistrations(nodes.keySet());
 
-        List<CallLeg> activeAgentLegs = legMapper.selectList(new LambdaQueryWrapper<CallLeg>()
+        List<CallLeg> activeEndpointLegs = legMapper.selectList(new LambdaQueryWrapper<CallLeg>()
             .eq(CallLeg::getActive, true)
             .isNull(CallLeg::getEndedAt)
-            .in(CallLeg::getLegRole, List.of("AGENT", "CONSULT_AGENT"))
-            .isNotNull(CallLeg::getAgentExtension));
-        Map<String, CallLeg> activeLegByExtension = activeAgentLegs.stream()
-            .collect(Collectors.toMap(leg -> extensionKey(leg.getNodeId(), leg.getAgentExtension()), Function.identity(),
+            .in(CallLeg::getLegRole, List.of("AGENT", "CONSULT_AGENT", "PICKUP", "EXTENSION"))
+            .isNotNull(CallLeg::getEndpointExtension));
+        Map<String, CallLeg> activeLegByExtension = activeEndpointLegs.stream()
+            .collect(Collectors.toMap(leg -> extensionKey(leg.getNodeId(), leg.getEndpointExtension()), Function.identity(),
                 this::preferActiveLeg));
 
         return accounts.stream().map(account -> {
@@ -188,7 +188,7 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
         Set<String> extensions = new LinkedHashSet<>();
         visibleAgents.stream().map(AgentCallSession::getAgentExtension).filter(this::hasText).forEach(extensions::add);
         activeLegs.stream()
-            .filter(leg -> "AGENT".equals(leg.getLegRole()) || "CONSULT_AGENT".equals(leg.getLegRole()))
+            .filter(leg -> "AGENT".equals(leg.getLegRole()) || "CONSULT_AGENT".equals(leg.getLegRole()) || "PICKUP".equals(leg.getLegRole()))
             .map(CallLeg::getAgentExtension).filter(this::hasText).forEach(extensions::add);
 
         DispatchActiveCallResponse response = new DispatchActiveCallResponse();
@@ -237,6 +237,7 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
         response.setNodeId(leg.getNodeId());
         response.setLegUuid(leg.getLegUuid());
         response.setLegRole(leg.getLegRole());
+        response.setEndpointExtension(leg.getEndpointExtension());
         response.setAgentId(leg.getAgentId());
         response.setAgentExtension(leg.getAgentExtension());
         response.setCallerNumber(leg.getCallerNumber());
@@ -333,6 +334,7 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
         if (leg.getBridgedAt() != null || "BRIDGED".equals(leg.getLegState()) || "ANSWERED".equals(leg.getLegState())) {
             return "TALKING";
         }
+        if ("DIALING".equals(leg.getLegState())) return "DIALING";
         return "RINGING";
     }
 }

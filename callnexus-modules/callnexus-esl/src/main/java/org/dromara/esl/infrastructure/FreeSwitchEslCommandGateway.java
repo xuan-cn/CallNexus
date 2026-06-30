@@ -312,6 +312,79 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             businessCallId, bargeLegUuid, supervisorExtension, targetAgentLegUuid, targetExtension);
     }
 
+    @Override
+    public void originatePickup(EslEndpoint endpoint, String businessCallId, String pickupLegUuid,
+                                String supervisorExtension, String interceptSourceLegUuid,
+                                String targetRingingLegUuid, String callerNumber) {
+        requireDialValue(businessCallId);
+        requireCallId(pickupLegUuid);
+        requireCallId(interceptSourceLegUuid);
+        requireCallId(targetRingingLegUuid);
+        requireDialValue(supervisorExtension);
+        requireDialValue(endpoint.sipDomain());
+        String safeCallerNumber = callerNumber != null && callerNumber.matches("^[A-Za-z0-9._*#+-]{1,128}$")
+            ? callerNumber : "anonymous";
+        String variables = "{origination_uuid=" + pickupLegUuid
+            + ",callnexus_business_call_id=" + businessCallId
+            + ",callnexus_direction=INBOUND"
+            + ",callnexus_call_purpose=DISPATCH_PICKUP"
+            + ",callnexus_monitor_target_leg_uuid=" + targetRingingLegUuid
+            + ",callnexus_original_caller=" + safeCallerNumber
+            + ",callnexus_original_called=" + supervisorExtension
+            + ",intercept_unanswered_only=true"
+            + ",origination_caller_id_number=" + safeCallerNumber
+            + ",origination_caller_id_name=" + safeCallerNumber
+            + ",hangup_after_bridge=true}";
+        String command = "bgapi originate " + variables + userDialString(supervisorExtension, endpoint.sipDomain())
+            + " &intercept(" + interceptSourceLegUuid + ")";
+        sendCommand(endpoint, command);
+        log.info("FreeSWITCH 调度强接呼叫已提交，businessCallId={}，pickupLegUuid={}，supervisorExtension={}，interceptSourceLegUuid={}，targetRingingLegUuid={}，callerNumber={}",
+            businessCallId, pickupLegUuid, supervisorExtension, interceptSourceLegUuid, targetRingingLegUuid, safeCallerNumber);
+    }
+
+    @Override
+    public void originateDispatchParticipant(EslEndpoint endpoint, String businessCallId, String participantLegUuid,
+                                             String conferenceName, String extension, String callerIdNumber,
+                                             String purpose, Long dispatchTaskId, Long dispatchTargetId) {
+        requireDialValue(businessCallId);
+        requireCallId(participantLegUuid);
+        requireDialValue(conferenceName);
+        requireDialValue(extension);
+        requireDialValue(callerIdNumber);
+        requireDialValue(purpose);
+        requireDialValue(endpoint.sipDomain());
+        if (dispatchTaskId == null) {
+            throw new ServiceException("调度呼叫任务ID不能为空");
+        }
+        String variables = "{origination_uuid=" + participantLegUuid
+            + ",callnexus_business_call_id=" + businessCallId
+            + ",callnexus_direction=INTERNAL"
+            + ",callnexus_call_purpose=" + purpose
+            + ",callnexus_dispatch_task_id=" + dispatchTaskId
+            + optionalVariable("callnexus_dispatch_target_id", dispatchTargetId)
+            + ",callnexus_original_caller=" + callerIdNumber
+            + ",callnexus_original_called=" + extension
+            + ",origination_caller_id_number=" + callerIdNumber
+            + ",origination_caller_id_name=" + callerIdNumber
+            + ",hangup_after_bridge=true}";
+        String conferenceArguments = conferenceName + "@default";
+        if ("DISPATCH_CALL_OPERATOR".equals(purpose)) {
+            conferenceArguments += "+flags{moderator|endconf}";
+        }
+        String command = "bgapi originate " + variables + userDialString(extension, endpoint.sipDomain())
+            + " &conference(" + conferenceArguments + ")";
+        sendCommand(endpoint, command);
+        log.info("FreeSWITCH 调度呼叫参与方命令已提交，businessCallId={}，dispatchTaskId={}，dispatchTargetId={}，purpose={}，participantLegUuid={}，extension={}，conferenceName={}",
+            businessCallId, dispatchTaskId, dispatchTargetId, purpose, participantLegUuid, extension, conferenceName);
+    }
+
+    @Override
+    public void terminateConference(EslEndpoint endpoint, String conferenceName) {
+        requireDialValue(conferenceName);
+        sendCommand(endpoint, "api conference " + conferenceName + " hup all");
+        log.info("FreeSWITCH 调度会议全员挂断命令已提交，conferenceName={}", conferenceName);
+    }
+
     void executeApiCommand(EslEndpoint endpoint, String command) {
         requireSuccess(executeCommand(endpoint, command), "FREESWITCH_ESL_COMMAND_FAILED", command);
     }

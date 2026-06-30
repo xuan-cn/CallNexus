@@ -7,4 +7,5 @@ public interface DispatchCallControlService {
     String startMonitor(String businessCallId, String targetExtension);
     String startWhisper(String businessCallId, String targetExtension);
     String startBarge(String businessCallId, String targetExtension);
+    String pickupRingingCall(String businessCallId, String targetExtension);
 }

@@ -11,29 +11,22 @@ import java.time.LocalDateTime;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("cc_call_leg")
-public class CallLeg extends TenantEntity {
+@TableName("cc_dispatch_call_target")
+public class DispatchCallTarget extends TenantEntity {
     @TableId
     private Long id;
-    private Long sessionId;
-    private String businessCallId;
+    private Long taskId;
     private Long nodeId;
-    private String legUuid;
-    private String legRole;
-    private String endpointExtension;
-    private Long agentId;
-    private String agentExtension;
-    private String callerNumber;
-    private String calledNumber;
-    private String legState;
-    private Boolean active;
+    private Long sipAccountId;
+    private String targetExtension;
+    private String targetLegUuid;
+    private String targetState;
+    private Boolean answered;
+    private String failureReason;
+    private LocalDateTime submittedAt;
     private LocalDateTime ringingAt;
     private LocalDateTime answeredAt;
-    private LocalDateTime bridgedAt;
-    private LocalDateTime heldAt;
-    private LocalDateTime parkedAt;
     private LocalDateTime endedAt;
-    private String hangupCause;
     @Version
     private Integer version;
 }

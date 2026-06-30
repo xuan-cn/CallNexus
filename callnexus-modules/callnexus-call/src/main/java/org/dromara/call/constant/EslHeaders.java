@@ -4,6 +4,8 @@ public final class EslHeaders {
     public static final String EVENT_NAME = "Event-Name";
     public static final String UNIQUE_ID = "Unique-ID";
     public static final String CHANNEL_CALL_UUID = "Channel-Call-UUID";
+    public static final String CHANNEL_NAME = "Channel-Name";
+    public static final String CALL_DIRECTION = "Call-Direction";
     public static final String CALLER_CALLER_ID_NUMBER = "Caller-Caller-ID-Number";
     public static final String CALLER_USERNAME = "Caller-Username";
     public static final String CALLER_DESTINATION_NUMBER = "Caller-Destination-Number";
@@ -35,6 +37,8 @@ public final class EslHeaders {
     public static final String VARIABLE_CALLNEXUS_CUSTOMER_ID = "variable_callnexus_customer_id";
     public static final String VARIABLE_CALLNEXUS_OUTBOUND_TASK_ID = "variable_callnexus_outbound_task_id";
     public static final String VARIABLE_CALLNEXUS_OUTBOUND_MEMBER_ID = "variable_callnexus_outbound_member_id";
+    public static final String VARIABLE_CALLNEXUS_DISPATCH_TASK_ID = "variable_callnexus_dispatch_task_id";
+    public static final String VARIABLE_CALLNEXUS_DISPATCH_TARGET_ID = "variable_callnexus_dispatch_target_id";
 
     /**
      * CUSTOM 事件的子类标识头，mod_callcenter 队列事件形如 callcenter::call-coming。
