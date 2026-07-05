@@ -120,6 +120,7 @@ security:
     - /favicon.ico
     - /error
     - /api/internal/freeswitch/**
+    - /api/internal/ai/realtime/**
     - /*/api-docs
     - /*/api-docs/**
     - /warm-flow-ui/config
@@ -268,6 +269,22 @@ callnexus:
     directory:
       secret: ${CALLNEXUS_FREESWITCH_DIRECTORY_SECRET:cnx_fs_dir_8f3d9c2b7a1e4f6a9c0d5b2e}
       defaultTenantId: ${CALLNEXUS_FREESWITCH_DIRECTORY_TENANT_ID:000000}
+
+--- # AI 知识库与向量检索
+ai:
+  knowledge-oss-config-key: ${CALLNEXUS_AI_KNOWLEDGE_OSS_CONFIG_KEY:knowledge-document}
+  qdrant-url: ${CALLNEXUS_AI_QDRANT_URL:http://192.168.244.128:6333}
+  qdrant-api-key: ${CALLNEXUS_AI_QDRANT_API_KEY:}
+  index-worker-concurrency: ${CALLNEXUS_AI_INDEX_WORKER_CONCURRENCY:2}
+  index-lease-minutes: ${CALLNEXUS_AI_INDEX_LEASE_MINUTES:30}
+  max-document-size-mb: ${CALLNEXUS_AI_MAX_DOCUMENT_SIZE_MB:50}
+  max-chunk-count-per-document: ${CALLNEXUS_AI_MAX_CHUNK_COUNT_PER_DOCUMENT:20000}
+  chat-stream-timeout-seconds: ${CALLNEXUS_AI_CHAT_STREAM_TIMEOUT_SECONDS:120}
+  realtime-enabled: ${CALLNEXUS_AI_REALTIME_ENABLED:false}
+  realtime-websocket-url: ${CALLNEXUS_AI_REALTIME_WEBSOCKET_URL:ws://127.0.0.1:8080/api/internal/ai/realtime/audio}
+  realtime-token-secret: ${CALLNEXUS_AI_REALTIME_TOKEN_SECRET:cnx_fs_dir_8f3d9c2b7a1e4f6a9c0d5b2ee}
+  realtime-token-ttl-seconds: ${CALLNEXUS_AI_REALTIME_TOKEN_TTL_SECONDS:300}
+  realtime-worker-threads: ${CALLNEXUS_AI_REALTIME_WORKER_THREADS:8}
 
 --- # warm-flow工作流配置
 warm-flow:

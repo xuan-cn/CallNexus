@@ -39,4 +39,7 @@ public interface TelephonyCommandGateway {
                                       String conferenceName, String extension, String callerIdNumber,
                                       String purpose, Long dispatchTaskId, Long dispatchTargetId);
     void terminateConference(EslEndpoint endpoint, String conferenceName);
+    void originateDispatchPlayback(EslEndpoint endpoint, String businessCallId, String targetLegUuid,
+                                   String extension, String callerIdNumber, String mediaPath,
+                                   Long dispatchTaskId, Long dispatchTargetId);
 }

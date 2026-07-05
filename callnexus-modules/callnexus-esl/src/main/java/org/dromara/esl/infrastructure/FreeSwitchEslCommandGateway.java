@@ -366,9 +366,10 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + ",callnexus_original_called=" + extension
             + ",origination_caller_id_number=" + callerIdNumber
             + ",origination_caller_id_name=" + callerIdNumber
+            + intercomAutoAnswerVariables(purpose)
             + ",hangup_after_bridge=true}";
         String conferenceArguments = conferenceName + "@default";
-        if ("DISPATCH_CALL_OPERATOR".equals(purpose)) {
+        if ("DISPATCH_CALL_OPERATOR".equals(purpose) || "DISPATCH_INTERCOM_OPERATOR".equals(purpose)) {
             conferenceArguments += "+flags{moderator|endconf}";
         }
         String command = "bgapi originate " + variables + userDialString(extension, endpoint.sipDomain())
@@ -385,6 +386,36 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         log.info("FreeSWITCH 调度会议全员挂断命令已提交，conferenceName={}", conferenceName);
     }
 
+    @Override
+    public void originateDispatchPlayback(EslEndpoint endpoint, String businessCallId, String targetLegUuid,
+                                          String extension, String callerIdNumber, String mediaPath,
+                                          Long dispatchTaskId, Long dispatchTargetId) {
+        requireDialValue(businessCallId);
+        requireCallId(targetLegUuid);
+        requireDialValue(extension);
+        requireDialValue(callerIdNumber);
+        requireBroadcastMediaPath(mediaPath);
+        if (dispatchTaskId == null || dispatchTargetId == null) {
+            throw new ServiceException("调度广播任务和目标ID不能为空");
+        }
+        String variables = "{origination_uuid=" + targetLegUuid
+            + ",callnexus_business_call_id=" + businessCallId
+            + ",callnexus_direction=INTERNAL"
+            + ",callnexus_call_purpose=DISPATCH_BROADCAST_TARGET"
+            + ",callnexus_dispatch_task_id=" + dispatchTaskId
+            + ",callnexus_dispatch_target_id=" + dispatchTargetId
+            + ",callnexus_original_caller=" + callerIdNumber
+            + ",callnexus_original_called=" + extension
+            + ",origination_caller_id_number=" + callerIdNumber
+            + ",origination_caller_id_name=调度广播"
+            + ",hangup_after_bridge=true}";
+        String command = "bgapi originate " + variables + userDialString(extension, endpoint.sipDomain())
+            + " &playback(" + mediaPath + ")";
+        sendCommand(endpoint, command);
+        log.info("FreeSWITCH 调度广播目标命令已提交，businessCallId={}，taskId={}，targetId={}，targetLegUuid={}，extension={}，mediaPath={}",
+            businessCallId, dispatchTaskId, dispatchTargetId, targetLegUuid, extension, mediaPath);
+    }
+
     void executeApiCommand(EslEndpoint endpoint, String command) {
         requireSuccess(executeCommand(endpoint, command), "FREESWITCH_ESL_COMMAND_FAILED", command);
     }
@@ -396,6 +427,15 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
 
     private void sendCommand(EslEndpoint endpoint, String command) {
         requireSuccess(executeCommand(endpoint, command), "FREESWITCH_ESL_COMMAND_FAILED", command);
+    }
+
+    private String intercomAutoAnswerVariables(String purpose) {
+        if (!"DISPATCH_INTERCOM_TARGET".equals(purpose)) {
+            return "";
+        }
+        return ",sip_auto_answer=true"
+            + ",sip_h_Alert-Info=intercom"
+            + ",sip_h_Call-Info=<sip:intercom>;answer-after=0";
     }
 
     EslFrame executeCommand(EslEndpoint endpoint, String command) {

@@ -10,13 +10,19 @@ import org.dromara.common.tenant.core.TenantEntity;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("cc_ai_tts_provider")
-public class AiTtsProvider extends TenantEntity {
+@TableName("cc_ai_speech_provider")
+public class AiSpeechProvider extends TenantEntity {
     @TableId
     private Long id;
     private String providerCode;
     private String providerName;
     private String providerType;
+    private Boolean ttsEnabled;
+    private Boolean recordingAsrEnabled;
+    private Boolean streamingAsrEnabled;
+    private Boolean defaultTts;
+    private Boolean defaultRecordingAsr;
+    private Boolean defaultStreamingAsr;
     private String endpointUrl;
     private String httpMethod;
     private String authType;
@@ -26,6 +32,17 @@ public class AiTtsProvider extends TenantEntity {
     private String defaultFormat;
     private Integer defaultSampleRate;
     private Integer timeoutSeconds;
+    private String recordingAsrEndpointUrl;
+    private String streamingAsrEndpointUrl;
+    private String asrLanguage;
+    private String asrFormat;
+    private Integer asrSampleRate;
+    private Boolean asrEnablePunctuation;
+    private Boolean asrEnableItn;
+    private Boolean asrEnableIntermediateResult;
+    private Integer asrSilenceTimeoutMs;
+    private Integer asrMaxSentenceMs;
+    private String asrOptionsJson;
     private Boolean enabled;
     private String remark;
     @Version
@@ -33,3 +50,4 @@ public class AiTtsProvider extends TenantEntity {
     @TableLogic
     private Boolean deleted;
 }
+

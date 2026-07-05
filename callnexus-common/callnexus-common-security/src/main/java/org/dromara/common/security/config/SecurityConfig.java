@@ -8,6 +8,7 @@ import cn.dev33.satoken.router.SaRouter;
 import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.util.SaResult;
 import cn.dev33.satoken.util.SaTokenConsts;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -80,7 +81,17 @@ public class SecurityConfig implements WebMvcConfigurer {
                         // }
 
                     });
-            })).addPathPatterns("/**")
+            }) {
+                @Override
+                public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+                    // StreamingResponseBody 完成时会触发 ASYNC 二次分发。登录和权限已在初始 REQUEST 校验，
+                    // 此时线程中没有 Sa-Token Servlet 上下文，重复校验会导致流式接口最终返回 500。
+                    if (request.getDispatcherType() == DispatcherType.ASYNC) {
+                        return true;
+                    }
+                    return super.preHandle(request, response, handler);
+                }
+            }).addPathPatterns("/**")
             // 排除不需要拦截的路径
             .excludePathPatterns(securityProperties.getExcludes())
             .excludePathPatterns(ssePath);

@@ -9,7 +9,7 @@ import com.alibaba.nls.client.protocol.asr.SpeechTranscriber;
 import com.alibaba.nls.client.protocol.asr.SpeechTranscriberListener;
 import com.alibaba.nls.client.protocol.asr.SpeechTranscriberResponse;
 import lombok.extern.slf4j.Slf4j;
-import org.dromara.ai.domain.AiTtsProvider;
+import org.dromara.ai.domain.AiSpeechProvider;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
@@ -21,20 +21,14 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * 阿里云智能语音交互 NLS 录音转写适配器。
- * <p>
- * 配置复用 ALIYUN_NLS 服务商：
- * authHeaderName = AccessKey ID
- * authToken = AccessKey Secret
- * remark = {"appKey":"xxx","region":"cn-shanghai"}
- */
+/** 阿里云智能语音交互 NLS 录音文件识别适配器。 */
 @Component
 @Slf4j
-public class AliyunNlsAsrProvider implements AsrProvider {
+public class AliyunNlsAsrProvider implements AsrProvider, StreamingAsrProvider {
 
     private static final String TYPE = "ALIYUN_NLS";
     private static final String DEFAULT_REGION = "cn-shanghai";
@@ -46,12 +40,12 @@ public class AliyunNlsAsrProvider implements AsrProvider {
     }
 
     @Override
-    public AsrTranscribeResult transcribe(AiTtsProvider provider, AsrTranscribeRequest request) {
+    public AsrTranscribeResult transcribe(AiSpeechProvider provider, AsrTranscribeRequest request) {
         if (request.audioBytes() == null || request.audioBytes().length == 0) {
             throw new ServiceException("ASR 输入音频不能为空");
         }
-        Dict config = config(provider);
-        String appKey = firstText(config, "appKey", "app_key", "app-key");
+        Dict commonConfig = commonConfig(provider);
+        String appKey = firstText(commonConfig, "appKey", "app_key", "app-key");
         if (StringUtils.isBlank(appKey)) {
             throw new ServiceException("阿里云 NLS AppKey 不能为空，请在备注 JSON 中配置 appKey");
         }
@@ -59,11 +53,11 @@ public class AliyunNlsAsrProvider implements AsrProvider {
             throw new ServiceException("阿里云 NLS AccessKey ID 和 AccessKey Secret 不能为空");
         }
 
-        String region = StringUtils.blankToDefault(firstText(config, "region"), DEFAULT_REGION);
+        String region = StringUtils.blankToDefault(firstText(commonConfig, "region"), DEFAULT_REGION);
         String endpoint = endpoint(provider, region);
         String token = createToken(provider.getAuthHeaderName(), provider.getAuthToken(), region);
-        String format = format(request);
-        int sampleRate = sampleRate(request);
+        String format = format(provider, request);
+        int sampleRate = sampleRate(provider, request);
         List<AsrSegment> segments = new CopyOnWriteArrayList<>();
         AtomicReference<String> failure = new AtomicReference<>();
 
@@ -77,9 +71,16 @@ public class AliyunNlsAsrProvider implements AsrProvider {
             transcriber.setAppKey(appKey);
             transcriber.setFormat(inputFormat(format));
             transcriber.setSampleRate(sampleRate(sampleRate));
-            transcriber.setEnableIntermediateResult(false);
-            transcriber.setEnablePunctuation(true);
-            transcriber.setEnableITN(true);
+            transcriber.setEnableIntermediateResult(Boolean.TRUE.equals(provider.getAsrEnableIntermediateResult()));
+            transcriber.setEnablePunctuation(!Boolean.FALSE.equals(provider.getAsrEnablePunctuation()));
+            transcriber.setEnableITN(!Boolean.FALSE.equals(provider.getAsrEnableItn()));
+            if (provider.getAsrSilenceTimeoutMs() != null && provider.getAsrSilenceTimeoutMs() > 0) {
+                transcriber.addCustomedParam("max_sentence_silence", provider.getAsrSilenceTimeoutMs());
+            }
+            if (provider.getAsrMaxSentenceMs() != null && provider.getAsrMaxSentenceMs() > 0) {
+                transcriber.addCustomedParam("max_single_segment_time", provider.getAsrMaxSentenceMs());
+            }
+            applyOptions(transcriber, provider.getAsrOptionsJson());
             transcriber.start();
             transcriber.send(new ByteArrayInputStream(request.audioBytes()));
             transcriber.stop();
@@ -105,6 +106,143 @@ public class AliyunNlsAsrProvider implements AsrProvider {
         ));
         String fullText = String.join("\n", ordered.stream().map(AsrSegment::text).filter(StringUtils::isNotBlank).toList());
         return new AsrTranscribeResult(fullText, ordered);
+    }
+
+    @Override
+    public StreamingAsrSession open(AiSpeechProvider provider, StreamingAsrRequest request, StreamingAsrListener listener) {
+        Dict commonConfig = commonConfig(provider);
+        String appKey = firstText(commonConfig, "appKey", "app_key", "app-key");
+        if (StringUtils.isBlank(appKey)) {
+            throw new ServiceException("阿里云 NLS AppKey 不能为空，请在备注 JSON 中配置 appKey");
+        }
+        if (StringUtils.isBlank(provider.getAuthHeaderName()) || StringUtils.isBlank(provider.getAuthToken())) {
+            throw new ServiceException("阿里云 NLS AccessKey ID 和 AccessKey Secret 不能为空");
+        }
+        String region = StringUtils.blankToDefault(firstText(commonConfig, "region"), DEFAULT_REGION);
+        String endpoint = StringUtils.isNotBlank(provider.getStreamingAsrEndpointUrl())
+            ? provider.getStreamingAsrEndpointUrl().trim() : endpoint(provider, region);
+        String token = createToken(provider.getAuthHeaderName(), provider.getAuthToken(), region);
+        int rate = request.sampleRate() == null || request.sampleRate() <= 0 ? 16000 : request.sampleRate();
+        List<AsrSegment> segments = new CopyOnWriteArrayList<>();
+        NlsClient client = new NlsClient(endpoint, token);
+        try {
+            SpeechTranscriber transcriber = new SpeechTranscriber(client, streamingListener(segments, listener));
+            transcriber.setAppKey(appKey);
+            transcriber.setFormat(InputFormatEnum.PCM);
+            transcriber.setSampleRate(sampleRate(rate));
+            transcriber.setEnableIntermediateResult(!Boolean.FALSE.equals(provider.getAsrEnableIntermediateResult()));
+            transcriber.setEnablePunctuation(!Boolean.FALSE.equals(provider.getAsrEnablePunctuation()));
+            transcriber.setEnableITN(!Boolean.FALSE.equals(provider.getAsrEnableItn()));
+            if (provider.getAsrSilenceTimeoutMs() != null && provider.getAsrSilenceTimeoutMs() > 0) {
+                transcriber.addCustomedParam("max_sentence_silence", provider.getAsrSilenceTimeoutMs());
+            }
+            if (provider.getAsrMaxSentenceMs() != null && provider.getAsrMaxSentenceMs() > 0) {
+                transcriber.addCustomedParam("max_single_segment_time", provider.getAsrMaxSentenceMs());
+            }
+            applyOptions(transcriber, provider.getAsrOptionsJson());
+            transcriber.start();
+            log.info("已打开阿里云 NLS 流式 ASR，会话采样率={}，providerCode={}，endpoint={}",
+                rate, provider.getProviderCode(), endpoint);
+            return new StreamingAsrSession() {
+                private volatile boolean closed;
+
+                @Override
+                public void send(byte[] audioBytes) {
+                    if (!closed && audioBytes != null && audioBytes.length > 0) {
+                        transcriber.send(audioBytes);
+                    }
+                }
+
+                @Override
+                public void finish() {
+                    if (closed) {
+                        return;
+                    }
+                    try {
+                        transcriber.stop();
+                    } catch (Exception exception) {
+                        listener.onError("停止流式 ASR 失败：" + exception.getMessage());
+                    }
+                }
+
+                @Override
+                public void close() {
+                    if (closed) {
+                        return;
+                    }
+                    closed = true;
+                    try {
+                        transcriber.close();
+                    } finally {
+                        client.shutdown();
+                    }
+                }
+            };
+        } catch (Exception exception) {
+            client.shutdown();
+            throw new ServiceException("打开阿里云 NLS 流式 ASR 失败：" + exception.getMessage());
+        }
+    }
+
+    private SpeechTranscriberListener streamingListener(List<AsrSegment> segments, StreamingAsrListener listener) {
+        return new SpeechTranscriberListener() {
+            @Override
+            public void onTranscriberStart(SpeechTranscriberResponse response) {
+                log.debug("阿里云 NLS 流式 ASR 已启动，taskId={}", response.getTaskId());
+            }
+
+            @Override
+            public void onSentenceBegin(SpeechTranscriberResponse response) {
+                log.debug("阿里云 NLS 流式 ASR 句子开始，taskId={}，index={}", response.getTaskId(), response.getTransSentenceIndex());
+            }
+
+            @Override
+            public void onSentenceEnd(SpeechTranscriberResponse response) {
+                String text = StringUtils.blankToDefault(response.getTransSentenceFixedText(), response.getTransSentenceText());
+                if (StringUtils.isBlank(text)) {
+                    return;
+                }
+                AsrSegment segment = segment(response, text, true);
+                segments.add(segment);
+                listener.onResult(segment);
+            }
+
+            @Override
+            public void onTranscriptionResultChange(SpeechTranscriberResponse response) {
+                String text = response.getTransSentenceText();
+                if (StringUtils.isNotBlank(text)) {
+                    listener.onResult(segment(response, text, false));
+                }
+            }
+
+            @Override
+            public void onTranscriptionComplete(SpeechTranscriberResponse response) {
+                List<AsrSegment> ordered = new ArrayList<>(segments);
+                ordered.sort((left, right) -> Integer.compare(
+                    left.sentenceIndex() == null ? 0 : left.sentenceIndex(),
+                    right.sentenceIndex() == null ? 0 : right.sentenceIndex()));
+                String fullText = String.join("\n", ordered.stream().map(AsrSegment::text)
+                    .filter(StringUtils::isNotBlank).toList());
+                listener.onCompleted(new AsrTranscribeResult(fullText, ordered));
+            }
+
+            @Override
+            public void onFail(SpeechTranscriberResponse response) {
+                listener.onError("阿里云 NLS 流式 ASR 失败，requestId=" + response.getTaskId()
+                    + "，status=" + response.getStatus() + "，message=" + response.getStatusText());
+            }
+        };
+    }
+
+    private AsrSegment segment(SpeechTranscriberResponse response, String text, boolean finalResult) {
+        return new AsrSegment(
+            response.getTransSentenceIndex(),
+            response.getSentenceBeginTime(),
+            response.getTransSentenceTime(),
+            text,
+            response.getConfidence() == null ? null : BigDecimal.valueOf(response.getConfidence()),
+            finalResult
+        );
     }
 
     private SpeechTranscriberListener listener(List<AsrSegment> segments, AtomicReference<String> failure) {
@@ -168,33 +306,46 @@ public class AliyunNlsAsrProvider implements AsrProvider {
         }
     }
 
-    private String endpoint(AiTtsProvider provider, String region) {
-        if (StringUtils.isNotBlank(provider.getEndpointUrl())) {
-            return provider.getEndpointUrl().trim();
+    private String endpoint(AiSpeechProvider provider, String region) {
+        if (StringUtils.isNotBlank(provider.getRecordingAsrEndpointUrl())) {
+            return provider.getRecordingAsrEndpointUrl().trim();
         }
         return switch (region) {
             case "cn-beijing" -> "wss://nls-gateway-cn-beijing.aliyuncs.com/ws/v1";
             case "cn-shenzhen" -> "wss://nls-gateway-cn-shenzhen.aliyuncs.com/ws/v1";
-            case "cn-shanghai" -> DEFAULT_GATEWAY;
             default -> DEFAULT_GATEWAY;
         };
     }
 
-    private Dict config(AiTtsProvider provider) {
+    private Dict commonConfig(AiSpeechProvider provider) {
         return StringUtils.isBlank(provider.getRemark()) ? null : JsonUtils.parseObject(provider.getRemark(), Dict.class);
     }
 
-    private String format(AsrTranscribeRequest request) {
-        String format = StringUtils.isBlank(request.format()) ? "wav" : request.format().replace(".", "");
-        format = format.toLowerCase(Locale.ROOT);
+    private void applyOptions(SpeechTranscriber transcriber, String optionsJson) {
+        if (StringUtils.isBlank(optionsJson)) {
+            return;
+        }
+        Dict options = JsonUtils.parseObject(optionsJson, Dict.class);
+        if (options == null) {
+            return;
+        }
+        for (Map.Entry<String, Object> entry : options.entrySet()) {
+            transcriber.addCustomedParam(entry.getKey(), entry.getValue());
+        }
+    }
+
+    private String format(AiSpeechProvider provider, AsrTranscribeRequest request) {
+        String configured = StringUtils.blankToDefault(request.format(), provider.getAsrFormat());
+        String format = StringUtils.blankToDefault(configured, "wav").replace(".", "").toLowerCase(Locale.ROOT);
         if (!List.of("wav", "pcm", "opus", "opu", "speex").contains(format)) {
             throw new ServiceException("阿里云 NLS ASR 暂不支持音频格式：" + format + "，请使用 WAV/PCM/OPUS/SPEEX");
         }
         return format;
     }
 
-    private int sampleRate(AsrTranscribeRequest request) {
-        return request.sampleRate() == null || request.sampleRate() <= 0 ? 8000 : request.sampleRate();
+    private int sampleRate(AiSpeechProvider provider, AsrTranscribeRequest request) {
+        Integer configured = request.sampleRate() == null || request.sampleRate() <= 0 ? provider.getAsrSampleRate() : request.sampleRate();
+        return configured == null || configured <= 0 ? 8000 : configured;
     }
 
     private InputFormatEnum inputFormat(String format) {

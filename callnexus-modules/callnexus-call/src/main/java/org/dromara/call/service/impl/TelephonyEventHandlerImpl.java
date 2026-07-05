@@ -214,7 +214,10 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private boolean isDispatchCallParticipantEvent(TelephonyEvent event) {
         String purpose = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE);
         return "DISPATCH_CALL_OPERATOR".equalsIgnoreCase(purpose)
-            || "DISPATCH_CALL_TARGET".equalsIgnoreCase(purpose);
+            || "DISPATCH_CALL_TARGET".equalsIgnoreCase(purpose)
+            || "DISPATCH_INTERCOM_OPERATOR".equalsIgnoreCase(purpose)
+            || "DISPATCH_INTERCOM_TARGET".equalsIgnoreCase(purpose)
+            || "DISPATCH_BROADCAST_TARGET".equalsIgnoreCase(purpose);
     }
 
     private Map<Long, AgentRealtimeTargetResponse> resolveDispatchParticipantTarget(TelephonyEvent event) {

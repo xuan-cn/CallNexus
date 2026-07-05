@@ -1,0 +1,12 @@
+package org.dromara.call.domain.request;
+
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import lombok.Data;
+
+@Data
+public class DispatchIntercomRequest {
+    @NotBlank(message = "对讲目标分机不能为空")
+    @Pattern(regexp = "^[0-9*#+]{2,32}$", message = "目标分机格式不正确")
+    private String targetExtension;
+}

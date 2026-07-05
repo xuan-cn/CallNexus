@@ -22,6 +22,10 @@ public class DispatchCallTask extends TenantEntity {
     private String operatorExtension;
     private String operatorLegUuid;
     private String conferenceName;
+    private Long mediaAssetId;
+    private String mediaName;
+    private String mediaPath;
+    private Boolean intercomTalking;
     private String taskType;
     private String taskState;
     private Integer totalCount;

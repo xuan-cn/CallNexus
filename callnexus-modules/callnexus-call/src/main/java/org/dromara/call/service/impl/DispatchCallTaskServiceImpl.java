@@ -25,6 +25,10 @@ import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionRespons
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.dromara.resource.sip.domain.response.SipAccountRealtimeResponse;
 import org.dromara.resource.sip.service.SipAccountQueryService;
+import org.dromara.resource.media.domain.response.MediaAssetResponse;
+import org.dromara.resource.media.domain.response.MediaSyncResponse;
+import org.dromara.resource.media.service.MediaAssetApplicationService;
+import org.dromara.resource.media.service.MediaPublicationService;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -40,6 +44,7 @@ import java.util.UUID;
 public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
     private static final Set<String> UNANSWERED_STATES = Set.of("PENDING", "SUBMITTED", "RINGING");
     private static final Set<String> TERMINAL_STATES = Set.of("FAILED", "CANCELLED", "ENDED");
+    private static final Set<String> TERMINAL_TASK_STATES = Set.of("SUCCESS", "PARTIAL", "FAILED", "CANCELLED");
 
     private final DispatchCallTaskMapper taskMapper;
     private final DispatchCallTargetMapper targetMapper;
@@ -48,6 +53,8 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
     private final SipAccountQueryService sipAccountQueryService;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final TelephonyCommandGateway commandGateway;
+    private final MediaAssetApplicationService mediaAssetService;
+    private final MediaPublicationService mediaPublicationService;
 
     @Override
     public DispatchCallTaskResponse startSingleCall(String targetExtension) {
@@ -57,6 +64,69 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
     @Override
     public DispatchCallTaskResponse startGroupCall(List<String> targetExtensions) {
         return start("GROUP", targetExtensions);
+    }
+
+    @Override
+    public DispatchCallTaskResponse startBroadcast(Long mediaAssetId, List<String> targetExtensions) {
+        DispatchOperatorExtensionResponse operator = operatorExtensionService.requireCurrent();
+        EslEndpoint endpoint = endpoint(operator.getNodeId());
+        Set<String> registeredExtensions = commandGateway.listRegisteredExtensions(endpoint);
+        List<String> extensions = normalizeTargets(targetExtensions, null);
+        List<SipAccountRealtimeResponse> accounts = validateTargets(operator.getNodeId(), extensions, registeredExtensions);
+        BroadcastMedia media = resolveBroadcastMedia(mediaAssetId, operator.getNodeId());
+
+        DispatchCallTask task = new DispatchCallTask();
+        task.setBusinessCallId(UUID.randomUUID().toString());
+        task.setNodeId(operator.getNodeId());
+        task.setOperatorUserId(LoginHelper.getUserId());
+        task.setOperatorSipAccountId(operator.getSipAccountId());
+        task.setOperatorExtension(operator.getExtension());
+        task.setMediaAssetId(media.mediaId());
+        task.setMediaName(media.mediaName());
+        task.setMediaPath(media.mediaPath());
+        task.setTaskType("BROADCAST");
+        task.setTaskState("STARTING");
+        task.setTotalCount(accounts.size());
+        task.setAnsweredCount(0);
+        task.setFailedCount(0);
+        task.setCancelledCount(0);
+        task.setStartedAt(LocalDateTime.now());
+        taskMapper.insert(task);
+
+        List<DispatchCallTarget> targets = createTargets(task, accounts);
+        int submittedCount = 0;
+        for (DispatchCallTarget target : targets) {
+            target.setTargetState("SUBMITTED");
+            target.setSubmittedAt(LocalDateTime.now());
+            targetMapper.updateById(target);
+            try {
+                commandGateway.originateDispatchPlayback(endpoint, task.getBusinessCallId(), target.getTargetLegUuid(),
+                    target.getTargetExtension(), operator.getExtension(), media.mediaPath(), task.getId(), target.getId());
+                submittedCount++;
+            } catch (Exception exception) {
+                target.setTargetState("FAILED");
+                target.setFailureReason(exception.getMessage());
+                target.setEndedAt(LocalDateTime.now());
+                targetMapper.updateById(target);
+                log.warn("调度广播目标提交失败，taskId={}，targetId={}，targetExtension={}，targetLegUuid={}，error={}",
+                    task.getId(), target.getId(), target.getTargetExtension(), target.getTargetLegUuid(), exception.getMessage());
+            }
+        }
+        task.setTaskState(submittedCount == 0 ? "FAILED" : "RUNNING");
+        if (submittedCount == 0) {
+            task.setEndedAt(LocalDateTime.now());
+        }
+        taskMapper.updateById(task);
+        recalculateTask(task.getId());
+        log.info("调度预录音广播任务已提交，taskId={}，businessCallId={}，nodeId={}，operatorExtension={}，mediaId={}，mediaPath={}，targetCount={}，submittedCount={}",
+            task.getId(), task.getBusinessCallId(), task.getNodeId(), task.getOperatorExtension(), media.mediaId(),
+            media.mediaPath(), targets.size(), submittedCount);
+        return get(task.getId());
+    }
+
+    @Override
+    public DispatchCallTaskResponse startIntercom(String targetExtension) {
+        return start("INTERCOM", List.of(targetExtension));
     }
 
     private DispatchCallTaskResponse start(String taskType, List<String> requestedExtensions) {
@@ -81,6 +151,7 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
         task.setOperatorSipAccountId(operator.getSipAccountId());
         task.setOperatorExtension(operator.getExtension());
         task.setOperatorLegUuid(UUID.randomUUID().toString());
+        task.setIntercomTalking(false);
         task.setTaskType(taskType);
         task.setTaskState("STARTING");
         task.setTotalCount(accounts.size());
@@ -90,24 +161,12 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
         task.setStartedAt(LocalDateTime.now());
         taskMapper.insert(task);
 
-        List<DispatchCallTarget> targets = new ArrayList<>();
-        for (SipAccountRealtimeResponse account : accounts) {
-            DispatchCallTarget target = new DispatchCallTarget();
-            target.setTaskId(task.getId());
-            target.setNodeId(task.getNodeId());
-            target.setSipAccountId(account.getSipAccountId());
-            target.setTargetExtension(account.getExtension());
-            target.setTargetLegUuid(UUID.randomUUID().toString());
-            target.setTargetState("PENDING");
-            target.setAnswered(false);
-            targetMapper.insert(target);
-            targets.add(target);
-        }
+        List<DispatchCallTarget> targets = createTargets(task, accounts);
 
         try {
             commandGateway.originateDispatchParticipant(endpoint, task.getBusinessCallId(), task.getOperatorLegUuid(),
                 task.getConferenceName(), task.getOperatorExtension(), task.getOperatorExtension(),
-                "DISPATCH_CALL_OPERATOR", task.getId(), null);
+                "INTERCOM".equals(taskType) ? "DISPATCH_INTERCOM_OPERATOR" : "DISPATCH_CALL_OPERATOR", task.getId(), null);
         } catch (Exception exception) {
             task.setTaskState("FAILED");
             task.setEndedAt(LocalDateTime.now());
@@ -126,7 +185,7 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
             try {
                 commandGateway.originateDispatchParticipant(endpoint, task.getBusinessCallId(), target.getTargetLegUuid(),
                     task.getConferenceName(), target.getTargetExtension(), task.getOperatorExtension(),
-                    "DISPATCH_CALL_TARGET", task.getId(), target.getId());
+                    "INTERCOM".equals(taskType) ? "DISPATCH_INTERCOM_TARGET" : "DISPATCH_CALL_TARGET", task.getId(), target.getId());
                 submittedCount++;
             } catch (Exception exception) {
                 target.setTargetState("FAILED");
@@ -153,7 +212,7 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
         taskMapper.updateById(task);
         recalculateTask(task.getId());
         log.info("调度{}任务已提交，taskId={}，businessCallId={}，nodeId={}，operatorExtension={}，operatorLegUuid={}，conferenceName={}，targetCount={}，submittedCount={}",
-            "GROUP".equals(taskType) ? "组呼" : "单呼", task.getId(), task.getBusinessCallId(), task.getNodeId(),
+            taskTypeLabel(taskType), task.getId(), task.getBusinessCallId(), task.getNodeId(),
             task.getOperatorExtension(), task.getOperatorLegUuid(), task.getConferenceName(), targets.size(), submittedCount);
         return get(task.getId());
     }
@@ -214,6 +273,111 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
     }
 
     @Override
+    public void terminateBroadcast(Long taskId) {
+        DispatchCallTask task = taskMapper.selectById(taskId);
+        if (task == null) {
+            throw new ServiceException("调度广播任务不存在");
+        }
+        if (!"BROADCAST".equals(task.getTaskType())) {
+            throw new ServiceException("当前任务不是预录音广播");
+        }
+        if (TERMINAL_TASK_STATES.contains(task.getTaskState())) {
+            throw new ServiceException("调度广播任务已结束");
+        }
+        EslEndpoint endpoint = endpoint(task.getNodeId());
+        int terminatedCount = 0;
+        for (DispatchCallTarget target : targets(taskId)) {
+            if (TERMINAL_STATES.contains(target.getTargetState())) {
+                continue;
+            }
+            try {
+                if (commandGateway.callExists(endpoint, target.getTargetLegUuid())) {
+                    commandGateway.hangup(endpoint, target.getTargetLegUuid());
+                }
+            } catch (Exception exception) {
+                log.warn("终止调度广播目标失败，继续收敛任务状态，taskId={}，targetId={}，targetLegUuid={}，error={}",
+                    taskId, target.getId(), target.getTargetLegUuid(), exception.getMessage());
+            }
+            target.setTargetState("CANCELLED");
+            target.setFailureReason("调度员终止广播");
+            target.setEndedAt(LocalDateTime.now());
+            targetMapper.updateById(target);
+            terminatedCount++;
+        }
+        task.setTaskState("CANCELLED");
+        task.setEndedAt(LocalDateTime.now());
+        task.setCancelledCount(targets(taskId).stream()
+            .mapToInt(target -> "CANCELLED".equals(target.getTargetState()) ? 1 : 0)
+            .sum());
+        taskMapper.updateById(task);
+        log.info("调度预录音广播已终止，taskId={}，businessCallId={}，terminatedCount={}",
+            taskId, task.getBusinessCallId(), terminatedCount);
+    }
+
+    @Override
+    public void setIntercomTalking(Long taskId, boolean talking) {
+        DispatchCallTask task = requireOwnedActiveIntercom(taskId);
+        DispatchCallTarget target = targets(taskId).stream().findFirst()
+            .orElseThrow(() -> new ServiceException("对讲目标不存在"));
+        if (!Boolean.TRUE.equals(target.getAnswered()) || TERMINAL_STATES.contains(target.getTargetState())) {
+            throw new ServiceException("目标分机尚未接听，不能控制对讲发言");
+        }
+        EslEndpoint endpoint = endpoint(task.getNodeId());
+        if (!commandGateway.callExists(endpoint, task.getOperatorLegUuid())) {
+            throw new ServiceException("调度分机对讲电话腿已结束");
+        }
+        if (!commandGateway.callExists(endpoint, target.getTargetLegUuid())) {
+            throw new ServiceException("目标分机对讲电话腿已结束");
+        }
+        if (talking) {
+            commandGateway.unmute(endpoint, task.getOperatorLegUuid());
+        } else {
+            commandGateway.mute(endpoint, task.getOperatorLegUuid());
+        }
+        task.setIntercomTalking(talking);
+        taskMapper.updateById(task);
+        log.info("调度对讲发言状态已更新，taskId={}，businessCallId={}，operatorLegUuid={}，targetLegUuid={}，talking={}",
+            taskId, task.getBusinessCallId(), task.getOperatorLegUuid(), target.getTargetLegUuid(), talking);
+    }
+
+    @Override
+    public void terminateIntercom(Long taskId) {
+        DispatchCallTask task = requireOwnedActiveIntercom(taskId);
+        EslEndpoint endpoint = endpoint(task.getNodeId());
+        try {
+            commandGateway.terminateConference(endpoint, task.getConferenceName());
+        } catch (Exception exception) {
+            log.warn("终止调度对讲会议失败，继续逐腿清理，taskId={}，conferenceName={}，error={}",
+                taskId, task.getConferenceName(), exception.getMessage());
+        }
+        if (commandGateway.callExists(endpoint, task.getOperatorLegUuid())) {
+            commandGateway.hangup(endpoint, task.getOperatorLegUuid());
+        }
+        for (DispatchCallTarget target : targets(taskId)) {
+            if (!TERMINAL_STATES.contains(target.getTargetState())) {
+                try {
+                    if (commandGateway.callExists(endpoint, target.getTargetLegUuid())) {
+                        commandGateway.hangup(endpoint, target.getTargetLegUuid());
+                    }
+                } catch (Exception exception) {
+                    log.debug("调度对讲目标腿已并发结束，taskId={}，targetLegUuid={}，error={}",
+                        taskId, target.getTargetLegUuid(), exception.getMessage());
+                }
+                target.setTargetState("CANCELLED");
+                target.setFailureReason("调度员结束对讲");
+                target.setEndedAt(LocalDateTime.now());
+                targetMapper.updateById(target);
+            }
+        }
+        task.setIntercomTalking(false);
+        task.setTaskState("CANCELLED");
+        task.setEndedAt(LocalDateTime.now());
+        taskMapper.updateById(task);
+        log.info("调度对讲已结束，taskId={}，businessCallId={}，operatorLegUuid={}",
+            taskId, task.getBusinessCallId(), task.getOperatorLegUuid());
+    }
+
+    @Override
     public boolean terminateByOperatorLeg(String operatorLegUuid) {
         if (operatorLegUuid == null || operatorLegUuid.isBlank()) {
             return false;
@@ -265,6 +429,9 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
                     target.setAnsweredAt(now);
                 }
                 target.setFailureReason(null);
+                if (EslEventNames.CHANNEL_ANSWER.equals(event.eventName())) {
+                    muteIntercomLeg(taskId, event.uuid(), "目标");
+                }
             }
             case EslEventNames.CHANNEL_HANGUP, EslEventNames.CHANNEL_HANGUP_COMPLETE, EslEventNames.CHANNEL_DESTROY -> {
                 if (!"CANCELLED".equals(target.getTargetState())) {
@@ -282,6 +449,9 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
             }
         }
         targetMapper.updateById(target);
+        if (EslEventNames.CHANNEL_HANGUP.equals(event.eventName())) {
+            terminateIntercomAfterTargetHangup(taskId, target.getTargetLegUuid());
+        }
         recalculateTask(taskId);
     }
 
@@ -291,11 +461,18 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
             return;
         }
         if (EslEventNames.CHANNEL_HANGUP.equals(event.eventName())) {
+            if ("INTERCOM".equals(task.getTaskType())) {
+                task.setIntercomTalking(false);
+                taskMapper.updateById(task);
+            }
             terminateTargetsAfterOperatorHangup(task);
             return;
         }
         if (EslEventNames.CHANNEL_ANSWER.equals(event.eventName())
             || EslEventNames.CHANNEL_BRIDGE.equals(event.eventName())) {
+            if ("INTERCOM".equals(task.getTaskType()) && EslEventNames.CHANNEL_ANSWER.equals(event.eventName())) {
+                muteIntercomLeg(taskId, event.uuid(), "调度");
+            }
             if ("STARTING".equals(task.getTaskState())) {
                 task.setTaskState("RUNNING");
                 taskMapper.updateById(task);
@@ -346,7 +523,7 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
             if (value == null || !value.matches("^[0-9*#+]{2,32}$")) {
                 throw new ServiceException("目标分机格式不正确");
             }
-            if (operatorExtension.equals(value)) {
+            if (operatorExtension != null && operatorExtension.equals(value)) {
                 throw new ServiceException("调度分机不能呼叫自己");
             }
             extensions.add(value);
@@ -355,6 +532,61 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
             throw new ServiceException("单次组呼最多选择50个分机");
         }
         return List.copyOf(extensions);
+    }
+
+    private DispatchCallTask requireOwnedActiveIntercom(Long taskId) {
+        DispatchCallTask task = taskMapper.selectById(taskId);
+        if (task == null || !"INTERCOM".equals(task.getTaskType())) {
+            throw new ServiceException("调度对讲任务不存在");
+        }
+        if (!LoginHelper.getUserId().equals(task.getOperatorUserId())) {
+            throw new ServiceException("只能控制本人发起的调度对讲");
+        }
+        if (TERMINAL_TASK_STATES.contains(task.getTaskState())) {
+            throw new ServiceException("调度对讲任务已结束");
+        }
+        return task;
+    }
+
+    private void muteIntercomLeg(Long taskId, String legUuid, String legName) {
+        DispatchCallTask task = taskMapper.selectById(taskId);
+        if (task == null || !"INTERCOM".equals(task.getTaskType())) {
+            return;
+        }
+        try {
+            commandGateway.mute(endpoint(task.getNodeId()), legUuid);
+            if (legUuid.equals(task.getOperatorLegUuid())) {
+                task.setIntercomTalking(false);
+                taskMapper.updateById(task);
+            }
+            log.info("调度对讲电话腿已进入静音，taskId={}，legName={}，legUuid={}", taskId, legName, legUuid);
+        } catch (Exception exception) {
+            log.warn("调度对讲电话腿初始化静音失败，taskId={}，legName={}，legUuid={}，error={}",
+                taskId, legName, legUuid, exception.getMessage());
+        }
+    }
+
+    private void terminateIntercomAfterTargetHangup(Long taskId, String targetLegUuid) {
+        DispatchCallTask task = taskMapper.selectById(taskId);
+        if (task == null || !"INTERCOM".equals(task.getTaskType()) || TERMINAL_TASK_STATES.contains(task.getTaskState())) {
+            return;
+        }
+        task.setIntercomTalking(false);
+        taskMapper.updateById(task);
+        try {
+            commandGateway.terminateConference(endpoint(task.getNodeId()), task.getConferenceName());
+            log.info("对讲目标分机挂机，已结束对讲会议，taskId={}，targetLegUuid={}，operatorLegUuid={}",
+                taskId, targetLegUuid, task.getOperatorLegUuid());
+        } catch (Exception exception) {
+            log.debug("对讲目标分机挂机时会议已并发结束，taskId={}，targetLegUuid={}，error={}",
+                taskId, targetLegUuid, exception.getMessage());
+        }
+    }
+
+    private String taskTypeLabel(String taskType) {
+        if ("GROUP".equals(taskType)) return "组呼";
+        if ("INTERCOM".equals(taskType)) return "对讲";
+        return "单呼";
     }
 
     private List<SipAccountRealtimeResponse> validateTargets(Long nodeId, List<String> extensions,
@@ -384,6 +616,56 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
             .isNull(CallLeg::getEndedAt));
     }
 
+    private List<DispatchCallTarget> createTargets(DispatchCallTask task, List<SipAccountRealtimeResponse> accounts) {
+        List<DispatchCallTarget> targets = new ArrayList<>();
+        for (SipAccountRealtimeResponse account : accounts) {
+            DispatchCallTarget target = new DispatchCallTarget();
+            target.setTaskId(task.getId());
+            target.setNodeId(task.getNodeId());
+            target.setSipAccountId(account.getSipAccountId());
+            target.setTargetExtension(account.getExtension());
+            target.setTargetLegUuid(UUID.randomUUID().toString());
+            target.setTargetState("PENDING");
+            target.setAnswered(false);
+            targetMapper.insert(target);
+            targets.add(target);
+        }
+        return targets;
+    }
+
+    private BroadcastMedia resolveBroadcastMedia(Long mediaAssetId, Long nodeId) {
+        MediaAssetResponse media = mediaAssetService.get(mediaAssetId);
+        if (!Boolean.TRUE.equals(media.getEnabled())) {
+            throw new ServiceException("广播声音媒体已停用");
+        }
+        if ("CALL_RECORDING".equals(media.getCategory()) || "VOICEMAIL_RECORDING".equals(media.getCategory())) {
+            throw new ServiceException("通话录音和语音留言不能用于调度广播");
+        }
+        if (!List.of("PUBLISHED", "PARTIAL").contains(media.getPublishStatus())) {
+            throw new ServiceException("广播声音媒体尚未发布");
+        }
+        List<MediaSyncResponse> syncRecords = mediaPublicationService.syncs(mediaAssetId);
+        MediaSyncResponse sync = syncRecords.stream()
+            .filter(item -> nodeId.equals(item.getNodeId()))
+            .filter(item -> "SUCCESS".equals(item.getStatus()))
+            .filter(item -> media.getLatestVersionNo() != null
+                && media.getLatestVersionNo().equals(item.getVersionNo()))
+            .filter(item -> item.getTargetPath() != null && !item.getTargetPath().isBlank())
+            .findFirst()
+            .orElseThrow(() -> {
+                String nodeSyncSummary = syncRecords.stream()
+                    .filter(item -> nodeId.equals(item.getNodeId()))
+                    .map(item -> "v" + item.getVersionNo() + ":" + item.getStatus())
+                    .distinct()
+                    .toList()
+                    .toString();
+                log.warn("广播声音媒体无可用节点文件，mediaId={}，nodeId={}，latestVersionNo={}，publishStatus={}，nodeSyncs={}",
+                    mediaAssetId, nodeId, media.getLatestVersionNo(), media.getPublishStatus(), nodeSyncSummary);
+                return new ServiceException("广播声音媒体最新发布版本尚未同步到当前 FreeSWITCH 节点");
+            });
+        return new BroadcastMedia(media.getId(), media.getAssetName(), sync.getTargetPath());
+    }
+
     private void failPendingTargets(List<DispatchCallTarget> targets, String reason) {
         for (DispatchCallTarget target : targets) {
             target.setTargetState("FAILED");
@@ -406,6 +688,10 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
         task.setAnsweredCount(answered);
         task.setFailedCount(failed);
         task.setCancelledCount(cancelled);
+        if ("CANCELLED".equals(task.getTaskState())) {
+            taskMapper.updateById(task);
+            return;
+        }
         if (allTerminal) {
             if (answered == task.getTotalCount()) {
                 task.setTaskState("SUCCESS");
@@ -439,6 +725,10 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
         response.setNodeId(task.getNodeId());
         response.setOperatorExtension(task.getOperatorExtension());
         response.setOperatorLegUuid(task.getOperatorLegUuid());
+        response.setMediaAssetId(task.getMediaAssetId());
+        response.setMediaName(task.getMediaName());
+        response.setMediaPath(task.getMediaPath());
+        response.setIntercomTalking(task.getIntercomTalking());
         response.setTaskType(task.getTaskType());
         response.setTaskState(task.getTaskState());
         response.setTotalCount(task.getTotalCount());
@@ -484,5 +774,8 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
     private EslEndpoint endpoint(Long nodeId) {
         FreeSwitchNodeConnectionResponse node = nodeQueryService.getEnabledConnection(nodeId);
         return new EslEndpoint(node.getEslHost(), node.getEslPort(), node.getEslPassword(), node.getSipDomain());
+    }
+
+    private record BroadcastMedia(Long mediaId, String mediaName, String mediaPath) {
     }
 }

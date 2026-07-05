@@ -12,6 +12,10 @@ public class DispatchCallTaskResponse {
     private Long nodeId;
     private String operatorExtension;
     private String operatorLegUuid;
+    private Long mediaAssetId;
+    private String mediaName;
+    private String mediaPath;
+    private Boolean intercomTalking;
     private String taskType;
     private String taskState;
     private Integer totalCount;

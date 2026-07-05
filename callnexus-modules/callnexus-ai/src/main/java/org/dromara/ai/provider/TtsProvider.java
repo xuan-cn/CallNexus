@@ -1,9 +1,9 @@
 package org.dromara.ai.provider;
 
-import org.dromara.ai.domain.AiTtsProvider;
+import org.dromara.ai.domain.AiSpeechProvider;
 
 public interface TtsProvider {
     String providerType();
 
-    TtsGenerateResult generate(AiTtsProvider provider, TtsGenerateRequest request);
+    TtsGenerateResult generate(AiSpeechProvider provider, TtsGenerateRequest request);
 }

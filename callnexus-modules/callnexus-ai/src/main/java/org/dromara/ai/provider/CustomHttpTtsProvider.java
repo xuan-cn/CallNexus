@@ -2,7 +2,7 @@ package org.dromara.ai.provider;
 
 import cn.hutool.core.lang.Dict;
 import lombok.extern.slf4j.Slf4j;
-import org.dromara.ai.domain.AiTtsProvider;
+import org.dromara.ai.domain.AiSpeechProvider;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
@@ -30,7 +30,7 @@ public class CustomHttpTtsProvider implements TtsProvider {
     }
 
     @Override
-    public TtsGenerateResult generate(AiTtsProvider provider, TtsGenerateRequest request) {
+    public TtsGenerateResult generate(AiSpeechProvider provider, TtsGenerateRequest request) {
         if (StringUtils.isBlank(provider.getEndpointUrl())) {
             throw new ServiceException("TTS Provider 请求地址不能为空");
         }
@@ -53,7 +53,7 @@ public class CustomHttpTtsProvider implements TtsProvider {
         return new TtsGenerateResult(body, contentType, suffix(contentType, provider.getDefaultFormat()), null);
     }
 
-    private HttpRequest buildRequest(AiTtsProvider provider, TtsGenerateRequest request) {
+    private HttpRequest buildRequest(AiSpeechProvider provider, TtsGenerateRequest request) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("text", request.text());
         payload.put("voice", request.voice());
@@ -69,7 +69,7 @@ public class CustomHttpTtsProvider implements TtsProvider {
         return builder.build();
     }
 
-    private TtsGenerateResult downloadFromJson(HttpClient client, byte[] body, AiTtsProvider provider) {
+    private TtsGenerateResult downloadFromJson(HttpClient client, byte[] body, AiSpeechProvider provider) {
         Dict dict = JsonUtils.parseObject(body, Dict.class);
         String audioUrl = dict == null ? null : String.valueOf(dict.get("audioUrl", dict.get("url")));
         if (StringUtils.isBlank(audioUrl) || "null".equals(audioUrl)) {
@@ -98,7 +98,7 @@ public class CustomHttpTtsProvider implements TtsProvider {
         }
     }
 
-    private void applyAuth(AiTtsProvider provider, HttpRequest.Builder builder) {
+    private void applyAuth(AiSpeechProvider provider, HttpRequest.Builder builder) {
         if (StringUtils.isBlank(provider.getAuthType()) || "NONE".equalsIgnoreCase(provider.getAuthType())) {
             return;
         }
@@ -115,7 +115,7 @@ public class CustomHttpTtsProvider implements TtsProvider {
         }
     }
 
-    private int timeout(AiTtsProvider provider) {
+    private int timeout(AiSpeechProvider provider) {
         return provider.getTimeoutSeconds() == null || provider.getTimeoutSeconds() <= 0 ? 30 : provider.getTimeoutSeconds();
     }
 

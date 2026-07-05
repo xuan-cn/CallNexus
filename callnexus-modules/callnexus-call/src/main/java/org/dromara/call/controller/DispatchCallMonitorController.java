@@ -11,6 +11,9 @@ import org.dromara.call.domain.request.DispatchMonitorRequest;
 import org.dromara.call.domain.request.BindDispatchOperatorExtensionRequest;
 import org.dromara.call.domain.request.DispatchGroupCallRequest;
 import org.dromara.call.domain.request.DispatchSingleCallRequest;
+import org.dromara.call.domain.request.DispatchBroadcastRequest;
+import org.dromara.call.domain.request.DispatchIntercomRequest;
+import org.dromara.call.domain.request.DispatchIntercomTalkRequest;
 import org.dromara.call.domain.response.DispatchCallTaskResponse;
 import org.dromara.call.domain.response.DispatchOperatorExtensionResponse;
 import org.dromara.call.service.DispatchCallControlService;
@@ -73,6 +76,18 @@ public class DispatchCallMonitorController {
         return R.ok(taskService.startGroupCall(request.getTargetExtensions()));
     }
 
+    @PostMapping("/broadcast")
+    @SaCheckPermission("callcenter:dispatch-control:broadcast")
+    public R<DispatchCallTaskResponse> startBroadcast(@Valid @RequestBody DispatchBroadcastRequest request) {
+        return R.ok(taskService.startBroadcast(request.getMediaAssetId(), request.getTargetExtensions()));
+    }
+
+    @PostMapping("/intercom")
+    @SaCheckPermission("callcenter:dispatch-control:intercom")
+    public R<DispatchCallTaskResponse> startIntercom(@Valid @RequestBody DispatchIntercomRequest request) {
+        return R.ok(taskService.startIntercom(request.getTargetExtension()));
+    }
+
     @GetMapping("/tasks")
     @SaCheckPermission("callcenter:dispatch-call-task:list")
     public R<List<DispatchCallTaskResponse>> listTasks() {
@@ -89,6 +104,28 @@ public class DispatchCallMonitorController {
     @SaCheckPermission("callcenter:dispatch-control:stop-group")
     public R<Void> stopUnanswered(@PathVariable Long taskId) {
         taskService.stopUnanswered(taskId);
+        return R.ok();
+    }
+
+    @PostMapping("/tasks/{taskId}/terminate-broadcast")
+    @SaCheckPermission("callcenter:dispatch-control:stop-broadcast")
+    public R<Void> terminateBroadcast(@PathVariable Long taskId) {
+        taskService.terminateBroadcast(taskId);
+        return R.ok();
+    }
+
+    @PostMapping("/tasks/{taskId}/intercom/talk")
+    @SaCheckPermission("callcenter:dispatch-control:intercom-talk")
+    public R<Void> setIntercomTalking(@PathVariable Long taskId,
+                                      @Valid @RequestBody DispatchIntercomTalkRequest request) {
+        taskService.setIntercomTalking(taskId, Boolean.TRUE.equals(request.getTalking()));
+        return R.ok();
+    }
+
+    @PostMapping("/tasks/{taskId}/terminate-intercom")
+    @SaCheckPermission("callcenter:dispatch-control:stop-intercom")
+    public R<Void> terminateIntercom(@PathVariable Long taskId) {
+        taskService.terminateIntercom(taskId);
         return R.ok();
     }
 

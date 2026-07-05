@@ -2,7 +2,7 @@ package org.dromara.ai.provider;
 
 import cn.hutool.core.lang.Dict;
 import lombok.extern.slf4j.Slf4j;
-import org.dromara.ai.domain.AiTtsProvider;
+import org.dromara.ai.domain.AiSpeechProvider;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
@@ -44,7 +44,7 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
     }
 
     @Override
-    public TtsGenerateResult generate(AiTtsProvider provider, TtsGenerateRequest request) {
+    public TtsGenerateResult generate(AiSpeechProvider provider, TtsGenerateRequest request) {
         if (StringUtils.isBlank(provider.getAuthToken())) {
             throw new ServiceException("阿里云百炼 TTS API Key 不能为空");
         }
@@ -63,7 +63,7 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
         return parseJsonResult(client, provider, response.body(), request.format());
     }
 
-    private HttpRequest buildRequest(AiTtsProvider provider, TtsGenerateRequest request) {
+    private HttpRequest buildRequest(AiSpeechProvider provider, TtsGenerateRequest request) {
         String endpoint = endpoint(provider);
         if (endpoint.contains("/audio/tts/SpeechSynthesizer")) {
             return buildMaasSpeechSynthesizerRequest(provider, request, endpoint);
@@ -74,7 +74,7 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
         return buildGenerationRequest(provider, request, endpoint);
     }
 
-    private HttpRequest buildOpenAiCompatibleRequest(AiTtsProvider provider, TtsGenerateRequest request, String endpoint) {
+    private HttpRequest buildOpenAiCompatibleRequest(AiSpeechProvider provider, TtsGenerateRequest request, String endpoint) {
         Dict config = remarkConfig(provider);
         String format = format(request);
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -97,7 +97,7 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
             .build();
     }
 
-    private HttpRequest buildMaasSpeechSynthesizerRequest(AiTtsProvider provider, TtsGenerateRequest request, String endpoint) {
+    private HttpRequest buildMaasSpeechSynthesizerRequest(AiSpeechProvider provider, TtsGenerateRequest request, String endpoint) {
         Dict config = remarkConfig(provider);
         Map<String, Object> input = new LinkedHashMap<>();
         input.putAll(mapAt(config, "input"));
@@ -124,7 +124,7 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
             .build();
     }
 
-    private HttpRequest buildGenerationRequest(AiTtsProvider provider, TtsGenerateRequest request, String endpoint) {
+    private HttpRequest buildGenerationRequest(AiSpeechProvider provider, TtsGenerateRequest request, String endpoint) {
         Dict config = remarkConfig(provider);
         Map<String, Object> input = new LinkedHashMap<>();
         input.putAll(mapAt(config, "input"));
@@ -154,7 +154,7 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
             .build();
     }
 
-    private TtsGenerateResult parseJsonResult(HttpClient client, AiTtsProvider provider, byte[] body, String defaultFormat) {
+    private TtsGenerateResult parseJsonResult(HttpClient client, AiSpeechProvider provider, byte[] body, String defaultFormat) {
         Dict dict = JsonUtils.parseObject(body, Dict.class);
         if (dict == null) {
             throw new ServiceException("阿里云百炼 TTS 返回空 JSON");
@@ -188,7 +188,7 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
         throw new ServiceException("阿里云百炼 TTS 返回 JSON 中未找到音频地址或音频内容，响应=" + safeBody(body));
     }
 
-    private TtsGenerateResult downloadAudio(HttpClient client, AiTtsProvider provider, String audioUrl, String defaultFormat) {
+    private TtsGenerateResult downloadAudio(HttpClient client, AiSpeechProvider provider, String audioUrl, String defaultFormat) {
         HttpResponse<byte[]> response = send(client, HttpRequest.newBuilder(URI.create(audioUrl))
             .timeout(Duration.ofSeconds(timeout(provider)))
             .GET()
@@ -211,7 +211,7 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
         }
     }
 
-    private String endpoint(AiTtsProvider provider) {
+    private String endpoint(AiSpeechProvider provider) {
         return StringUtils.isBlank(provider.getEndpointUrl()) ? DEFAULT_ENDPOINT : provider.getEndpointUrl().trim();
     }
 
@@ -230,11 +230,11 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
         return normalized;
     }
 
-    private Dict remarkConfig(AiTtsProvider provider) {
+    private Dict remarkConfig(AiSpeechProvider provider) {
         return StringUtils.isBlank(provider.getRemark()) ? null : JsonUtils.parseObject(provider.getRemark(), Dict.class);
     }
 
-    private String model(AiTtsProvider provider, boolean openAiCompatible, Dict config) {
+    private String model(AiSpeechProvider provider, boolean openAiCompatible, Dict config) {
         String model = firstText(config, List.of("model"));
         if (StringUtils.isNotBlank(model)) {
             return model;
@@ -242,7 +242,7 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
         return openAiCompatible ? DEFAULT_OPENAI_MODEL : DEFAULT_GENERATION_MODEL;
     }
 
-    private String chooseVoice(AiTtsProvider provider, TtsGenerateRequest request, boolean openAiCompatible, Dict config) {
+    private String chooseVoice(AiSpeechProvider provider, TtsGenerateRequest request, boolean openAiCompatible, Dict config) {
         if (StringUtils.isNotBlank(request.voice())) {
             return request.voice();
         }
@@ -264,7 +264,7 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
         return request.sampleRate() == null || request.sampleRate() <= 0 ? 8000 : request.sampleRate();
     }
 
-    private int timeout(AiTtsProvider provider) {
+    private int timeout(AiSpeechProvider provider) {
         return provider.getTimeoutSeconds() == null || provider.getTimeoutSeconds() <= 0 ? 30 : provider.getTimeoutSeconds();
     }
 

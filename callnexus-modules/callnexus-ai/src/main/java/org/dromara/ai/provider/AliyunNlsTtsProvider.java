@@ -9,7 +9,7 @@ import com.alibaba.nls.client.protocol.tts.SpeechSynthesizer;
 import com.alibaba.nls.client.protocol.tts.SpeechSynthesizerListener;
 import com.alibaba.nls.client.protocol.tts.SpeechSynthesizerResponse;
 import lombok.extern.slf4j.Slf4j;
-import org.dromara.ai.domain.AiTtsProvider;
+import org.dromara.ai.domain.AiSpeechProvider;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
@@ -44,7 +44,7 @@ public class AliyunNlsTtsProvider implements TtsProvider {
     }
 
     @Override
-    public TtsGenerateResult generate(AiTtsProvider provider, TtsGenerateRequest request) {
+    public TtsGenerateResult generate(AiSpeechProvider provider, TtsGenerateRequest request) {
         Dict config = config(provider);
         String appKey = firstText(config, "appKey", "app_key", "app-key");
         String accessKeyId = provider.getAuthHeaderName();
@@ -136,7 +136,7 @@ public class AliyunNlsTtsProvider implements TtsProvider {
         }
     }
 
-    private String endpoint(AiTtsProvider provider, String region) {
+    private String endpoint(AiSpeechProvider provider, String region) {
         if (StringUtils.isNotBlank(provider.getEndpointUrl())) {
             return provider.getEndpointUrl().trim();
         }
@@ -148,11 +148,11 @@ public class AliyunNlsTtsProvider implements TtsProvider {
         };
     }
 
-    private Dict config(AiTtsProvider provider) {
+    private Dict config(AiSpeechProvider provider) {
         return StringUtils.isBlank(provider.getRemark()) ? null : JsonUtils.parseObject(provider.getRemark(), Dict.class);
     }
 
-    private String voice(AiTtsProvider provider, TtsGenerateRequest request, Dict config) {
+    private String voice(AiSpeechProvider provider, TtsGenerateRequest request, Dict config) {
         if (StringUtils.isNotBlank(request.voice())) {
             return request.voice();
         }

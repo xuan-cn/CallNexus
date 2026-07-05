@@ -658,12 +658,16 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     private boolean isDispatchCallEvent(TelephonyEvent event) {
         String purpose = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE);
         return "DISPATCH_CALL_OPERATOR".equalsIgnoreCase(purpose)
-            || "DISPATCH_CALL_TARGET".equalsIgnoreCase(purpose);
+            || "DISPATCH_CALL_TARGET".equalsIgnoreCase(purpose)
+            || "DISPATCH_INTERCOM_OPERATOR".equalsIgnoreCase(purpose)
+            || "DISPATCH_INTERCOM_TARGET".equalsIgnoreCase(purpose)
+            || "DISPATCH_BROADCAST_TARGET".equalsIgnoreCase(purpose);
     }
 
     private String dispatchCallRole(TelephonyEvent event) {
-        return "DISPATCH_CALL_OPERATOR".equalsIgnoreCase(
-            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE))
+        String purpose = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CALL_PURPOSE);
+        return ("DISPATCH_CALL_OPERATOR".equalsIgnoreCase(purpose)
+            || "DISPATCH_INTERCOM_OPERATOR".equalsIgnoreCase(purpose))
             ? "DISPATCH_OPERATOR"
             : "DISPATCH_TARGET";
     }

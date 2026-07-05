@@ -1,0 +1,63 @@
+-- FAQ Excel 导入与文档 AI 提取候选审核。
+CREATE TABLE IF NOT EXISTS cc_ai_faq_candidate_batch (
+    id BIGINT NOT NULL COMMENT 'FAQ候选批次ID',
+    tenant_id VARCHAR(20) NOT NULL COMMENT '租户ID',
+    knowledge_base_id BIGINT NOT NULL COMMENT '知识库ID',
+    source_type VARCHAR(32) NOT NULL COMMENT '来源：EXCEL、AI_DOCUMENT',
+    document_id BIGINT NULL COMMENT '来源文档ID',
+    document_version_id BIGINT NULL COMMENT '来源文档版本ID',
+    chat_model_id BIGINT NULL COMMENT '提取使用的Chat模型ID',
+    source_file_name VARCHAR(255) NULL COMMENT '来源文件名',
+    status VARCHAR(32) NOT NULL COMMENT '状态：PENDING、PROCESSING、REVIEW、CONFIRMED、FAILED',
+    total_count INT NOT NULL DEFAULT 0 COMMENT '候选总数',
+    valid_count INT NOT NULL DEFAULT 0 COMMENT '有效数量',
+    invalid_count INT NOT NULL DEFAULT 0 COMMENT '无效数量',
+    confirmed_count INT NOT NULL DEFAULT 0 COMMENT '已发布数量',
+    failure_reason VARCHAR(1000) NULL COMMENT '失败原因',
+    started_at DATETIME NULL COMMENT '开始时间',
+    finished_at DATETIME NULL COMMENT '完成时间',
+    create_dept BIGINT NULL COMMENT '创建部门',
+    create_by BIGINT NULL COMMENT '创建人',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_by BIGINT NULL COMMENT '更新人',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    version INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除标志',
+    PRIMARY KEY (id),
+    KEY idx_cc_ai_faq_candidate_batch (tenant_id, knowledge_base_id, status, create_time)
+) ENGINE=InnoDB COMMENT='AI FAQ候选批次表';
+
+CREATE TABLE IF NOT EXISTS cc_ai_faq_candidate (
+    id BIGINT NOT NULL COMMENT 'FAQ候选ID',
+    tenant_id VARCHAR(20) NOT NULL COMMENT '租户ID',
+    batch_id BIGINT NOT NULL COMMENT '候选批次ID',
+    knowledge_base_id BIGINT NOT NULL COMMENT '知识库ID',
+    source_row_number INT NOT NULL COMMENT '来源行号或候选序号',
+    faq_code VARCHAR(64) NOT NULL COMMENT 'FAQ编码',
+    faq_name VARCHAR(128) NOT NULL COMMENT 'FAQ名称',
+    standard_question VARCHAR(1000) NULL COMMENT '标准问题',
+    normalized_question VARCHAR(1000) NULL COMMENT '规范化问题',
+    standard_answer MEDIUMTEXT NULL COMMENT '标准答案',
+    aliases_json TEXT NULL COMMENT '相似问法JSON',
+    answer_mode VARCHAR(32) NOT NULL DEFAULT 'DIRECT' COMMENT '回答模式：DIRECT、CONTEXT',
+    source_location VARCHAR(255) NULL COMMENT '原文位置',
+    source_text MEDIUMTEXT NULL COMMENT '原文依据',
+    confidence DECIMAL(10,8) NULL COMMENT 'AI提取可信度',
+    status VARCHAR(32) NOT NULL COMMENT '状态：VALID、INVALID、CONFIRMED、SKIPPED',
+    error_message VARCHAR(1000) NULL COMMENT '校验失败原因',
+    faq_id BIGINT NULL COMMENT '确认后生成的FAQ ID',
+    create_dept BIGINT NULL COMMENT '创建部门',
+    create_by BIGINT NULL COMMENT '创建人',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_by BIGINT NULL COMMENT '更新人',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    version INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除标志',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_cc_ai_faq_candidate_row (tenant_id, batch_id, source_row_number, deleted),
+    KEY idx_cc_ai_faq_candidate_status (tenant_id, batch_id, status)
+) ENGINE=InnoDB COMMENT='AI FAQ候选明细表';
+
+ALTER TABLE cc_ai_knowledge_task
+    ADD COLUMN candidate_batch_id BIGINT NULL COMMENT 'FAQ候选批次ID' AFTER faq_version_id,
+    ADD KEY idx_cc_ai_knowledge_task_candidate (tenant_id, candidate_batch_id, status);

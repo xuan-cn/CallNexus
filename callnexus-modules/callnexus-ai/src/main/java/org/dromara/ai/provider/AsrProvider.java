@@ -1,8 +1,8 @@
 package org.dromara.ai.provider;
 
-import org.dromara.ai.domain.AiTtsProvider;
+import org.dromara.ai.domain.AiSpeechProvider;
 
 public interface AsrProvider {
     String providerType();
-    AsrTranscribeResult transcribe(AiTtsProvider provider, AsrTranscribeRequest request);
+    AsrTranscribeResult transcribe(AiSpeechProvider provider, AsrTranscribeRequest request);
 }
