@@ -12,11 +12,19 @@ public final class EslEventNames {
     public static final String CHANNEL_UNBRIDGE = "CHANNEL_UNBRIDGE";
     public static final String CHANNEL_HOLD = "CHANNEL_HOLD";
     public static final String CHANNEL_UNHOLD = "CHANNEL_UNHOLD";
+    public static final String CHANNEL_EXECUTE = "CHANNEL_EXECUTE";
+    public static final String CHANNEL_EXECUTE_COMPLETE = "CHANNEL_EXECUTE_COMPLETE";
     public static final String CHANNEL_HANGUP = "CHANNEL_HANGUP";
     public static final String CHANNEL_HANGUP_COMPLETE = "CHANNEL_HANGUP_COMPLETE";
     public static final String CHANNEL_DESTROY = "CHANNEL_DESTROY";
+
     /**
-     * DTMF 接收事件。通道收到 DTMF 按键时由 FreeSWITCH 上报，事件头 {@code DTMF-Digit}/{@code DTMF-Duration} 携带按键信息。
+     * FreeSWITCH detect_speech / UniMRCP 识别结果事件。
+     */
+    public static final String DETECTED_SPEECH = "DETECTED_SPEECH";
+
+    /**
+     * DTMF 接收事件。通道收到 DTMF 按键时由 FreeSWITCH 上报，事件头 DTMF-Digit/DTMF-Duration 携带按键信息。
      */
     public static final String DTMF = "DTMF";
 
@@ -44,7 +52,8 @@ public final class EslEventNames {
 
     public static List<String> subscribedChannelEvents() {
         return List.of(CHANNEL_CREATE, CHANNEL_PROGRESS, CHANNEL_PROGRESS_MEDIA, CHANNEL_ANSWER, CHANNEL_BRIDGE,
-            CHANNEL_UNBRIDGE, CHANNEL_HOLD, CHANNEL_UNHOLD, CHANNEL_HANGUP, CHANNEL_HANGUP_COMPLETE, CHANNEL_DESTROY, DTMF);
+            CHANNEL_UNBRIDGE, CHANNEL_HOLD, CHANNEL_UNHOLD, CHANNEL_EXECUTE, CHANNEL_EXECUTE_COMPLETE,
+            CHANNEL_HANGUP, CHANNEL_HANGUP_COMPLETE, CHANNEL_DESTROY, DETECTED_SPEECH, DTMF);
     }
 
     /**
@@ -66,7 +75,9 @@ public final class EslEventNames {
      * 判断是否为 mod_callcenter 队列事件（CUSTOM + callcenter:: subclass）。
      */
     public static boolean isCallCenterQueueEvent(String eventName, String eventSubclass) {
-        if (!CUSTOM.equals(eventName) || eventSubclass == null) return false;
+        if (!CUSTOM.equals(eventName) || eventSubclass == null) {
+            return false;
+        }
         return eventSubclass.startsWith("callcenter::");
     }
 

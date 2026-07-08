@@ -420,9 +420,25 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         requireSuccess(executeCommand(endpoint, command), "FREESWITCH_ESL_COMMAND_FAILED", command);
     }
 
+    String executeApiCommandForResult(EslEndpoint endpoint, String command) {
+        EslFrame response = executeCommand(endpoint, command);
+        String result = response.body();
+        if (result == null || result.isBlank()) {
+            result = response.header("Reply-Text");
+        }
+        return result == null ? "" : result.trim();
+    }
+
     void executeApiCommandIgnoringApplicationError(EslEndpoint endpoint, String command) {
         EslFrame response = executeCommand(endpoint, command);
         log.debug("FreeSWITCH ESL 幂等命令已执行，忽略应用层返回，command={}，response={}", command, response.body());
+    }
+
+    public void sendRawCommand(EslEndpoint endpoint, String command) {
+        if (command == null || command.isBlank()) {
+            throw new ServiceException("FreeSWITCH ESL 命令不能为空");
+        }
+        sendCommand(endpoint, command);
     }
 
     private void sendCommand(EslEndpoint endpoint, String command) {

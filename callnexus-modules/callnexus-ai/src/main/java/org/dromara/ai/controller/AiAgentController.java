@@ -1,6 +1,7 @@
 package org.dromara.ai.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.ai.domain.request.AiAgentRequest;
@@ -79,7 +80,10 @@ public class AiAgentController {
 
     @PostMapping(value = "/agents/{id}/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @SaCheckPermission("callcenter:ai-conversation:chat")
-    public StreamingResponseBody stream(@PathVariable Long id, @Valid @RequestBody AiChatRequest request) {
+    public StreamingResponseBody stream(@PathVariable Long id, @Valid @RequestBody AiChatRequest request,
+                                        HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
         Long userId = LoginHelper.getUserId();
         String tenantId = TenantHelper.getTenantId();
         return output -> TenantHelper.dynamic(tenantId, () -> service.streamChat(id, userId, request, (event, data) -> {

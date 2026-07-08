@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.ai.config.AiKnowledgeProperties;
 import org.dromara.ai.domain.AiAgent;
+import org.dromara.ai.domain.AiSpeechProvider;
 import org.dromara.ai.mapper.AiAgentMapper;
 import org.dromara.ai.realtime.AiRealtimeTokenService;
 import org.dromara.common.core.exception.ServiceException;
@@ -23,7 +24,7 @@ public class AiRealtimeDialplanService {
         if (!Boolean.TRUE.equals(properties.getRealtimeEnabled())) {
             throw new ServiceException("AI 实时语音未启用，请配置 CALLNEXUS_AI_REALTIME_ENABLED=true");
         }
-        if (StringUtils.isBlank(properties.getRealtimeWebsocketUrl())) {
+        if (isAudioStreamTransport() && StringUtils.isBlank(properties.getRealtimeWebsocketUrl())) {
             throw new ServiceException("AI 实时音频 WebSocket 地址未配置");
         }
         requireAgent(agentId);
@@ -39,6 +40,27 @@ public class AiRealtimeDialplanService {
             + "&businessCallId=${callnexus_business_call_id}&customerLegUuid=${uuid}";
     }
 
+    public UniMrcpOpeningPrompt buildUniMrcpOpeningPrompt(Long agentId) {
+        validate(agentId);
+        AiAgent agent = requireAgent(agentId);
+        String text = StringUtils.isBlank(agent.getWelcomeMessage())
+            ? "您好，我是" + agent.getAgentName() + "，请问有什么可以帮您？"
+            : agent.getWelcomeMessage().trim();
+        AiSpeechProvider provider = defaultRealtimeTtsProvider();
+        String voice = StringUtils.isBlank(provider.getDefaultVoice())
+            ? properties.getUnimrcp().getVoice()
+            : provider.getDefaultVoice();
+        return new UniMrcpOpeningPrompt(properties.getUnimrcp().getProfile(), voice, text);
+    }
+
+    public boolean isUniMrcpTransport() {
+        return "UNIMRCP".equalsIgnoreCase(properties.getRealtimeTransport());
+    }
+
+    public boolean isAudioStreamTransport() {
+        return !isUniMrcpTransport();
+    }
+
     private AiAgent requireAgent(Long agentId) {
         AiAgent agent = agentId == null ? null : agentMapper.selectOne(new LambdaQueryWrapper<AiAgent>()
             .eq(AiAgent::getId, agentId)
@@ -48,5 +70,19 @@ public class AiRealtimeDialplanService {
             throw new ServiceException("请选择已启用的 AI 助手");
         }
         return agent;
+    }
+
+    private AiSpeechProvider defaultRealtimeTtsProvider() {
+        try {
+            return speechProviderSelector.requireDefaultStreamingTts();
+        } catch (ServiceException exception) {
+            return speechProviderSelector.requireDefaultTts();
+        }
+    }
+
+    public record UniMrcpOpeningPrompt(String profile, String voice, String text) {
+        public boolean hasText() {
+            return StringUtils.isNotBlank(text);
+        }
     }
 }

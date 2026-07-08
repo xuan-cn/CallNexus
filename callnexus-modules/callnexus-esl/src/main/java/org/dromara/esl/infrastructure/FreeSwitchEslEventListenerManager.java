@@ -37,6 +37,7 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
 
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final EslEventDispatcher eventDispatcher;
+    private final FreeSwitchRuntimeReconciler runtimeReconciler;
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final Map<Long, Future<?>> listeners = new ConcurrentHashMap<>();
     private final Map<Long, Socket> sockets = new ConcurrentHashMap<>();
@@ -108,6 +109,7 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
                 requireAccepted(readFrame(input));
                 log.info("FreeSWITCH ESL event listener connected, nodeId={}, host={}, port={}",
                     node.getNodeId(), node.getEslHost(), node.getEslPort());
+                executor.submit(() -> runtimeReconciler.reconcileWithRetry(node.getNodeId()));
                 while (running && !socket.isClosed()) {
                     EslFrame frame = readFrame(input);
                     if (frame.headers().isEmpty() && frame.body().isEmpty()) {

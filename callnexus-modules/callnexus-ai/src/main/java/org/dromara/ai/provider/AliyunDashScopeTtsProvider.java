@@ -25,14 +25,14 @@ import java.util.Map;
 /**
  * 阿里云百炼 DashScope TTS 适配器。
  * <p>
- * 第一版默认使用 DashScope OpenAI 兼容语音接口，业务层仍然只依赖统一的 TTS Provider 抽象。
+ * 默认使用百炼 Workspace generation 接口，业务层仍然只依赖统一的 TTS Provider 抽象。
  */
 @Component
 @Slf4j
 public class AliyunDashScopeTtsProvider implements TtsProvider {
 
     private static final String TYPE = "ALIYUN_DASHSCOPE";
-    private static final String DEFAULT_ENDPOINT = "https://dashscope.aliyuncs.com/compatible-mode/v1/audio/speech";
+    private static final String DEFAULT_ENDPOINT_TEMPLATE = "https://{workspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
     private static final String DEFAULT_OPENAI_MODEL = "qwen-tts";
     private static final String DEFAULT_OPENAI_VOICE = "Cherry";
     private static final String DEFAULT_GENERATION_MODEL = "cosyvoice-v1";
@@ -212,7 +212,16 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
     }
 
     private String endpoint(AiSpeechProvider provider) {
-        return StringUtils.isBlank(provider.getEndpointUrl()) ? DEFAULT_ENDPOINT : provider.getEndpointUrl().trim();
+        Dict config = remarkConfig(provider);
+        String endpoint = StringUtils.isBlank(provider.getEndpointUrl()) ? DEFAULT_ENDPOINT_TEMPLATE : provider.getEndpointUrl().trim();
+        String workspaceId = firstText(config, List.of("workspaceId", "workspace_id"));
+        if (endpoint.contains("{workspaceId}") || endpoint.contains("{WorkspaceId}")) {
+            if (StringUtils.isBlank(workspaceId)) {
+                throw new ServiceException("阿里云百炼 TTS 地址包含 workspaceId 占位符，请在备注/扩展JSON中配置 workspaceId，或填写完整接口地址");
+            }
+            endpoint = endpoint.replace("{workspaceId}", workspaceId).replace("{WorkspaceId}", workspaceId);
+        }
+        return endpoint;
     }
 
     private boolean isOpenAiCompatibleEndpoint(String endpoint) {

@@ -10,6 +10,7 @@ import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
 import org.dromara.agent.service.AgentRealtimeQueryService;
 import org.dromara.agent.runtime.AgentQueueRuntimeStatus;
 import org.dromara.agent.service.CallQueueRuntimeSyncService;
+import org.dromara.ai.service.AiRealtimeMrcpEventService;
 import org.dromara.call.constant.EslEventNames;
 import org.dromara.call.constant.EslHeaders;
 import org.dromara.agent.domain.AgentActiveCall;
@@ -69,6 +70,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private final CallStateRuntimeService callStateRuntimeService;
     private final DispatchCallTaskService dispatchCallTaskService;
     private final QueueEventApplicationService queueEventApplicationService;
+    private final AiRealtimeMrcpEventService aiRealtimeMrcpEventService;
 
     @Override
     public void onEvent(TelephonyEvent event) {
@@ -115,6 +117,12 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
                     event.nodeId(), event.eventName(), event.uuid(), exception);
             }
             return;
+        }
+        try {
+            aiRealtimeMrcpEventService.handle(event.nodeId(), event.eventName(), event.uuid(), event.headers());
+        } catch (Exception exception) {
+            log.error("AI UniMRCP 实时语音事件处理失败，不影响通话主流程，nodeId={}，eventName={}，uuid={}，error={}",
+                event.nodeId(), event.eventName(), event.uuid(), exception.getMessage(), exception);
         }
         try {
             callRecordApplicationService.handleEvent(event);

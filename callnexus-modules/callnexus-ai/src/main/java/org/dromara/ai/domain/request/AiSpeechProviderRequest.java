@@ -13,9 +13,11 @@ public class AiSpeechProviderRequest {
     @NotBlank
     private String providerType;
     private Boolean ttsEnabled;
+    private Boolean streamingTtsEnabled;
     private Boolean recordingAsrEnabled;
     private Boolean streamingAsrEnabled;
     private Boolean defaultTts;
+    private Boolean defaultStreamingTts;
     private Boolean defaultRecordingAsr;
     private Boolean defaultStreamingAsr;
     private String endpointUrl;
@@ -27,6 +29,8 @@ public class AiSpeechProviderRequest {
     private String defaultFormat;
     private Integer defaultSampleRate;
     private Integer timeoutSeconds;
+    private String streamingTtsEndpointUrl;
+    private String streamingTtsOptionsJson;
     private String recordingAsrEndpointUrl;
     private String streamingAsrEndpointUrl;
     private String asrLanguage;
@@ -42,4 +46,3 @@ public class AiSpeechProviderRequest {
     private String remark;
     private Integer version;
 }
-

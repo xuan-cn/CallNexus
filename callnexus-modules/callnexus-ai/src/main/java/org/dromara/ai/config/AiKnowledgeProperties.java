@@ -21,4 +21,19 @@ public class AiKnowledgeProperties {
     private String realtimeTokenSecret;
     private Integer realtimeTokenTtlSeconds = 300;
     private Integer realtimeWorkerThreads = 8;
+    private String realtimeTransport = "UNIMRCP";
+    private UniMrcp unimrcp = new UniMrcp();
+
+    @Data
+    public static class UniMrcp {
+        private String speakCommandTemplate = "api uuid_broadcast {uuid} speak::{profile}|{voice}|{text} both";
+        private String recognizeCommandTemplate = "api uuid_broadcast {uuid} lua::{detectScript} aleg";
+        private String profile = "unimrcp";
+        private String voice = "default";
+        private String grammar = "{start-input-timers=true,no-input-timeout=15000}builtin:speech/transcribe transcribe";
+        private String detectScript = "/usr/share/freeswitch/scripts/callnexus_detect_speech.lua";
+        private Long speakCompleteDelayMs = 600L;
+        private Long recognizeRetryDelayMs = 500L;
+        private String resultHeaderCandidates = "variable_detect_speech_result,variable_speech_result,Detect-Speech-Result,Speech-Result";
+    }
 }

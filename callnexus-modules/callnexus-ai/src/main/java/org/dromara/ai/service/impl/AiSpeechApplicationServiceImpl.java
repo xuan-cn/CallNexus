@@ -73,6 +73,8 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     private final AiGeneratedMediaQueryService generatedMediaQueryService;
     private final TtsProviderRegistry providerRegistry;
     private final AsrProviderRegistry asrProviderRegistry;
+    private final StreamingAsrProviderRegistry streamingAsrProviderRegistry;
+    private final StreamingTtsProviderRegistry streamingTtsProviderRegistry;
     private final AiSpeechProviderSelector providerSelector;
     private final OssService ossService;
 
@@ -210,14 +212,14 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         try {
             TtsGenerateResult result = generateAudio(provider, text, voice, BUSINESS_AGENT_NUMBER_PROMPT,
                 Map.of("agentId", agentId, "extension", extension));
-            Long mediaId = storeGeneratedMedia("坐席工号提示音-" + extension, MediaAssetCategory.AGENT_PROMPT, text, provider, result, task.getId());
+            Long mediaId = storeGeneratedMedia("鍧愬腑宸ュ彿鎻愮ず闊?" + extension, MediaAssetCategory.AGENT_PROMPT, text, provider, result, task.getId());
             publish(mediaId, nodeGroupIds);
             task.setOutputMediaId(mediaId);
             task.setStatus(STATUS_SUCCESS);
             task.setFinishedAt(LocalDateTime.now());
             taskMapper.updateById(task);
             binding = upsertBinding(BUSINESS_AGENT_NUMBER_PROMPT, agentId, mediaId, task.getId(), STATUS_SUCCESS, null, textHash(text));
-            log.info("坐席工号提示音生成完成，agentId={}，extension={}，mediaId={}，taskId={}", agentId, extension, mediaId, task.getId());
+            log.info("鍧愬腑宸ュ彿鎻愮ず闊崇敓鎴愬畬鎴愶紝agentId={}锛宔xtension={}锛宮ediaId={}锛宼askId={}", agentId, extension, mediaId, task.getId());
             return bindingResponse(binding, null);
         } catch (Exception exception) {
             task.setStatus(STATUS_FAILED);
@@ -225,7 +227,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             task.setFinishedAt(LocalDateTime.now());
             taskMapper.updateById(task);
             binding = upsertBinding(BUSINESS_AGENT_NUMBER_PROMPT, agentId, currentMediaId, task.getId(), STATUS_FAILED, exception.getMessage(), textHash(text));
-            log.warn("坐席工号提示音生成失败，agentId={}，extension={}，taskId={}，error={}", agentId, extension, task.getId(), exception.getMessage());
+            log.warn("鍧愬腑宸ュ彿鎻愮ず闊崇敓鎴愬け璐ワ紝agentId={}锛宔xtension={}锛宼askId={}锛宔rror={}", agentId, extension, task.getId(), exception.getMessage());
             return bindingResponse(binding, null);
         }
     }
@@ -259,7 +261,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             throw new ServiceException("通话记录不存在");
         }
         if (source.getRecordingOssId() == null) {
-            throw new ServiceException("通话录音不存在，无法转写");
+            throw new ServiceException("閫氳瘽褰曢煶涓嶅瓨鍦紝鏃犳硶杞啓");
         }
         AiSpeechProvider provider = providerSelector.requireDefaultRecordingAsr();
         AiSpeechTask task = createAsrTask(source, provider);
@@ -412,11 +414,11 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         }
         try {
             byte[] trimmed = trimAudio(audioBytes, recordingFormat(source), trimStartMs);
-            log.info("通话录音 ASR 已跳过等待音片段，callSessionId={}，businessCallId={}，trimStartMs={}，originalBytes={}，trimmedBytes={}",
+            log.info("閫氳瘽褰曢煶 ASR 宸茶烦杩囩瓑寰呴煶鐗囨锛宑allSessionId={}锛宐usinessCallId={}锛宼rimStartMs={}锛宱riginalBytes={}锛宼rimmedBytes={}",
                 source.getId(), source.getBusinessCallId(), trimStartMs, audioBytes.length, trimmed.length);
             return new AudioClip(trimmed, trimStartMs);
         } catch (Exception exception) {
-            log.warn("通话录音 ASR 裁剪等待音失败，降级整段识别，callSessionId={}，businessCallId={}，trimStartMs={}，error={}",
+            log.warn("閫氳瘽褰曢煶 ASR 瑁佸壀绛夊緟闊冲け璐ワ紝闄嶇骇鏁存璇嗗埆锛宑allSessionId={}锛宐usinessCallId={}锛宼rimStartMs={}锛宔rror={}",
                 source.getId(), source.getBusinessCallId(), trimStartMs, exception.getMessage());
             return new AudioClip(audioBytes, 0);
         }
@@ -470,7 +472,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             byte[] processOutput = process.getInputStream().readAllBytes();
             int exitCode = process.waitFor();
             if (exitCode != 0) {
-                throw new IllegalStateException("ffmpeg 退出码=" + exitCode + "，输出=" + new String(processOutput, StandardCharsets.UTF_8));
+                throw new IllegalStateException("ffmpeg 閫€鍑虹爜=" + exitCode + "锛岃緭鍑?" + new String(processOutput, StandardCharsets.UTF_8));
             }
             byte[] trimmed = Files.readAllBytes(output);
             if (trimmed.length == 0) {
@@ -518,7 +520,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
                 .stream().map(FreeSwitchNodeGroup::getId).toList()
             : nodeGroupIds;
         if (groups.isEmpty()) {
-            throw new ServiceException("没有可用 FreeSWITCH 节点组，无法发布生成音频");
+            throw new ServiceException("娌℃湁鍙敤 FreeSWITCH 鑺傜偣缁勶紝鏃犳硶鍙戝竷鐢熸垚闊抽");
         }
         mediaPublicationService.publish(mediaId, groups);
     }
@@ -527,7 +529,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         if (templateId != null) {
             AiSpeechTemplate template = templateMapper.selectById(templateId);
             if (template == null || !BUSINESS_AGENT_NUMBER_PROMPT.equals(template.getBusinessType()) || !Boolean.TRUE.equals(template.getEnabled())) {
-                throw new ServiceException("坐席工号提示音模板不存在或未启用");
+                throw new ServiceException("鍧愬腑宸ュ彿鎻愮ず闊虫ā鏉夸笉瀛樺湪鎴栨湭鍚敤");
             }
             return template;
         }
@@ -627,12 +629,16 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         provider.setProviderName(request.getProviderName());
         provider.setProviderType(request.getProviderType().trim().toUpperCase());
         provider.setTtsEnabled(request.getTtsEnabled() == null ? (create || Boolean.TRUE.equals(provider.getTtsEnabled())) : request.getTtsEnabled());
+        provider.setStreamingTtsEnabled(request.getStreamingTtsEnabled() == null
+            ? (!create && Boolean.TRUE.equals(provider.getStreamingTtsEnabled())) : request.getStreamingTtsEnabled());
         provider.setRecordingAsrEnabled(request.getRecordingAsrEnabled() == null
             ? (!create && Boolean.TRUE.equals(provider.getRecordingAsrEnabled())) : request.getRecordingAsrEnabled());
         provider.setStreamingAsrEnabled(request.getStreamingAsrEnabled() == null
             ? (!create && Boolean.TRUE.equals(provider.getStreamingAsrEnabled())) : request.getStreamingAsrEnabled());
         provider.setDefaultTts(request.getDefaultTts() == null
             ? (!create && Boolean.TRUE.equals(provider.getDefaultTts())) : request.getDefaultTts());
+        provider.setDefaultStreamingTts(request.getDefaultStreamingTts() == null
+            ? (!create && Boolean.TRUE.equals(provider.getDefaultStreamingTts())) : request.getDefaultStreamingTts());
         provider.setDefaultRecordingAsr(request.getDefaultRecordingAsr() == null
             ? (!create && Boolean.TRUE.equals(provider.getDefaultRecordingAsr())) : request.getDefaultRecordingAsr());
         provider.setDefaultStreamingAsr(request.getDefaultStreamingAsr() == null
@@ -650,6 +656,8 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         provider.setDefaultFormat(StringUtils.isBlank(request.getDefaultFormat()) ? "wav" : request.getDefaultFormat());
         provider.setDefaultSampleRate(request.getDefaultSampleRate() == null ? 8000 : request.getDefaultSampleRate());
         provider.setTimeoutSeconds(request.getTimeoutSeconds() == null ? 30 : request.getTimeoutSeconds());
+        if (create || request.getStreamingTtsEndpointUrl() != null) provider.setStreamingTtsEndpointUrl(request.getStreamingTtsEndpointUrl());
+        if (create || request.getStreamingTtsOptionsJson() != null) provider.setStreamingTtsOptionsJson(request.getStreamingTtsOptionsJson());
         if (create || request.getRecordingAsrEndpointUrl() != null) provider.setRecordingAsrEndpointUrl(request.getRecordingAsrEndpointUrl());
         if (create || request.getStreamingAsrEndpointUrl() != null) provider.setStreamingAsrEndpointUrl(request.getStreamingAsrEndpointUrl());
         provider.setAsrLanguage(request.getAsrLanguage() == null
@@ -674,6 +682,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
 
     private void validateProvider(AiSpeechProvider provider) {
         if (!Boolean.TRUE.equals(provider.getTtsEnabled())
+            && !Boolean.TRUE.equals(provider.getStreamingTtsEnabled())
             && !Boolean.TRUE.equals(provider.getRecordingAsrEnabled())
             && !Boolean.TRUE.equals(provider.getStreamingAsrEnabled())) {
             throw new ServiceException("语音服务商至少需要启用一种能力");
@@ -684,21 +693,26 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         if (Boolean.TRUE.equals(provider.getDefaultTts()) && !Boolean.TRUE.equals(provider.getTtsEnabled())) {
             throw new ServiceException("默认 TTS 服务商必须启用 TTS 能力");
         }
+        if (Boolean.TRUE.equals(provider.getDefaultStreamingTts()) && !Boolean.TRUE.equals(provider.getStreamingTtsEnabled())) {
+            throw new ServiceException("默认实时 TTS 服务商必须启用实时 TTS 能力");
+        }
         if (Boolean.TRUE.equals(provider.getDefaultRecordingAsr()) && !Boolean.TRUE.equals(provider.getRecordingAsrEnabled())) {
             throw new ServiceException("默认录音 ASR 服务商必须启用录音 ASR 能力");
         }
         if (Boolean.TRUE.equals(provider.getDefaultStreamingAsr()) && !Boolean.TRUE.equals(provider.getStreamingAsrEnabled())) {
             throw new ServiceException("默认流式 ASR 服务商必须启用流式 ASR 能力");
         }
-        if ((Boolean.TRUE.equals(provider.getRecordingAsrEnabled()) || Boolean.TRUE.equals(provider.getStreamingAsrEnabled()))
-            && !"ALIYUN_NLS".equals(provider.getProviderType())) {
-            throw new ServiceException("第一版仅支持阿里云 NLS 的录音和流式 ASR 配置");
-        }
         if (Boolean.TRUE.equals(provider.getTtsEnabled())) {
             providerRegistry.get(provider.getProviderType());
         }
+        if (Boolean.TRUE.equals(provider.getStreamingTtsEnabled())) {
+            streamingTtsProviderRegistry.get(provider.getProviderType());
+        }
         if (Boolean.TRUE.equals(provider.getRecordingAsrEnabled())) {
             asrProviderRegistry.get(provider.getProviderType());
+        }
+        if (Boolean.TRUE.equals(provider.getStreamingAsrEnabled())) {
+            streamingAsrProviderRegistry.get(provider.getProviderType());
         }
         if (Boolean.TRUE.equals(provider.getTtsEnabled())
             && !"ALIYUN_NLS".equals(provider.getProviderType())
@@ -706,11 +720,14 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             throw new ServiceException("TTS 请求地址不能为空");
         }
     }
-
     private void validateDefaultMutation(AiSpeechProvider current, AiSpeechProviderRequest request) {
         boolean enabled = request.getEnabled() == null ? Boolean.TRUE.equals(current.getEnabled()) : request.getEnabled();
         boolean ttsEnabled = request.getTtsEnabled() == null ? Boolean.TRUE.equals(current.getTtsEnabled()) : request.getTtsEnabled();
         boolean defaultTts = request.getDefaultTts() == null ? Boolean.TRUE.equals(current.getDefaultTts()) : request.getDefaultTts();
+        boolean streamingTtsEnabled = request.getStreamingTtsEnabled() == null
+            ? Boolean.TRUE.equals(current.getStreamingTtsEnabled()) : request.getStreamingTtsEnabled();
+        boolean defaultStreamingTts = request.getDefaultStreamingTts() == null
+            ? Boolean.TRUE.equals(current.getDefaultStreamingTts()) : request.getDefaultStreamingTts();
         boolean recordingAsrEnabled = request.getRecordingAsrEnabled() == null
             ? Boolean.TRUE.equals(current.getRecordingAsrEnabled()) : request.getRecordingAsrEnabled();
         boolean defaultRecordingAsr = request.getDefaultRecordingAsr() == null
@@ -723,6 +740,10 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             && (!enabled || !ttsEnabled || !defaultTts)) {
             throw new ServiceException("当前服务商是默认 TTS，请先指定其他默认 TTS 服务商");
         }
+        if (Boolean.TRUE.equals(current.getDefaultStreamingTts())
+            && (!enabled || !streamingTtsEnabled || !defaultStreamingTts)) {
+            throw new ServiceException("当前服务商是默认实时 TTS，请先指定其他默认实时 TTS 服务商");
+        }
         if (Boolean.TRUE.equals(current.getDefaultRecordingAsr())
             && (!enabled || !recordingAsrEnabled || !defaultRecordingAsr)) {
             throw new ServiceException("当前服务商是默认录音 ASR，请先指定其他默认录音 ASR 服务商");
@@ -732,12 +753,17 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             throw new ServiceException("当前服务商是默认流式 ASR，请先指定其他默认流式 ASR 服务商");
         }
     }
-
     private void clearOtherDefaults(AiSpeechProvider provider, Long excludedId) {
         if (Boolean.TRUE.equals(provider.getDefaultTts())) {
             providerMapper.update(null, new LambdaUpdateWrapper<AiSpeechProvider>()
                 .set(AiSpeechProvider::getDefaultTts, false)
                 .eq(AiSpeechProvider::getDefaultTts, true)
+                .ne(excludedId != null, AiSpeechProvider::getId, excludedId));
+        }
+        if (Boolean.TRUE.equals(provider.getDefaultStreamingTts())) {
+            providerMapper.update(null, new LambdaUpdateWrapper<AiSpeechProvider>()
+                .set(AiSpeechProvider::getDefaultStreamingTts, false)
+                .eq(AiSpeechProvider::getDefaultStreamingTts, true)
                 .ne(excludedId != null, AiSpeechProvider::getId, excludedId));
         }
         if (Boolean.TRUE.equals(provider.getDefaultRecordingAsr())) {
@@ -756,10 +782,10 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
 
     private boolean isAnyDefault(AiSpeechProvider provider) {
         return Boolean.TRUE.equals(provider.getDefaultTts())
+            || Boolean.TRUE.equals(provider.getDefaultStreamingTts())
             || Boolean.TRUE.equals(provider.getDefaultRecordingAsr())
             || Boolean.TRUE.equals(provider.getDefaultStreamingAsr());
     }
-
     private AiSpeechProvider requireEnabledRecordingAsrProvider(Long id) {
         AiSpeechProvider provider = requireProvider(id);
         if (!Boolean.TRUE.equals(provider.getEnabled())) {
@@ -774,10 +800,10 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
 
     private void validateAsrTestFile(MultipartFile file) {
         if (file == null || file.isEmpty()) {
-            throw new ServiceException("ASR 测试音频不能为空");
+            throw new ServiceException("ASR 娴嬭瘯闊抽涓嶈兘涓虹┖");
         }
         if (file.getSize() > 20L * 1024 * 1024) {
-            throw new ServiceException("ASR 测试音频不能超过 20MB");
+            throw new ServiceException("ASR 娴嬭瘯闊抽涓嶈兘瓒呰繃 20MB");
         }
     }
 
@@ -812,20 +838,20 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
 
     private void taskSanity(String text) {
         if (StringUtils.isBlank(text)) {
-            throw new ServiceException("TTS 文本不能为空");
+            throw new ServiceException("TTS 鏂囨湰涓嶈兘涓虹┖");
         }
     }
 
     private AiSpeechProvider requireProvider(Long id) {
         AiSpeechProvider provider = providerMapper.selectById(id);
-        if (provider == null) throw new ServiceException("语音服务商不存在");
+        if (provider == null) throw new ServiceException("璇煶鏈嶅姟鍟嗕笉瀛樺湪");
         return provider;
     }
 
     private AiSpeechProvider requireEnabledTtsProvider(Long id) {
         AiSpeechProvider provider = requireProvider(id);
-        if (!Boolean.TRUE.equals(provider.getEnabled())) throw new ServiceException("语音服务商未启用");
-        if (!Boolean.TRUE.equals(provider.getTtsEnabled())) throw new ServiceException("语音服务商未启用 TTS 能力");
+        if (!Boolean.TRUE.equals(provider.getEnabled())) throw new ServiceException("璇煶鏈嶅姟鍟嗘湭鍚敤");
+        if (!Boolean.TRUE.equals(provider.getTtsEnabled())) throw new ServiceException("璇煶鏈嶅姟鍟嗘湭鍚敤 TTS 鑳藉姏");
         return provider;
     }
 
@@ -839,7 +865,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         boolean exists = providerMapper.exists(new LambdaQueryWrapper<AiSpeechProvider>()
             .eq(AiSpeechProvider::getProviderCode, code)
             .ne(excludedId != null, AiSpeechProvider::getId, excludedId));
-        if (exists) throw new ServiceException("语音服务商编码已存在");
+        if (exists) throw new ServiceException("璇煶鏈嶅姟鍟嗙紪鐮佸凡瀛樺湪");
     }
 
     private void ensureTemplateCodeUnique(String code, Long excludedId) {
@@ -865,9 +891,11 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         response.setProviderName(provider.getProviderName());
         response.setProviderType(provider.getProviderType());
         response.setTtsEnabled(provider.getTtsEnabled());
+        response.setStreamingTtsEnabled(provider.getStreamingTtsEnabled());
         response.setRecordingAsrEnabled(provider.getRecordingAsrEnabled());
         response.setStreamingAsrEnabled(provider.getStreamingAsrEnabled());
         response.setDefaultTts(provider.getDefaultTts());
+        response.setDefaultStreamingTts(provider.getDefaultStreamingTts());
         response.setDefaultRecordingAsr(provider.getDefaultRecordingAsr());
         response.setDefaultStreamingAsr(provider.getDefaultStreamingAsr());
         response.setEndpointUrl(provider.getEndpointUrl());
@@ -879,6 +907,8 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         response.setDefaultFormat(provider.getDefaultFormat());
         response.setDefaultSampleRate(provider.getDefaultSampleRate());
         response.setTimeoutSeconds(provider.getTimeoutSeconds());
+        response.setStreamingTtsEndpointUrl(provider.getStreamingTtsEndpointUrl());
+        response.setStreamingTtsOptionsJson(provider.getStreamingTtsOptionsJson());
         response.setRecordingAsrEndpointUrl(provider.getRecordingAsrEndpointUrl());
         response.setStreamingAsrEndpointUrl(provider.getStreamingAsrEndpointUrl());
         response.setAsrLanguage(provider.getAsrLanguage());
@@ -983,3 +1013,6 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         return response;
     }
 }
+
+
+
