@@ -45,7 +45,9 @@ public class UndertowConfig implements WebServerFactoryCustomizer<UndertowServle
         factory.addDeploymentInfoCustomizers(deploymentInfo -> {
             // 配置 WebSocket 部署信息，设置 WebSocket 使用的缓冲区池
             WebSocketDeploymentInfo webSocketDeploymentInfo = new WebSocketDeploymentInfo();
-            webSocketDeploymentInfo.setBuffers(new DefaultByteBufferPool(true, 1024));
+            // buffer 大小调至 16384：原 1024 太小，WS 126 分支帧（长度 126-65535）跨 buffer 时
+            // Undertow 内部指针容易错位，表现为 rsv of 3 / UT002003 non UTF-8 / JSON 截断等。
+            webSocketDeploymentInfo.setBuffers(new DefaultByteBufferPool(true, 16384));
             deploymentInfo.addServletContextAttribute("io.undertow.websockets.jsr.WebSocketDeploymentInfo", webSocketDeploymentInfo);
 
             // 如果启用了虚拟线程，配置 Undertow 使用虚拟线程池

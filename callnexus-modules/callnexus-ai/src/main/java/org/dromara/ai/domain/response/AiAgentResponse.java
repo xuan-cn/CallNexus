@@ -14,6 +14,8 @@ public class AiAgentResponse {
     private String chatModelName;
     private String systemPrompt;
     private String welcomeMessage;
+    private String voiceTransport;
+    private String voiceTransportWsUrl;
     private String retrievalMode;
     private String retrievalFailurePolicy;
     private Integer topK;

@@ -156,7 +156,7 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         if (messages.isEmpty()) return List.of();
         List<Long> ids = messages.stream().map(AiMessage::getId).toList();
         Map<Long, List<AiMessageCitation>> citations = citationMapper.selectList(new LambdaQueryWrapper<AiMessageCitation>()
-                .in(AiMessageCitation::getMessageId, ids)).stream().collect(Collectors.groupingBy(AiMessageCitation::getMessageId));
+            .in(AiMessageCitation::getMessageId, ids)).stream().collect(Collectors.groupingBy(AiMessageCitation::getMessageId));
         return messages.stream().map(item -> messageResponse(item, citations.getOrDefault(item.getId(), List.of()))).toList();
     }
 
@@ -304,7 +304,8 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         Optional<Hit> exact = exactFaq(bindings, normalized);
         if (exact.isPresent()) {
             Hit hit = exact.get();
-            if (directRetrieval || "DIRECT".equals(hit.answerMode())) return new Retrieval("FAQ_EXACT", hit.content(), List.of(hit), false);
+            if (directRetrieval || "DIRECT".equals(hit.answerMode()))
+                return new Retrieval("FAQ_EXACT", hit.content(), List.of(hit), false);
             return new Retrieval("FAQ_EXACT", null, List.of(hit), false);
         }
         if (bindings.isEmpty()) return noKnowledge(agent, null, null);
@@ -332,7 +333,8 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
             .sorted(hitComparator(bindings)).findFirst();
         if (faq.isPresent()) {
             Hit hit = faq.get();
-            if (directRetrieval || "DIRECT".equals(hit.answerMode())) return new Retrieval("FAQ_SEMANTIC", hit.content(), List.of(hit), false, bestFaqScore, null);
+            if (directRetrieval || "DIRECT".equals(hit.answerMode()))
+                return new Retrieval("FAQ_SEMANTIC", hit.content(), List.of(hit), false, bestFaqScore, null);
             return new Retrieval("FAQ_SEMANTIC", null, List.of(hit), false, bestFaqScore, null);
         }
         List<VectorSearchHit> docs = vectorStore.search(collection, embedding.vectors().get(0),
@@ -368,14 +370,16 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
             Map<Long, AiKnowledgeFaq> byVersion = faqs.stream().collect(Collectors.toMap(AiKnowledgeFaq::getCurrentVersionId, item -> item));
             List<AiKnowledgeFaqVersion> versions = faqVersionMapper.selectBatchIds(byVersion.keySet());
             for (AiKnowledgeFaqVersion version : versions) {
-                if (normalized.equals(version.getNormalizedQuestion())) return Optional.of(faqHit(binding.base(), byVersion.get(version.getId()), version, 1D));
+                if (normalized.equals(version.getNormalizedQuestion()))
+                    return Optional.of(faqHit(binding.base(), byVersion.get(version.getId()), version, 1D));
             }
             List<AiKnowledgeFaqAlias> aliases = faqAliasMapper.selectList(new LambdaQueryWrapper<AiKnowledgeFaqAlias>()
                 .in(AiKnowledgeFaqAlias::getFaqVersionId, byVersion.keySet()).eq(AiKnowledgeFaqAlias::getNormalizedQuestion, normalized)
                 .eq(AiKnowledgeFaqAlias::getIndexState, "ACTIVE").orderByAsc(AiKnowledgeFaqAlias::getFaqId));
             if (!aliases.isEmpty()) {
                 AiKnowledgeFaqVersion version = versions.stream().filter(item -> Objects.equals(item.getId(), aliases.get(0).getFaqVersionId())).findFirst().orElse(null);
-                if (version != null) return Optional.of(faqHit(binding.base(), byVersion.get(version.getId()), version, 1D));
+                if (version != null)
+                    return Optional.of(faqHit(binding.base(), byVersion.get(version.getId()), version, 1D));
             }
         }
         return Optional.empty();
@@ -408,48 +412,85 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
     private AiConversation prepareConversation(AiAgent agent, Long userId, AiChatRequest request) {
         if (request.getConversationId() != null) {
             AiConversation value = requireOwnedConversation(request.getConversationId(), userId);
-            if (!Objects.equals(value.getAgentId(), agent.getId())) throw new ServiceException("对话与当前 AI 助手不匹配");
+            if (!Objects.equals(value.getAgentId(), agent.getId()))
+                throw new ServiceException("对话与当前 AI 助手不匹配");
             if (!"ACTIVE".equals(value.getStatus())) throw new ServiceException("对话已归档");
-            value.setLastMessageAt(LocalDateTime.now()); conversationMapper.updateById(value); return value;
+            value.setLastMessageAt(LocalDateTime.now());
+            conversationMapper.updateById(value);
+            return value;
         }
-        AiConversation value = new AiConversation(); value.setAgentId(agent.getId()); value.setUserId(userId);
+        AiConversation value = new AiConversation();
+        value.setAgentId(agent.getId());
+        value.setUserId(userId);
         value.setTitle(request.getMessage().trim().substring(0, Math.min(50, request.getMessage().trim().length())));
-        value.setStatus("ACTIVE"); value.setLastMessageAt(LocalDateTime.now()); conversationMapper.insert(value); return value;
+        value.setStatus("ACTIVE");
+        value.setLastMessageAt(LocalDateTime.now());
+        conversationMapper.insert(value);
+        return value;
     }
 
     private AiMessage saveMessage(AiConversation conversation, AiAgent agent, String role, String content,
                                   String sourceType, String status, String requestId) {
-        AiMessage message = new AiMessage(); message.setConversationId(conversation.getId()); message.setAgentId(agent.getId());
-        message.setRole(role); message.setContent(content); message.setSourceType(sourceType); message.setStatus(status); message.setRequestId(requestId);
-        messageMapper.insert(message); return message;
+        AiMessage message = new AiMessage();
+        message.setConversationId(conversation.getId());
+        message.setAgentId(agent.getId());
+        message.setRole(role);
+        message.setContent(content);
+        message.setSourceType(sourceType);
+        message.setStatus(status);
+        message.setRequestId(requestId);
+        messageMapper.insert(message);
+        return message;
     }
 
     private void completeMessage(AiMessage message, String content, String sourceType) {
-        message.setContent(content); message.setSourceType(sourceType); message.setStatus("COMPLETED"); message.setFailureReason(null);
+        message.setContent(content);
+        message.setSourceType(sourceType);
+        message.setStatus("COMPLETED");
+        message.setFailureReason(null);
         messageMapper.updateById(message);
     }
 
     private void persistCitations(Long messageId, List<Hit> hits) {
         for (Hit hit : hits) {
-            AiMessageCitation citation = new AiMessageCitation(); citation.setMessageId(messageId); citation.setSourceType(hit.sourceType());
-            citation.setKnowledgeBaseId(hit.knowledgeBaseId()); citation.setDocumentId(hit.documentId()); citation.setDocumentVersionId(hit.documentVersionId());
-            citation.setChunkId(hit.chunkId()); citation.setFaqId(hit.faqId()); citation.setFaqVersionId(hit.faqVersionId());
-            citation.setSourceName(hit.title()); citation.setSourceLocation(hit.location()); citation.setQuotedContent(limitContent(hit.content()));
-            citation.setScore(BigDecimal.valueOf(hit.score())); citationMapper.insert(citation);
+            AiMessageCitation citation = new AiMessageCitation();
+            citation.setMessageId(messageId);
+            citation.setSourceType(hit.sourceType());
+            citation.setKnowledgeBaseId(hit.knowledgeBaseId());
+            citation.setDocumentId(hit.documentId());
+            citation.setDocumentVersionId(hit.documentVersionId());
+            citation.setChunkId(hit.chunkId());
+            citation.setFaqId(hit.faqId());
+            citation.setFaqVersionId(hit.faqVersionId());
+            citation.setSourceName(hit.title());
+            citation.setSourceLocation(hit.location());
+            citation.setQuotedContent(limitContent(hit.content()));
+            citation.setScore(BigDecimal.valueOf(hit.score()));
+            citationMapper.insert(citation);
         }
     }
 
     private void persistUsage(Long conversationId, Long messageId, AiModelProvider provider, AiModel model,
                               ChatResult result, long elapsed, String status, String error) {
-        AiModelUsage usage = new AiModelUsage(); usage.setConversationId(conversationId); usage.setMessageId(messageId);
-        usage.setProviderId(provider.getId()); usage.setModelId(model.getId()); usage.setCapability("CHAT"); usage.setRequestId(UUID.randomUUID().toString());
-        usage.setInputTokens(result.inputTokens()); usage.setOutputTokens(result.outputTokens()); usage.setElapsedMs(elapsed); usage.setStatus(status); usage.setErrorMessage(error);
+        AiModelUsage usage = new AiModelUsage();
+        usage.setConversationId(conversationId);
+        usage.setMessageId(messageId);
+        usage.setProviderId(provider.getId());
+        usage.setModelId(model.getId());
+        usage.setCapability("CHAT");
+        usage.setRequestId(UUID.randomUUID().toString());
+        usage.setInputTokens(result.inputTokens());
+        usage.setOutputTokens(result.outputTokens());
+        usage.setElapsedMs(elapsed);
+        usage.setStatus(status);
+        usage.setErrorMessage(error);
         usageMapper.insert(usage);
     }
 
     private void emitCitations(BiConsumer<String, Object> consumer, List<Hit> hits) {
-        for (Hit hit : hits) consumer.accept("citation", Map.of("sourceType", hit.sourceType(), "sourceName", hit.title(),
-            "location", nullToEmpty(hit.location()), "content", limitContent(hit.content()), "score", hit.score()));
+        for (Hit hit : hits)
+            consumer.accept("citation", Map.of("sourceType", hit.sourceType(), "sourceName", hit.title(),
+                "location", nullToEmpty(hit.location()), "content", limitContent(hit.content()), "score", hit.score()));
     }
 
     private List<Binding> bindings(Long agentId) {
@@ -460,7 +501,8 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         for (AiAgentKnowledgeBase value : values) {
             AiKnowledgeBase base = baseMapper.selectById(value.getKnowledgeBaseId());
             if (base != null && Boolean.TRUE.equals(base.getEnabled()) && StringUtils.isNotBlank(base.getCollectionName())
-                && Set.of("READY", "PARTIAL", "INDEXING").contains(base.getStatus())) result.add(new Binding(value, base));
+                && Set.of("READY", "PARTIAL", "INDEXING").contains(base.getStatus()))
+                result.add(new Binding(value, base));
         }
         return result;
     }
@@ -474,22 +516,38 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         Long embedding = null;
         for (Long id : ids) {
             AiKnowledgeBase base = baseMapper.selectById(id);
-            if (base == null || !Boolean.TRUE.equals(base.getEnabled())) throw new ServiceException("绑定的知识库不存在或已停用：" + id);
+            if (base == null || !Boolean.TRUE.equals(base.getEnabled()))
+                throw new ServiceException("绑定的知识库不存在或已停用：" + id);
             if (embedding == null) embedding = base.getEmbeddingModelId();
-            else if (!Objects.equals(embedding, base.getEmbeddingModelId())) throw new ServiceException("同一 AI 助手绑定的知识库必须使用相同向量模型");
+            else if (!Objects.equals(embedding, base.getEmbeddingModelId()))
+                throw new ServiceException("同一 AI 助手绑定的知识库必须使用相同向量模型");
         }
     }
 
     private void fill(AiAgent item, AiAgentRequest request) {
-        item.setAgentCode(request.getAgentCode().trim().toUpperCase(Locale.ROOT)); item.setAgentName(request.getAgentName().trim());
-        item.setDescription(request.getDescription()); item.setChatModelId(request.getChatModelId()); item.setSystemPrompt(request.getSystemPrompt());
+        item.setAgentCode(request.getAgentCode().trim().toUpperCase(Locale.ROOT));
+        item.setAgentName(request.getAgentName().trim());
+        item.setDescription(request.getDescription());
+        item.setChatModelId(request.getChatModelId());
+        item.setSystemPrompt(request.getSystemPrompt());
         item.setWelcomeMessage(request.getWelcomeMessage());
+        String voiceTransport = defaultValue(request.getVoiceTransport(), "HTTP");
+        if (!Set.of("HTTP", "WS").contains(voiceTransport)) {
+            throw new ServiceException("未知的语音传输模式");
+        }
+        item.setVoiceTransport(voiceTransport);
+        String wsUrl = request.getVoiceTransportWsUrl() == null ? null : request.getVoiceTransportWsUrl().trim();
+        if (StringUtils.isNotBlank(wsUrl) && !(wsUrl.startsWith("ws://") || wsUrl.startsWith("wss://"))) {
+            throw new ServiceException("WS 端点地址必须以 ws:// 或 wss:// 开头");
+        }
+        item.setVoiceTransportWsUrl(StringUtils.isBlank(wsUrl) ? null : wsUrl);
         item.setRetrievalMode(defaultValue(request.getRetrievalMode(), "RAG").trim().toUpperCase(Locale.ROOT));
         if (!Set.of("RAG", "DIRECT_RETRIEVAL").contains(item.getRetrievalMode())) {
             throw new ServiceException("未知的知识库回答模式");
         }
         item.setRetrievalFailurePolicy(defaultValue(request.getRetrievalFailurePolicy(), "STRICT"));
-        if (!Set.of("STRICT", "FALLBACK_MODEL").contains(item.getRetrievalFailurePolicy())) throw new ServiceException("未知的知识未命中处理策略");
+        if (!Set.of("STRICT", "FALLBACK_MODEL").contains(item.getRetrievalFailurePolicy()))
+            throw new ServiceException("未知的知识未命中处理策略");
         item.setTopK(request.getTopK() == null ? 5 : request.getTopK());
         item.setScoreThreshold(request.getScoreThreshold() == null ? new BigDecimal("0.50") : request.getScoreThreshold());
         item.setFaqScoreThreshold(request.getFaqScoreThreshold() == null ? new BigDecimal("0.80") : request.getFaqScoreThreshold());
@@ -510,28 +568,50 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
     private void saveBindings(Long agentId, List<Long> ids) {
         int priority = 1;
         for (Long id : distinctIds(ids)) {
-            AiAgentKnowledgeBase value = new AiAgentKnowledgeBase(); value.setAgentId(agentId); value.setKnowledgeBaseId(id);
-            value.setPriority(priority++); value.setEnabled(true); bindingMapper.insert(value);
+            AiAgentKnowledgeBase value = new AiAgentKnowledgeBase();
+            value.setAgentId(agentId);
+            value.setKnowledgeBaseId(id);
+            value.setPriority(priority++);
+            value.setEnabled(true);
+            bindingMapper.insert(value);
         }
     }
 
     private AiAgentResponse response(AiAgent item, String modelName) {
-        AiAgentResponse value = new AiAgentResponse(); value.setId(item.getId()); value.setAgentCode(item.getAgentCode()); value.setAgentName(item.getAgentName());
-        value.setDescription(item.getDescription()); value.setChatModelId(item.getChatModelId()); value.setChatModelName(modelName); value.setSystemPrompt(item.getSystemPrompt());
+        AiAgentResponse value = new AiAgentResponse();
+        value.setId(item.getId());
+        value.setAgentCode(item.getAgentCode());
+        value.setAgentName(item.getAgentName());
+        value.setDescription(item.getDescription());
+        value.setChatModelId(item.getChatModelId());
+        value.setChatModelName(modelName);
+        value.setSystemPrompt(item.getSystemPrompt());
         value.setWelcomeMessage(item.getWelcomeMessage());
-        value.setRetrievalMode(item.getRetrievalMode()); value.setRetrievalFailurePolicy(item.getRetrievalFailurePolicy()); value.setTopK(item.getTopK());
-        value.setScoreThreshold(item.getScoreThreshold()); value.setFaqScoreThreshold(item.getFaqScoreThreshold()); value.setTemperature(item.getTemperature());
-        value.setMaxOutputTokens(item.getMaxOutputTokens()); value.setHistoryMessageLimit(item.getHistoryMessageLimit());
-        value.setSystemAssistant(item.getSystemAssistant()); value.setEnabled(item.getEnabled()); value.setVersion(item.getVersion());
-        List<Binding> bindings = bindingsAll(item.getId()); value.setKnowledgeBaseIds(bindings.stream().map(it -> it.base().getId()).toList());
-        value.setKnowledgeBaseNames(bindings.stream().map(it -> it.base().getKnowledgeName()).toList()); return value;
+        value.setVoiceTransport(item.getVoiceTransport());
+        value.setVoiceTransportWsUrl(item.getVoiceTransportWsUrl());
+        value.setRetrievalMode(item.getRetrievalMode());
+        value.setRetrievalFailurePolicy(item.getRetrievalFailurePolicy());
+        value.setTopK(item.getTopK());
+        value.setScoreThreshold(item.getScoreThreshold());
+        value.setFaqScoreThreshold(item.getFaqScoreThreshold());
+        value.setTemperature(item.getTemperature());
+        value.setMaxOutputTokens(item.getMaxOutputTokens());
+        value.setHistoryMessageLimit(item.getHistoryMessageLimit());
+        value.setSystemAssistant(item.getSystemAssistant());
+        value.setEnabled(item.getEnabled());
+        value.setVersion(item.getVersion());
+        List<Binding> bindings = bindingsAll(item.getId());
+        value.setKnowledgeBaseIds(bindings.stream().map(it -> it.base().getId()).toList());
+        value.setKnowledgeBaseNames(bindings.stream().map(it -> it.base().getKnowledgeName()).toList());
+        return value;
     }
 
     private List<Binding> bindingsAll(Long agentId) {
         List<Binding> result = new ArrayList<>();
         for (AiAgentKnowledgeBase binding : bindingMapper.selectList(new LambdaQueryWrapper<AiAgentKnowledgeBase>()
             .eq(AiAgentKnowledgeBase::getAgentId, agentId).orderByAsc(AiAgentKnowledgeBase::getPriority))) {
-            AiKnowledgeBase base = baseMapper.selectById(binding.getKnowledgeBaseId()); if (base != null) result.add(new Binding(binding, base));
+            AiKnowledgeBase base = baseMapper.selectById(binding.getKnowledgeBaseId());
+            if (base != null) result.add(new Binding(binding, base));
         }
         return result;
     }
@@ -543,7 +623,8 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
     }
 
     private Hit hit(VectorSearchHit value) {
-        Map<String, Object> p = value.payload(); String type = String.valueOf(p.get("sourceType"));
+        Map<String, Object> p = value.payload();
+        String type = String.valueOf(p.get("sourceType"));
         return new Hit(type, longValue(p.get("knowledgeBaseId")), longValue(p.get("documentId")), longValue(p.get("documentVersionId")),
             longValue(p.get("chunkId")), longValue(p.get("faqId")), longValue(p.get("faqVersionId")),
             text(p.getOrDefault("title", p.getOrDefault("question", "知识来源"))), text(p.get("location")),
@@ -555,29 +636,135 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
             version.getStandardAnswer(), faq.getAnswerMode(), score);
     }
 
-    private AiAgent requireAgent(Long id) { AiAgent value = agentMapper.selectById(id); if (value == null) throw new ServiceException("AI 助手不存在"); return value; }
-    private AiAgent requireEnabledAgent(Long id) { AiAgent value = requireAgent(id); if (!Boolean.TRUE.equals(value.getEnabled())) throw new ServiceException("AI 助手已停用"); return value; }
-    private AiModel requireModel(Long id, String capability) { AiModel value = modelMapper.selectById(id); if (value == null || !capability.equals(value.getCapability()) || !Boolean.TRUE.equals(value.getEnabled())) throw new ServiceException(capability + " 模型不存在或未启用"); return value; }
-    private AiModelProvider requireProvider(Long id) { AiModelProvider value = providerMapper.selectById(id); if (value == null || !Boolean.TRUE.equals(value.getEnabled())) throw new ServiceException("模型服务商不存在或未启用"); return value; }
-    private AiConversation requireOwnedConversation(Long id) { return requireOwnedConversation(id, LoginHelper.getUserId()); }
-    private AiConversation requireOwnedConversation(Long id, Long userId) { AiConversation value = conversationMapper.selectById(id); if (value == null || !Objects.equals(value.getUserId(), userId)) throw new ServiceException("对话不存在或无权访问"); return value; }
-    private void ensureCode(String code, Long exclude) { if (agentMapper.selectCount(new LambdaQueryWrapper<AiAgent>().eq(AiAgent::getAgentCode, code.trim().toUpperCase(Locale.ROOT)).ne(exclude != null, AiAgent::getId, exclude)) > 0) throw new ServiceException("AI 助手编码已存在"); }
-    private List<Long> distinctIds(List<Long> ids) { return ids == null ? List.of() : ids.stream().filter(Objects::nonNull).distinct().toList(); }
-    private String defaultValue(String value, String fallback) { return StringUtils.isBlank(value) ? fallback : value.trim().toUpperCase(Locale.ROOT); }
-    private Long longValue(Object value) { if (value == null) return null; if (value instanceof Number number) return number.longValue(); try { return Long.valueOf(value.toString()); } catch (Exception e) { return null; } }
-    private String text(Object value) { return value == null ? "" : value.toString(); }
-    private String nullToEmpty(String value) { return value == null ? "" : value; }
-    private String limit(String value) { if (value == null) return "未知错误"; return value.length() > 1000 ? value.substring(0, 1000) : value; }
-    private String limitContent(String value) { if (value == null) return ""; return value.length() > 2000 ? value.substring(0, 2000) : value; }
-    private String userError(Exception e) { return e instanceof ServiceException ? e.getMessage() : "AI 对话处理失败：" + e.getMessage(); }
+    private AiAgent requireAgent(Long id) {
+        AiAgent value = agentMapper.selectById(id);
+        if (value == null) throw new ServiceException("AI 助手不存在");
+        return value;
+    }
 
-    private AiConversationResponse conversationResponse(AiConversation item, String agentName) { AiConversationResponse value = new AiConversationResponse(); value.setId(item.getId()); value.setAgentId(item.getAgentId()); value.setAgentName(agentName); value.setTitle(item.getTitle()); value.setStatus(item.getStatus()); value.setLastMessageAt(item.getLastMessageAt()); return value; }
-    private AiMessageResponse messageResponse(AiMessage item, List<AiMessageCitation> citations) { AiMessageResponse value = new AiMessageResponse(); value.setId(item.getId()); value.setConversationId(item.getConversationId()); value.setRole(item.getRole()); value.setContent(item.getContent()); value.setSourceType(item.getSourceType()); value.setStatus(item.getStatus()); value.setFailureReason(item.getFailureReason()); value.setCreateTime(item.getCreateTime()); value.setCitations(citations.stream().map(this::citationResponse).toList()); return value; }
-    private AiCitationResponse citationResponse(AiMessageCitation item) { AiCitationResponse value = new AiCitationResponse(); value.setId(item.getId()); value.setSourceType(item.getSourceType()); value.setKnowledgeBaseId(item.getKnowledgeBaseId()); value.setDocumentId(item.getDocumentId()); value.setFaqId(item.getFaqId()); value.setSourceName(item.getSourceName()); value.setSourceLocation(item.getSourceLocation()); value.setQuotedContent(item.getQuotedContent()); value.setScore(item.getScore()); return value; }
+    private AiAgent requireEnabledAgent(Long id) {
+        AiAgent value = requireAgent(id);
+        if (!Boolean.TRUE.equals(value.getEnabled())) throw new ServiceException("AI 助手已停用");
+        return value;
+    }
 
-    private record Binding(AiAgentKnowledgeBase binding, AiKnowledgeBase base) {}
+    private AiModel requireModel(Long id, String capability) {
+        AiModel value = modelMapper.selectById(id);
+        if (value == null || !capability.equals(value.getCapability()) || !Boolean.TRUE.equals(value.getEnabled()))
+            throw new ServiceException(capability + " 模型不存在或未启用");
+        return value;
+    }
+
+    private AiModelProvider requireProvider(Long id) {
+        AiModelProvider value = providerMapper.selectById(id);
+        if (value == null || !Boolean.TRUE.equals(value.getEnabled()))
+            throw new ServiceException("模型服务商不存在或未启用");
+        return value;
+    }
+
+    private AiConversation requireOwnedConversation(Long id) {
+        return requireOwnedConversation(id, LoginHelper.getUserId());
+    }
+
+    private AiConversation requireOwnedConversation(Long id, Long userId) {
+        AiConversation value = conversationMapper.selectById(id);
+        if (value == null || !Objects.equals(value.getUserId(), userId))
+            throw new ServiceException("对话不存在或无权访问");
+        return value;
+    }
+
+    private void ensureCode(String code, Long exclude) {
+        if (agentMapper.selectCount(new LambdaQueryWrapper<AiAgent>().eq(AiAgent::getAgentCode, code.trim().toUpperCase(Locale.ROOT)).ne(exclude != null, AiAgent::getId, exclude)) > 0)
+            throw new ServiceException("AI 助手编码已存在");
+    }
+
+    private List<Long> distinctIds(List<Long> ids) {
+        return ids == null ? List.of() : ids.stream().filter(Objects::nonNull).distinct().toList();
+    }
+
+    private String defaultValue(String value, String fallback) {
+        return StringUtils.isBlank(value) ? fallback : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private Long longValue(Object value) {
+        if (value == null) return null;
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return Long.valueOf(value.toString());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String text(Object value) {
+        return value == null ? "" : value.toString();
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    private String limit(String value) {
+        if (value == null) return "未知错误";
+        return value.length() > 1000 ? value.substring(0, 1000) : value;
+    }
+
+    private String limitContent(String value) {
+        if (value == null) return "";
+        return value.length() > 2000 ? value.substring(0, 2000) : value;
+    }
+
+    private String userError(Exception e) {
+        return e instanceof ServiceException ? e.getMessage() : "AI 对话处理失败：" + e.getMessage();
+    }
+
+    private AiConversationResponse conversationResponse(AiConversation item, String agentName) {
+        AiConversationResponse value = new AiConversationResponse();
+        value.setId(item.getId());
+        value.setAgentId(item.getAgentId());
+        value.setAgentName(agentName);
+        value.setTitle(item.getTitle());
+        value.setStatus(item.getStatus());
+        value.setLastMessageAt(item.getLastMessageAt());
+        return value;
+    }
+
+    private AiMessageResponse messageResponse(AiMessage item, List<AiMessageCitation> citations) {
+        AiMessageResponse value = new AiMessageResponse();
+        value.setId(item.getId());
+        value.setConversationId(item.getConversationId());
+        value.setRole(item.getRole());
+        value.setContent(item.getContent());
+        value.setSourceType(item.getSourceType());
+        value.setStatus(item.getStatus());
+        value.setFailureReason(item.getFailureReason());
+        value.setCreateTime(item.getCreateTime());
+        value.setCitations(citations.stream().map(this::citationResponse).toList());
+        return value;
+    }
+
+    private AiCitationResponse citationResponse(AiMessageCitation item) {
+        AiCitationResponse value = new AiCitationResponse();
+        value.setId(item.getId());
+        value.setSourceType(item.getSourceType());
+        value.setKnowledgeBaseId(item.getKnowledgeBaseId());
+        value.setDocumentId(item.getDocumentId());
+        value.setFaqId(item.getFaqId());
+        value.setSourceName(item.getSourceName());
+        value.setSourceLocation(item.getSourceLocation());
+        value.setQuotedContent(item.getQuotedContent());
+        value.setScore(item.getScore());
+        return value;
+    }
+
+    private record Binding(AiAgentKnowledgeBase binding, AiKnowledgeBase base) {
+    }
+
     private record Hit(String sourceType, Long knowledgeBaseId, Long documentId, Long documentVersionId, Long chunkId,
-                       Long faqId, Long faqVersionId, String title, String location, String content, String answerMode, double score) {}
+                       Long faqId, Long faqVersionId, String title, String location, String content, String answerMode,
+                       double score) {
+    }
+
     private record Retrieval(String sourceType, String directAnswer, List<Hit> hits, boolean fallback,
                              Double bestFaqScore, Double bestDocumentScore) {
         Retrieval(String sourceType, String directAnswer, List<Hit> hits, boolean fallback) {

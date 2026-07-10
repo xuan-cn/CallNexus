@@ -421,8 +421,11 @@ public class AliyunDashScopeRealtimeSpeechProvider
         }
 
         private String voice() {
-            return StringUtils.blankToDefault(request.voice(),
-                StringUtils.blankToDefault(provider.getDefaultVoice(), "Cherry"));
+            String requestVoice = request.voice();
+            if (StringUtils.isNotBlank(requestVoice) && !"default".equalsIgnoreCase(requestVoice.trim())) {
+                return requestVoice.trim();
+            }
+            return StringUtils.blankToDefault(provider.getDefaultVoice(), "Cherry");
         }
 
         private int sampleRate() {

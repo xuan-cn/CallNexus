@@ -212,14 +212,14 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         try {
             TtsGenerateResult result = generateAudio(provider, text, voice, BUSINESS_AGENT_NUMBER_PROMPT,
                 Map.of("agentId", agentId, "extension", extension));
-            Long mediaId = storeGeneratedMedia("鍧愬腑宸ュ彿鎻愮ず闊?" + extension, MediaAssetCategory.AGENT_PROMPT, text, provider, result, task.getId());
+            Long mediaId = storeGeneratedMedia("坐席工号提示音" + extension, MediaAssetCategory.AGENT_PROMPT, text, provider, result, task.getId());
             publish(mediaId, nodeGroupIds);
             task.setOutputMediaId(mediaId);
             task.setStatus(STATUS_SUCCESS);
             task.setFinishedAt(LocalDateTime.now());
             taskMapper.updateById(task);
             binding = upsertBinding(BUSINESS_AGENT_NUMBER_PROMPT, agentId, mediaId, task.getId(), STATUS_SUCCESS, null, textHash(text));
-            log.info("鍧愬腑宸ュ彿鎻愮ず闊崇敓鎴愬畬鎴愶紝agentId={}锛宔xtension={}锛宮ediaId={}锛宼askId={}", agentId, extension, mediaId, task.getId());
+            log.info("坐席工号提示音生成完成，agentId={}，extension={}，mediaId={}，taskId={}", agentId, extension, mediaId, task.getId());
             return bindingResponse(binding, null);
         } catch (Exception exception) {
             task.setStatus(STATUS_FAILED);
@@ -227,7 +227,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             task.setFinishedAt(LocalDateTime.now());
             taskMapper.updateById(task);
             binding = upsertBinding(BUSINESS_AGENT_NUMBER_PROMPT, agentId, currentMediaId, task.getId(), STATUS_FAILED, exception.getMessage(), textHash(text));
-            log.warn("鍧愬腑宸ュ彿鎻愮ず闊崇敓鎴愬け璐ワ紝agentId={}锛宔xtension={}锛宼askId={}锛宔rror={}", agentId, extension, task.getId(), exception.getMessage());
+            log.warn("坐席工号提示音生成失败，agentId={}，extension={}，taskId={}，error={}", agentId, extension, task.getId(), exception.getMessage());
             return bindingResponse(binding, null);
         }
     }
@@ -261,7 +261,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             throw new ServiceException("通话记录不存在");
         }
         if (source.getRecordingOssId() == null) {
-            throw new ServiceException("閫氳瘽褰曢煶涓嶅瓨鍦紝鏃犳硶杞啓");
+            throw new ServiceException("通话录音不存在，无法转写");
         }
         AiSpeechProvider provider = providerSelector.requireDefaultRecordingAsr();
         AiSpeechTask task = createAsrTask(source, provider);
@@ -414,11 +414,11 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         }
         try {
             byte[] trimmed = trimAudio(audioBytes, recordingFormat(source), trimStartMs);
-            log.info("閫氳瘽褰曢煶 ASR 宸茶烦杩囩瓑寰呴煶鐗囨锛宑allSessionId={}锛宐usinessCallId={}锛宼rimStartMs={}锛宱riginalBytes={}锛宼rimmedBytes={}",
+            log.info("通话录音 ASR 已跳过等待音片段，callSessionId={}，businessCallId={}，trimStartMs={}，originalBytes={}，trimmedBytes={}",
                 source.getId(), source.getBusinessCallId(), trimStartMs, audioBytes.length, trimmed.length);
             return new AudioClip(trimmed, trimStartMs);
         } catch (Exception exception) {
-            log.warn("閫氳瘽褰曢煶 ASR 瑁佸壀绛夊緟闊冲け璐ワ紝闄嶇骇鏁存璇嗗埆锛宑allSessionId={}锛宐usinessCallId={}锛宼rimStartMs={}锛宔rror={}",
+            log.warn("通话录音 ASR 裁剪等待音失败，降级整段识别，callSessionId={}，businessCallId={}，trimStartMs={}，error={}",
                 source.getId(), source.getBusinessCallId(), trimStartMs, exception.getMessage());
             return new AudioClip(audioBytes, 0);
         }
@@ -472,7 +472,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             byte[] processOutput = process.getInputStream().readAllBytes();
             int exitCode = process.waitFor();
             if (exitCode != 0) {
-                throw new IllegalStateException("ffmpeg 閫€鍑虹爜=" + exitCode + "锛岃緭鍑?" + new String(processOutput, StandardCharsets.UTF_8));
+                throw new IllegalStateException("ffmpeg 退出码=" + exitCode + "，输出=" + new String(processOutput, StandardCharsets.UTF_8));
             }
             byte[] trimmed = Files.readAllBytes(output);
             if (trimmed.length == 0) {
@@ -529,7 +529,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         if (templateId != null) {
             AiSpeechTemplate template = templateMapper.selectById(templateId);
             if (template == null || !BUSINESS_AGENT_NUMBER_PROMPT.equals(template.getBusinessType()) || !Boolean.TRUE.equals(template.getEnabled())) {
-                throw new ServiceException("鍧愬腑宸ュ彿鎻愮ず闊虫ā鏉夸笉瀛樺湪鎴栨湭鍚敤");
+                throw new ServiceException("坐席工号提示音模板不存在或未启用");
             }
             return template;
         }

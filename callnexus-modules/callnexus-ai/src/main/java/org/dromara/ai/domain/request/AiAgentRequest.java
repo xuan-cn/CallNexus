@@ -13,6 +13,8 @@ public class AiAgentRequest {
     @NotNull private Long chatModelId;
     @Size(max = 8000) private String systemPrompt;
     @Size(max = 2000) private String welcomeMessage;
+    @Size(max = 16) private String voiceTransport;
+    @Size(max = 256) private String voiceTransportWsUrl;
     private String retrievalMode;
     private String retrievalFailurePolicy;
     @Min(1) @Max(20) private Integer topK;

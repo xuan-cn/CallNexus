@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.ai.config.AiKnowledgeProperties;
 import org.dromara.ai.service.AiRealtimeTelephonyGateway;
+import org.dromara.ai.service.VoiceTransport;
 import org.dromara.call.domain.EslEndpoint;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
@@ -23,13 +24,28 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
     private final FreeSwitchEslCommandGateway eslCommandGateway;
 
     @Override
-    public void speak(Long nodeId, String customerLegUuid, String text, String voice) {
+    public void speak(Long nodeId, String customerLegUuid, String text, String voice,
+                      String turnId, int seq, boolean turnEnd) {
         requireCallId(customerLegUuid);
+        EslEndpoint endpoint = endpoint(nodeId);
+        // 下发轮次上下文，供 callnexussynth 插件按 (callId,turnId) 复用同一条 TTS WebSocket。
+        // callId 使用业务通话腿 UUID（即 customerLegUuid），与插件 start 帧对齐。
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_setvar " + customerLegUuid + " callnexus_ai_call_id " + customerLegUuid);
+        if (StringUtils.isNotBlank(turnId)) {
+            eslCommandGateway.sendRawCommand(endpoint,
+                "api uuid_setvar " + customerLegUuid + " callnexus_ai_turn_id " + safeVar(turnId));
+        }
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_setvar " + customerLegUuid + " callnexus_ai_segment_seq " + Math.max(1, seq));
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_setvar " + customerLegUuid + " callnexus_ai_turn_end " + turnEnd);
         String command = render(properties.getUnimrcp().getSpeakCommandTemplate(), customerLegUuid, text, voice);
         long startNanos = System.nanoTime();
-        eslCommandGateway.sendRawCommand(endpoint(nodeId), command);
-        log.info("AI UniMRCP 播报命令已提交，nodeId={}，customerLegUuid={}，voice={}，textLength={}，costMs={}，command={}",
-            nodeId, customerLegUuid, voice, text == null ? 0 : text.length(), elapsedMillis(startNanos), command);
+        eslCommandGateway.sendRawCommand(endpoint, command);
+        log.info("AI UniMRCP 播报命令已提交，nodeId={}，customerLegUuid={}，voice={}，turnId={}，seq={}，turnEnd={}，textLength={}，costMs={}，command={}",
+            nodeId, customerLegUuid, voice, turnId, seq, turnEnd, text == null ? 0 : text.length(),
+            elapsedMillis(startNanos), command);
     }
 
     @Override
@@ -78,6 +94,36 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
         return result;
     }
 
+    @Override
+    public void applyVoiceTransport(Long nodeId, String customerLegUuid, VoiceTransport transport, String wsUrl) {
+        requireCallId(customerLegUuid);
+        VoiceTransport mode = transport == null ? VoiceTransport.HTTP : transport;
+        EslEndpoint endpoint = endpoint(nodeId);
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_setvar " + customerLegUuid + " callnexus_ai_voice_transport " + mode.name());
+        if (mode == VoiceTransport.WS && StringUtils.isNotBlank(wsUrl)) {
+            if (!safeWsUrl(wsUrl)) {
+                log.warn("AI UniMRCP WS 地址不合法，忽略下发，nodeId={}，customerLegUuid={}，wsUrl={}", nodeId, customerLegUuid, wsUrl);
+                return;
+            }
+            eslCommandGateway.sendRawCommand(endpoint,
+                "api uuid_setvar " + customerLegUuid + " callnexus_ai_voice_transport_ws_url " + wsUrl);
+        }
+        log.info("AI UniMRCP 已下发语音传输模式，nodeId={}，customerLegUuid={}，transport={}，wsUrl={}",
+            nodeId, customerLegUuid, mode.name(), StringUtils.isBlank(wsUrl) ? "-" : wsUrl);
+    }
+
+    private boolean safeWsUrl(String value) {
+        return value != null
+            && value.length() <= 256
+            && !value.contains("\r")
+            && !value.contains("\n")
+            && !value.contains(" ")
+            && !value.contains("\"")
+            && !value.contains("'")
+            && (value.startsWith("ws://") || value.startsWith("wss://"));
+    }
+
     private EslEndpoint endpoint(Long nodeId) {
         FreeSwitchNodeConnectionResponse node = nodeQueryService.getEnabledConnection(nodeId);
         return new EslEndpoint(node.getEslHost(), node.getEslPort(), node.getEslPassword(), node.getSipDomain());
@@ -100,6 +146,17 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
     private String safe(String value) {
         if (value == null || !value.matches("^[A-Za-z0-9._:/#+=-]{1,256}$")) {
             throw new ServiceException("AI UniMRCP 配置参数不合法");
+        }
+        return value;
+    }
+
+    /**
+     * 用于 uuid_setvar 值的白名单校验：仅允许安全字符，防止命令注入。
+     * turnId 可能是纯数字（sequenceNo）或形如 turn-2 的字符串。
+     */
+    private String safeVar(String value) {
+        if (value == null || !value.matches("^[A-Za-z0-9._:#+=-]{1,128}$")) {
+            throw new ServiceException("AI UniMRCP 轮次变量不合法");
         }
         return value;
     }

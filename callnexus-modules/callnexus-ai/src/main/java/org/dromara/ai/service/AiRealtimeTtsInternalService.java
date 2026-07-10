@@ -1,11 +1,15 @@
 package org.dromara.ai.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.ai.domain.AiSpeechProvider;
 import org.dromara.ai.domain.request.AiRealtimeTtsRequest;
 import org.dromara.ai.mapper.AiSpeechProviderMapper;
+import org.dromara.ai.provider.StreamingTtsListener;
+import org.dromara.ai.provider.StreamingTtsProvider;
+import org.dromara.ai.provider.StreamingTtsProviderRegistry;
+import org.dromara.ai.provider.StreamingTtsRequest;
+import org.dromara.ai.provider.StreamingTtsSession;
 import org.dromara.ai.provider.TtsGenerateRequest;
 import org.dromara.ai.provider.TtsGenerateResult;
 import org.dromara.ai.provider.TtsProviderRegistry;
@@ -13,17 +17,23 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class AiRealtimeTtsInternalService {
 
@@ -31,11 +41,26 @@ public class AiRealtimeTtsInternalService {
     private static final int MAX_TEXT_LENGTH = 2000;
     private static final long CACHE_TTL_MILLIS = 10 * 60 * 1000L;
     private static final int MAX_CACHE_ENTRIES = 256;
+    private static final long STREAM_TIMEOUT_SECONDS = 15L;
 
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final AiSpeechProviderMapper providerMapper;
     private final TtsProviderRegistry ttsProviderRegistry;
+    private final StreamingTtsProviderRegistry streamingTtsProviderRegistry;
+    private final ThreadPoolTaskScheduler aiRealtimeScheduler;
     private final Map<String, CachedAudio> audioCache = new ConcurrentHashMap<>();
+
+    public AiRealtimeTtsInternalService(FreeSwitchNodeQueryService nodeQueryService,
+                                        AiSpeechProviderMapper providerMapper,
+                                        TtsProviderRegistry ttsProviderRegistry,
+                                        StreamingTtsProviderRegistry streamingTtsProviderRegistry,
+                                        @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler aiRealtimeScheduler) {
+        this.nodeQueryService = nodeQueryService;
+        this.providerMapper = providerMapper;
+        this.ttsProviderRegistry = ttsProviderRegistry;
+        this.streamingTtsProviderRegistry = streamingTtsProviderRegistry;
+        this.aiRealtimeScheduler = aiRealtimeScheduler;
+    }
 
     public RealtimeTtsAudio generate(String nodeCode, String nodeToken, AiRealtimeTtsRequest request) {
         validateRequest(nodeCode, nodeToken, request);
@@ -46,13 +71,185 @@ public class AiRealtimeTtsInternalService {
         return TenantHelper.dynamic(request.getTenantId(), () -> generateInTenant(nodeId, request));
     }
 
+    /**
+     * 供 WS 流式端点（{@code AiRealtimeTtsStreamWebSocketHandler}）使用的入口。
+     * 跳过节点鉴权（WS 侧另行处理），只做租户级合成。
+     */
+    public RealtimeTtsAudio generateForStream(AiRealtimeTtsRequest request) {
+        if (request == null || StringUtils.isBlank(request.getTenantId()) || StringUtils.isBlank(request.getText())) {
+            throw new ServiceException("AI 实时 TTS 请求参数不合法");
+        }
+        return generateInTenant(null, request);
+    }
+
+    /**
+     * 真正的流式 TTS 入口：走 {@link StreamingTtsProvider}，逐 chunk 通过 listener 回调裸 PCM。
+     *
+     * <p>未配置默认流式 TTS 时抛 {@link ServiceException}，由上层（WS handler）决定是否
+     * 回退到 {@link #generateForStream(AiRealtimeTtsRequest)} 的 HTTP 一次性合成路径。</p>
+     *
+     * <p>为避免 provider 永不回调导致 session 泄漏，方法内启动 {@value #STREAM_TIMEOUT_SECONDS}s
+     * 兜底定时器；到期后强制 close session 并给 listener 发 {@code onError}。定时器在
+     * {@code onCompleted} / {@code onError} 里 cancel。</p>
+     *
+     * <p>本次不实现文本缓存：不同 chunk 到达是异步的，缓存会破坏 chunk 边界；且实时对话
+     * 短句复用率低，缓存收益有限。老 HTTP 路径的缓存不受影响。</p>
+     */
+    public void generateStream(AiRealtimeTtsRequest request, StreamingTtsListener listener) {
+        if (listener == null) {
+            throw new ServiceException("AI 实时 TTS 流式合成缺少监听器");
+        }
+        if (request == null || StringUtils.isBlank(request.getTenantId()) || StringUtils.isBlank(request.getText())) {
+            throw new ServiceException("AI 实时 TTS 请求参数不合法");
+        }
+        if (request.getText().length() > MAX_TEXT_LENGTH) {
+            throw new ServiceException("合成文本不能超过" + MAX_TEXT_LENGTH + "个字符");
+        }
+
+        AiSpeechProvider provider = defaultStreamingRealtimeProvider();
+        StreamingTtsProvider streamingProvider = streamingTtsProviderRegistry.get(provider.getProviderType());
+
+        // 用户已确认走 raw PCM，handler 侧不需要剥 WAV 头。
+        String format = "pcm";
+        Integer sampleRate = request.getSampleRate();
+        String voice = request.getVoice();
+        StreamingTtsRequest streamingRequest = new StreamingTtsRequest(voice, format, sampleRate, Map.of());
+
+        AtomicBoolean finished = new AtomicBoolean();
+        AtomicBoolean timedOut = new AtomicBoolean();
+        // session 由外层 open() 返回，onCompleted/onError 里负责 close，
+        // generateStream 本身在 commit+finish 后就返回，等待事件异步驱动。
+        StreamingTtsSession[] sessionRef = new StreamingTtsSession[1];
+        ScheduledFuture<?>[] timerRef = new ScheduledFuture<?>[1];
+
+        StreamingTtsListener wrapped = new StreamingTtsListener() {
+            @Override
+            public void onStarted() {
+                safeInvoke(listener::onStarted, "onStarted");
+            }
+
+            @Override
+            public void onAudio(byte[] audioBytes) {
+                if (finished.get() || timedOut.get()) {
+                    return;
+                }
+                try {
+                    listener.onAudio(audioBytes);
+                } catch (Exception exception) {
+                    log.warn("AI 实时 TTS 流式 onAudio 回调异常", exception);
+                }
+            }
+
+            @Override
+            public void onCompleted() {
+                if (!finished.compareAndSet(false, true)) {
+                    return;
+                }
+                cancelTimer(timerRef);
+                safeInvoke(listener::onCompleted, "onCompleted");
+                closeQuietly(sessionRef[0]);
+            }
+
+            @Override
+            public void onError(String message) {
+                if (!finished.compareAndSet(false, true)) {
+                    return;
+                }
+                cancelTimer(timerRef);
+                try {
+                    listener.onError(message);
+                } catch (Exception exception) {
+                    log.warn("AI 实时 TTS 流式 onError 回调异常", exception);
+                }
+                closeQuietly(sessionRef[0]);
+            }
+        };
+
+        StreamingTtsSession session;
+        try {
+            session = streamingProvider.open(provider, streamingRequest, wrapped);
+        } catch (Exception exception) {
+            throw new ServiceException("打开流式 TTS 会话失败：" + rootMessage(exception));
+        }
+        sessionRef[0] = session;
+
+        timerRef[0] = aiRealtimeScheduler.schedule(() -> {
+            if (finished.get()) {
+                return;
+            }
+            timedOut.set(true);
+            log.warn("AI 实时 TTS 流式合成超时 {}s，强制关闭 session，providerCode={}",
+                STREAM_TIMEOUT_SECONDS, provider.getProviderCode());
+            wrapped.onError("流式 TTS 超时");
+        }, Instant.now().plus(Duration.ofSeconds(STREAM_TIMEOUT_SECONDS)));
+
+        try {
+            session.append(request.getText());
+            session.commit();
+            session.finish();
+        } catch (Exception exception) {
+            // 若发送控制事件本身失败，立刻走 onError 收尾。
+            wrapped.onError("发送流式 TTS 事件失败：" + rootMessage(exception));
+            throw new ServiceException("发送流式 TTS 事件失败：" + rootMessage(exception));
+        }
+    }
+
+    private AiSpeechProvider defaultStreamingRealtimeProvider() {
+        AiSpeechProvider provider = providerMapper.selectOne(new LambdaQueryWrapper<AiSpeechProvider>()
+            .eq(AiSpeechProvider::getEnabled, true)
+            .eq(AiSpeechProvider::getStreamingTtsEnabled, true)
+            .eq(AiSpeechProvider::getDefaultStreamingTts, true)
+            .last("limit 1"));
+        if (provider == null) {
+            throw new ServiceException("未配置默认流式 TTS 语音服务商");
+        }
+        // 校验 registry 中确实注册了对应的 StreamingTtsProvider；不匹配会抛异常
+        streamingTtsProviderRegistry.get(provider.getProviderType());
+        return provider;
+    }
+
+    private static void safeInvoke(Runnable action, String tag) {
+        try {
+            action.run();
+        } catch (Exception exception) {
+            log.warn("AI 实时 TTS 流式 {} 回调异常", tag, exception);
+        }
+    }
+
+    private static void cancelTimer(ScheduledFuture<?>[] holder) {
+        ScheduledFuture<?> future = holder[0];
+        if (future != null) {
+            future.cancel(false);
+        }
+    }
+
+    private static void closeQuietly(StreamingTtsSession session) {
+        if (session == null) {
+            return;
+        }
+        try {
+            session.close();
+        } catch (Exception exception) {
+            log.debug("关闭流式 TTS session 异常：{}", exception.getMessage());
+        }
+    }
+
+    private static String rootMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        String message = current.getMessage();
+        return StringUtils.isBlank(message) ? current.getClass().getSimpleName() : message;
+    }
+
     private RealtimeTtsAudio generateInTenant(Long nodeId, AiRealtimeTtsRequest request) {
         AiSpeechProvider provider = defaultRealtimeProvider();
         String outputFormat = normalizeFormat(request.getFormat());
         int sampleRate = request.getSampleRate() == null || request.getSampleRate() <= 0
             ? DEFAULT_SAMPLE_RATE : request.getSampleRate();
         String providerFormat = "pcm".equals(outputFormat) ? "wav" : outputFormat;
-        String voice = StringUtils.isBlank(request.getVoice()) ? provider.getDefaultVoice() : request.getVoice();
+        String voice = normalizeVoice(request.getVoice(), provider.getDefaultVoice());
         String cacheKey = cacheKey(request.getTenantId(), provider, voice, outputFormat, sampleRate, request.getText());
         CachedAudio cached = audioCache.get(cacheKey);
         if (cached != null && !cached.expired()) {
@@ -61,9 +258,14 @@ public class AiRealtimeTtsInternalService {
             return cached.audio();
         }
 
+        // 使用 HashMap 而非 Map.of：WS 流式路径下 nodeId 可能为 null（不需要节点鉴权），
+        // Map.of 不允许 null value，会抛 NPE 且 getMessage() 为 null。
+        Map<String, Object> providerContext = new HashMap<>();
+        providerContext.put("nodeId", nodeId);
+        providerContext.put("format", outputFormat);
         TtsGenerateResult result = ttsProviderRegistry.get(provider.getProviderType()).generate(provider,
             new TtsGenerateRequest(request.getText(), voice, providerFormat, sampleRate, "AI_REALTIME_MRCP",
-                Map.of("nodeId", nodeId, "format", outputFormat)));
+                providerContext));
         if (result == null || result.audioBytes() == null || result.audioBytes().length == 0) {
             throw new ServiceException("AI 实时 TTS 服务未返回音频内容");
         }
@@ -128,6 +330,13 @@ public class AiRealtimeTtsInternalService {
             throw new ServiceException("AI 实时 TTS 只支持 pcm 或 wav 格式");
         }
         return format;
+    }
+
+    private String normalizeVoice(String requestVoice, String providerDefaultVoice) {
+        if (StringUtils.isNotBlank(requestVoice) && !"default".equalsIgnoreCase(requestVoice.trim())) {
+            return requestVoice.trim();
+        }
+        return StringUtils.isBlank(providerDefaultVoice) ? null : providerDefaultVoice.trim();
     }
 
     private String contentType(String format) {

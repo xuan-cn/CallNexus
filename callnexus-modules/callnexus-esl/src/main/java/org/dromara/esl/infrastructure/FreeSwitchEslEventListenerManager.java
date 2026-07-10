@@ -34,6 +34,7 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
     private static final int CONNECT_TIMEOUT_MILLIS = 5000;
     private static final long RECONNECT_DELAY_MILLIS = 5000;
     private static final String EVENT_COMMAND = "event plain " + String.join(" ", EslEventNames.subscribedEvents());
+    private static final String EVENT_BODY_HEADER = "CallNexus-Event-Body";
 
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final EslEventDispatcher eventDispatcher;
@@ -129,7 +130,24 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
         Map<String, String> headers = parseHeaders(body);
         String eventName = headers.get(EslHeaders.EVENT_NAME);
         if (eventName == null) return;
+        String eventBody = extractEventBody(body, headers);
+        if (eventBody != null) {
+            headers.put(EVENT_BODY_HEADER, eventBody);
+        }
         eventDispatcher.dispatch(new FreeSwitchEslEvent(nodeId, eventName, headers));
+    }
+
+    private String extractEventBody(String body, Map<String, String> headers) {
+        String contentLength = headers.get("Content-Length");
+        if (contentLength == null || contentLength.isBlank()) {
+            return null;
+        }
+        int separator = body.indexOf("\n\n");
+        if (separator < 0) {
+            return null;
+        }
+        int start = separator + 2;
+        return start < body.length() ? body.substring(start) : null;
     }
 
     private Map<String, String> parseHeaders(String body) {

@@ -26,32 +26,44 @@ import java.util.List;
 public class AiAgentController {
 
     private final AiAgentApplicationService service;
+
     @GetMapping("/agents")
     @SaCheckPermission("callcenter:ai-agent:list")
-    public R<List<AiAgentResponse>> agents() { return R.ok(service.agents()); }
+    public R<List<AiAgentResponse>> agents() {
+        return R.ok(service.agents());
+    }
 
     @GetMapping("/agents/{id}")
     @SaCheckPermission("callcenter:ai-agent:query")
-    public R<AiAgentResponse> agent(@PathVariable Long id) { return R.ok(service.agent(id)); }
+    public R<AiAgentResponse> agent(@PathVariable Long id) {
+        return R.ok(service.agent(id));
+    }
 
     @PostMapping("/agents")
     @SaCheckPermission("callcenter:ai-agent:create")
-    public R<Long> create(@Valid @RequestBody AiAgentRequest request) { return R.ok(service.createAgent(request)); }
+    public R<Long> create(@Valid @RequestBody AiAgentRequest request) {
+        return R.ok(service.createAgent(request));
+    }
 
     @PutMapping("/agents/{id}")
     @SaCheckPermission("callcenter:ai-agent:update")
     public R<Void> update(@PathVariable Long id, @Valid @RequestBody AiAgentRequest request) {
-        service.updateAgent(id, request); return R.ok();
+        service.updateAgent(id, request);
+        return R.ok();
     }
 
     @DeleteMapping("/agents/{id}")
     @SaCheckPermission("callcenter:ai-agent:delete")
-    public R<Void> delete(@PathVariable Long id) { service.deleteAgent(id); return R.ok(); }
+    public R<Void> delete(@PathVariable Long id) {
+        service.deleteAgent(id);
+        return R.ok();
+    }
 
     @PostMapping("/agents/{id}/{action:enable|disable}")
     @SaCheckPermission("callcenter:ai-agent:update")
     public R<Void> enabled(@PathVariable Long id, @PathVariable String action) {
-        service.setAgentEnabled(id, "enable".equals(action)); return R.ok();
+        service.setAgentEnabled(id, "enable".equals(action));
+        return R.ok();
     }
 
     @PostMapping("/agents/{id}/conversations")
@@ -68,15 +80,23 @@ public class AiAgentController {
 
     @GetMapping("/conversations/{id}/messages")
     @SaCheckPermission("callcenter:ai-conversation:list")
-    public R<List<AiMessageResponse>> messages(@PathVariable Long id) { return R.ok(service.messages(id)); }
+    public R<List<AiMessageResponse>> messages(@PathVariable Long id) {
+        return R.ok(service.messages(id));
+    }
 
     @DeleteMapping("/conversations/{id}")
     @SaCheckPermission("callcenter:ai-conversation:chat")
-    public R<Void> deleteConversation(@PathVariable Long id) { service.deleteConversation(id); return R.ok(); }
+    public R<Void> deleteConversation(@PathVariable Long id) {
+        service.deleteConversation(id);
+        return R.ok();
+    }
 
     @DeleteMapping("/agents/{id}/conversations")
     @SaCheckPermission("callcenter:ai-conversation:chat")
-    public R<Void> deleteConversations(@PathVariable Long id) { service.deleteConversations(id); return R.ok(); }
+    public R<Void> deleteConversations(@PathVariable Long id) {
+        service.deleteConversations(id);
+        return R.ok();
+    }
 
     @PostMapping(value = "/agents/{id}/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @SaCheckPermission("callcenter:ai-conversation:chat")
@@ -87,17 +107,19 @@ public class AiAgentController {
         Long userId = LoginHelper.getUserId();
         String tenantId = TenantHelper.getTenantId();
         return output -> TenantHelper.dynamic(tenantId, () -> service.streamChat(id, userId, request, (event, data) -> {
-                try {
-                    String payload = "event: " + event + "\n" + "data: " + JsonUtils.toJsonString(data) + "\n\n";
-                    output.write(payload.getBytes(StandardCharsets.UTF_8));
-                    output.flush();
-                } catch (IOException exception) {
-                    throw new StreamClosedException(exception);
-                }
-            }));
+            try {
+                String payload = "event: " + event + "\n" + "data: " + JsonUtils.toJsonString(data) + "\n\n";
+                output.write(payload.getBytes(StandardCharsets.UTF_8));
+                output.flush();
+            } catch (IOException exception) {
+                throw new StreamClosedException(exception);
+            }
+        }));
     }
 
     private static final class StreamClosedException extends RuntimeException {
-        private StreamClosedException(IOException cause) { super("AI 对话流连接已关闭", cause); }
+        private StreamClosedException(IOException cause) {
+            super("AI 对话流连接已关闭", cause);
+        }
     }
 }
