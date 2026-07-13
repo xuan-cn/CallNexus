@@ -62,7 +62,8 @@ public class OutboundAuthorizationServiceImpl implements OutboundAuthorizationSe
             return phoneNumberQueryService.findOutboundRouteByNumberId(command.tenantId(), command.nodeId(), command.callerNumberId());
         }
         if (command.nodeId() != null) {
-            PhoneNumberOutboundRouteResponse policyRoute = outboundLinePolicyService.selectRoute(command.tenantId(), command.nodeId());
+            PhoneNumberOutboundRouteResponse policyRoute = outboundLinePolicyService.selectRoute(
+                command.tenantId(), command.nodeId(), command.agentId(), command.skillGroupId());
             return policyRoute != null ? policyRoute : phoneNumberQueryService.findDefaultOutboundRoute(command.tenantId(), command.nodeId());
         }
         return phoneNumberQueryService.findDefaultOutboundRoute(command.tenantId(), command.sipDomain(), command.switchIpv4());

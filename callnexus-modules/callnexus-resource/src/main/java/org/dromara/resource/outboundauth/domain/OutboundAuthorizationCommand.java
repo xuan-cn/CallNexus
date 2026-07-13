@@ -8,6 +8,7 @@ public record OutboundAuthorizationCommand(
     String switchIpv4,
     Long agentId,
     Long userId,
+    Long skillGroupId,
     String callerExtension,
     String calleeNumber,
     Long callerNumberId,

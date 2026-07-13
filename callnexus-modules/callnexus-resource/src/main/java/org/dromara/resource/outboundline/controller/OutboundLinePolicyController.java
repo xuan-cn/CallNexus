@@ -8,7 +8,9 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.resource.outboundline.domain.request.OutboundLinePolicyPageQuery;
 import org.dromara.resource.outboundline.domain.request.OutboundLinePolicyRequest;
+import org.dromara.resource.outboundline.domain.request.SkillGroupOutboundPolicyRequest;
 import org.dromara.resource.outboundline.domain.response.OutboundLinePolicyResponse;
+import org.dromara.resource.outboundline.domain.response.SkillGroupOutboundPolicyResponse;
 import org.dromara.resource.outboundline.service.OutboundLinePolicyService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,6 +20,8 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/outbound-line-policies")
@@ -54,6 +58,25 @@ public class OutboundLinePolicyController {
     @SaCheckPermission("callcenter:outbound-line-policy:delete")
     public R<Void> delete(@PathVariable Long id) {
         service.delete(id);
+        return R.ok();
+    }
+
+    @GetMapping("/skill-group-bindings")
+    @SaCheckPermission("callcenter:outbound-line-policy:query")
+    public R<List<SkillGroupOutboundPolicyResponse>> listSkillGroupBindings(Long skillGroupId) {
+        return R.ok(service.listSkillGroupPolicies(skillGroupId));
+    }
+
+    @PostMapping("/skill-group-bindings")
+    @SaCheckPermission("callcenter:outbound-line-policy:update")
+    public R<Long> saveSkillGroupBinding(@Valid @RequestBody SkillGroupOutboundPolicyRequest request) {
+        return R.ok(service.saveSkillGroupPolicy(request));
+    }
+
+    @DeleteMapping("/skill-group-bindings/{id}")
+    @SaCheckPermission("callcenter:outbound-line-policy:update")
+    public R<Void> deleteSkillGroupBinding(@PathVariable Long id) {
+        service.deleteSkillGroupPolicy(id);
         return R.ok();
     }
 }

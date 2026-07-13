@@ -5,9 +5,10 @@ public record CallOriginateContext(
     Long customerId,
     Long outboundTaskId,
     Long outboundMemberId,
-    Long callerNumberId
+    Long callerNumberId,
+    Long skillGroupId
 ) {
     public static CallOriginateContext empty() {
-        return new CallOriginateContext(null, null, null, null, null);
+        return new CallOriginateContext(null, null, null, null, null, null);
     }
 }

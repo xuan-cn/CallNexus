@@ -1040,6 +1040,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             null,
             agent.getAgentId(),
             LoginHelper.getUserId(),
+            context == null ? null : context.skillGroupId(),
             agent.getExtension(),
             destination,
             context != null && context.callerNumberId() != null ? context.callerNumberId() : agent.getCallerNumberId(),
@@ -1075,14 +1076,15 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
     private CallOriginateContext normalizeContext(CallOriginateContext context, String businessCallId) {
         if (context == null) {
-            return new CallOriginateContext(businessCallId, null, null, null, null);
+            return new CallOriginateContext(businessCallId, null, null, null, null, null);
         }
         return new CallOriginateContext(
             businessCallId,
             context.customerId(),
             context.outboundTaskId(),
             context.outboundMemberId(),
-            context.callerNumberId()
+            context.callerNumberId(),
+            context.skillGroupId()
         );
     }
 

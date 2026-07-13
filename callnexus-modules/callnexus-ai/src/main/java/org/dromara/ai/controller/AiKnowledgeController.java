@@ -84,7 +84,7 @@ public class AiKnowledgeController {
     @PostMapping("/knowledge-bases/{id}/search-test")
     @SaCheckPermission("callcenter:ai-knowledge:query")
     public R<List<AiKnowledgeSearchHitResponse>> search(@PathVariable Long id,
-                                                         @Valid @RequestBody AiKnowledgeSearchRequest request) {
+                                                        @Valid @RequestBody AiKnowledgeSearchRequest request) {
         return R.ok(service.search(id, request));
     }
 

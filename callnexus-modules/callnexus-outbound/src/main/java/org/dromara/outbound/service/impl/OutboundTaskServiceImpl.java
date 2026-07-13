@@ -453,7 +453,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         CallControlResponse call;
         try {
             call = callControlService.originate(member.getPhoneNumber(),
-                new CallOriginateContext(businessCallId, member.getCustomerId(), member.getTaskId(), member.getId(), task.getCallerNumberId()));
+                new CallOriginateContext(businessCallId, member.getCustomerId(), member.getTaskId(), member.getId(), task.getCallerNumberId(), null));
         } catch (RuntimeException exception) {
             attemptMapper.update(null, new LambdaUpdateWrapper<OutboundAttempt>()
                 .eq(OutboundAttempt::getId, attempt.getId())

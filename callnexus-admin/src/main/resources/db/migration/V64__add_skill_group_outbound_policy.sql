@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS cc_skill_group_outbound_policy (
+    id BIGINT NOT NULL COMMENT '技能组外呼线路策略绑定ID',
+    tenant_id VARCHAR(20) NOT NULL COMMENT '租户ID',
+    node_id BIGINT NOT NULL COMMENT 'FreeSWITCH节点ID',
+    skill_group_id BIGINT NOT NULL COMMENT '技能组ID',
+    outbound_line_policy_id BIGINT NOT NULL COMMENT '外呼线路策略ID',
+    enabled TINYINT NOT NULL DEFAULT 1 COMMENT '是否启用',
+    remark VARCHAR(500) NULL COMMENT '备注',
+    create_dept BIGINT NULL COMMENT '创建部门',
+    create_by BIGINT NULL COMMENT '创建人',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_by BIGINT NULL COMMENT '更新人',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除标志',
+    version INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_cc_skill_group_outbound_policy (tenant_id, node_id, skill_group_id, deleted),
+    KEY idx_cc_skill_group_outbound_policy_group (tenant_id, skill_group_id, enabled),
+    KEY idx_cc_skill_group_outbound_policy_policy (tenant_id, outbound_line_policy_id, enabled)
+) ENGINE=InnoDB COMMENT='技能组外呼线路策略绑定';
