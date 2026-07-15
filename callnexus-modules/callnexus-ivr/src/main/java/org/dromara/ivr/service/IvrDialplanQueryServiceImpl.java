@@ -53,6 +53,11 @@ public class IvrDialplanQueryServiceImpl implements IvrDialplanQueryService {
 
     @Override
     public String renderPublishedFlow(String tenantId, Long flowId, Long nodeId, String number, String context, String sipDomain) {
+        return renderPublishedFlow(tenantId, flowId, nodeId, number, context, sipDomain, null);
+    }
+
+    @Override
+    public String renderPublishedFlow(String tenantId, Long flowId, Long nodeId, String number, String context, String sipDomain, String callerNumber) {
         return TenantHelper.dynamic(tenantId, () -> {
             try {
                 Long targetNodeId = nodeId == null ? resolveNodeId(sipDomain) : nodeId;
@@ -61,7 +66,7 @@ public class IvrDialplanQueryServiceImpl implements IvrDialplanQueryService {
                 }
                 IvrFlow flow = flowService.requirePublished(flowId);
                 IvrFlowVersion version = flowService.latestVersion(flow);
-                return compile(flow, version, targetNodeId, number, context, sipDomain);
+                return compile(tenantId, flow, version, targetNodeId, number, context, sipDomain, callerNumber);
             } catch (Exception exception) {
                 log.warn("生成IVR动态拨号计划失败，flowId={}，nodeId={}，number={}，error={}",
                     flowId, nodeId, number, exception.getMessage());
@@ -83,7 +88,7 @@ public class IvrDialplanQueryServiceImpl implements IvrDialplanQueryService {
         return node == null ? null : node.getId();
     }
 
-    private String compile(IvrFlow flow, IvrFlowVersion version, Long nodeId, String number, String context, String sipDomain) {
+    private String compile(String tenantId, IvrFlow flow, IvrFlowVersion version, Long nodeId, String number, String context, String sipDomain, String callerNumber) {
         IvrGraphDefinition graph = graphParser.parse(version.getGraphJson());
         IvrNodeDefinition start = graph.nodes().stream()
             .filter(node -> "START".equals(node.type()))
@@ -96,7 +101,7 @@ public class IvrDialplanQueryServiceImpl implements IvrDialplanQueryService {
         }
         for (IvrNodeDefinition node : graph.nodes()) {
             compilerRegistry.require(node.type()).compile(
-                new IvrNodeContext(flow, nodeId, sipDomain, graph, node, xml, renderSupport, mediaPathResolver)
+                new IvrNodeContext(tenantId, flow, nodeId, sipDomain, callerNumber, graph, node, xml, renderSupport, mediaPathResolver)
             );
         }
         renderSupport.appendDocumentEnd(xml);

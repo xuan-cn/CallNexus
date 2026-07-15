@@ -14,14 +14,17 @@ import org.dromara.resource.sip.domain.SipAccount;
 import org.dromara.resource.sip.domain.request.CreateSipAccountRequest;
 import org.dromara.resource.sip.domain.request.SipAccountPageQuery;
 import org.dromara.resource.sip.domain.request.UpdateSipAccountRequest;
-import org.dromara.resource.sip.domain.response.SipAccountResponse;
-import org.dromara.resource.sip.domain.response.SipRegistrationConfigResponse;
 import org.dromara.resource.sip.domain.response.SipAccountRealtimeResponse;
+import org.dromara.resource.sip.domain.response.SipAccountResponse;
 import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
+import org.dromara.resource.sip.domain.response.SipRegistrationConfigResponse;
 import org.dromara.resource.sip.mapper.SipAccountMapper;
 import org.dromara.resource.sip.service.SipAccountApplicationService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Locale;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -33,6 +36,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     public TableDataInfo<SipAccountResponse> page(SipAccountPageQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<SipAccount> wrapper = new LambdaQueryWrapper<SipAccount>()
             .like(query.getExtension() != null && !query.getExtension().isBlank(), SipAccount::getExtension, query.getExtension())
+            .like(query.getAuthUsername() != null && !query.getAuthUsername().isBlank(), SipAccount::getAuthUsername, query.getAuthUsername())
             .like(query.getDisplayName() != null && !query.getDisplayName().isBlank(), SipAccount::getDisplayName, query.getDisplayName())
             .eq(query.getEnabled() != null, SipAccount::getEnabled, query.getEnabled())
             .orderByAsc(SipAccount::getExtension);
@@ -51,10 +55,17 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     @Transactional(rollbackFor = Exception.class)
     public Long create(CreateSipAccountRequest request) {
         ensureExtensionUnique(request.getExtension(), null);
+        String authUsername = normalizeAuthUsername(request.getAuthUsername());
+        if (authUsername == null) {
+            authUsername = generateAuthUsername();
+        }
+        ensureAuthUsernameUnique(authUsername, null);
+
         FreeSwitchNode node = requireEnabledNode(request.getNodeId());
         SipAccount account = new SipAccount();
         account.setNodeId(node.getId());
         account.setExtension(request.getExtension());
+        account.setAuthUsername(authUsername);
         account.setDisplayName(request.getDisplayName());
         account.setDomain(node.getSipDomain());
         account.setAuthPassword(request.getPassword());
@@ -67,11 +78,15 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     @Transactional(rollbackFor = Exception.class)
     public void update(Long id, UpdateSipAccountRequest request) {
         ensureExtensionUnique(request.getExtension(), id);
+        String authUsername = normalizeAuthUsername(request.getAuthUsername());
+        ensureAuthUsernameUnique(authUsername, id);
+
         SipAccount account = mapper.selectById(id);
         if (account == null) throw new ServiceException("SIP 分机不存在");
         FreeSwitchNode node = requireEnabledNode(request.getNodeId());
         account.setNodeId(node.getId());
         account.setExtension(request.getExtension());
+        account.setAuthUsername(authUsername);
         account.setDisplayName(request.getDisplayName());
         account.setDomain(node.getSipDomain());
         account.setEnabled(request.getEnabled());
@@ -101,6 +116,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         response.setSipAccountId(account.getId());
         response.setNodeId(node.getId());
         response.setExtension(account.getExtension());
+        response.setAuthUsername(account.getAuthUsername());
         response.setSipDomain(node.getSipDomain());
         response.setWssUrl(node.getWssUrl());
         response.setAuthPassword(account.getAuthPassword());
@@ -120,24 +136,39 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
             response.setTenantId(account.getTenantId());
             response.setNodeId(account.getNodeId());
             response.setExtension(account.getExtension());
+            response.setAuthUsername(account.getAuthUsername());
             response.setDomain(account.getDomain());
             return response;
         });
     }
 
     @Override
-    public SipDirectoryAccountResponse findDirectoryAccount(String tenantId, String domain, String extension) {
+    public SipDirectoryAccountResponse findDirectoryAccount(String tenantId, String domain, String extensionOrAuthUsername) {
+        return findDirectoryAccountForAuth(tenantId, domain, extensionOrAuthUsername);
+    }
+
+    @Override
+    public SipDirectoryAccountResponse findDirectoryAccountForAuth(String tenantId, String domain, String authUsername) {
+        return findDirectoryAccountByField(tenantId, domain, authUsername, true);
+    }
+
+    @Override
+    public SipDirectoryAccountResponse findDirectoryAccountByExtension(String tenantId, String domain, String extension) {
+        return findDirectoryAccountByField(tenantId, domain, extension, false);
+    }
+
+    private SipDirectoryAccountResponse findDirectoryAccountByField(String tenantId, String domain, String value, boolean authLookup) {
         return TenantHelper.dynamic(tenantId, () -> {
             boolean requestedDomainMatched = true;
             SipAccount account = mapper.selectOne(new LambdaQueryWrapper<SipAccount>()
                 .eq(SipAccount::getDomain, domain)
-                .eq(SipAccount::getExtension, extension)
+                .eq(authLookup ? SipAccount::getAuthUsername : SipAccount::getExtension, value)
                 .eq(SipAccount::getEnabled, true)
                 .last("LIMIT 1"));
             if (account == null) {
                 requestedDomainMatched = false;
                 account = mapper.selectOne(new LambdaQueryWrapper<SipAccount>()
-                    .eq(SipAccount::getExtension, extension)
+                    .eq(authLookup ? SipAccount::getAuthUsername : SipAccount::getExtension, value)
                     .eq(SipAccount::getEnabled, true)
                     .last("LIMIT 1"));
             }
@@ -145,6 +176,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
             SipDirectoryAccountResponse response = new SipDirectoryAccountResponse();
             response.setId(account.getId());
             response.setExtension(account.getExtension());
+            response.setAuthUsername(account.getAuthUsername());
             response.setDisplayName(account.getDisplayName());
             response.setDomain(requestedDomainMatched ? account.getDomain() : domain);
             response.setAuthPassword(account.getAuthPassword());
@@ -160,6 +192,30 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         if (exists) throw new ServiceException("SIP 分机号已存在");
     }
 
+    private void ensureAuthUsernameUnique(String authUsername, Long excludedId) {
+        if (authUsername == null || authUsername.isBlank()) throw new ServiceException("SIP 鉴权名不能为空");
+        boolean exists = mapper.exists(new LambdaQueryWrapper<SipAccount>()
+            .eq(SipAccount::getTenantId, LoginHelper.getTenantId())
+            .eq(SipAccount::getAuthUsername, authUsername)
+            .ne(excludedId != null, SipAccount::getId, excludedId));
+        if (exists) throw new ServiceException("SIP 鉴权名已存在");
+    }
+
+    private String normalizeAuthUsername(String authUsername) {
+        if (authUsername == null || authUsername.isBlank()) return null;
+        return authUsername.trim();
+    }
+
+    private String generateAuthUsername() {
+        String authUsername;
+        do {
+            authUsername = "cnx_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toLowerCase(Locale.ROOT);
+        } while (mapper.exists(new LambdaQueryWrapper<SipAccount>()
+            .eq(SipAccount::getTenantId, LoginHelper.getTenantId())
+            .eq(SipAccount::getAuthUsername, authUsername)));
+        return authUsername;
+    }
+
     private SipAccountResponse toResponse(SipAccount account) {
         SipAccountResponse response = new SipAccountResponse();
         response.setId(account.getId());
@@ -169,6 +225,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
             if (node != null) response.setNodeName(node.getNodeName());
         }
         response.setExtension(account.getExtension());
+        response.setAuthUsername(account.getAuthUsername());
         response.setDisplayName(account.getDisplayName());
         response.setDomain(account.getDomain());
         response.setEnabled(account.getEnabled());

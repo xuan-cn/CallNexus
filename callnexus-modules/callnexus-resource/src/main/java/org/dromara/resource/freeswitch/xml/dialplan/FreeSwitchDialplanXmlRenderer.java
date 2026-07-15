@@ -452,6 +452,10 @@ public class FreeSwitchDialplanXmlRenderer {
     public String renderInternalExtensionRoute(SipDirectoryAccountResponse account, String context) {
         String dialplanContext = FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "default" : context);
         String extension = FreeSwitchXmlRenderer.escape(account.getExtension());
+        if (account.getAuthUsername() == null || account.getAuthUsername().isBlank()) {
+            return FreeSwitchXmlRenderer.notFound();
+        }
+        String authUsername = FreeSwitchXmlRenderer.escape(account.getAuthUsername());
         String domain = FreeSwitchXmlRenderer.escape(account.getDomain());
         return """
             <document type="freeswitch/xml">
@@ -475,6 +479,6 @@ public class FreeSwitchDialplanXmlRenderer {
                 </context>
               </section>
             </document>
-            """.formatted(dialplanContext, extension, extension, extension, domain, extension, domain);
+            """.formatted(dialplanContext, extension, extension, extension, domain, authUsername, domain);
     }
 }

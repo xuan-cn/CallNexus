@@ -17,6 +17,7 @@ public class SipAccount extends TenantEntity {
     private Long id;
     private Long nodeId;
     private String extension;
+    private String authUsername;
     private String displayName;
     private String domain;
     @EncryptField

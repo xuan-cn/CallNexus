@@ -38,7 +38,11 @@ public class DirectoryUserXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         // 这是队列向坐席振铃的可靠信号，发布事件供 call 模块记录"坐席振铃"时间线节点。
         publishAgentRingSignalIfFromQueue(request, domain);
 
-        SipDirectoryAccountResponse account = sipAccountQueryService.findDirectoryAccount(request.tenantId(), domain, extension);
+        boolean queueAgentCall = StringUtils.isNotBlank(request.firstValue("cc_queue"))
+            && "user_call".equalsIgnoreCase(request.firstValue("action"));
+        SipDirectoryAccountResponse account = queueAgentCall
+            ? sipAccountQueryService.findDirectoryAccountByExtension(request.tenantId(), domain, extension)
+            : sipAccountQueryService.findDirectoryAccountForAuth(request.tenantId(), domain, extension);
         if (account == null) return FreeSwitchXmlRenderer.notFound();
         return directoryXmlRenderer.render(account);
     }

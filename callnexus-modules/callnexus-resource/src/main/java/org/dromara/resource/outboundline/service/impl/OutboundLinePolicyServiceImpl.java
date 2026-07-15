@@ -176,6 +176,36 @@ public class OutboundLinePolicyServiceImpl implements OutboundLinePolicyService 
     }
 
     @Override
+    public PhoneNumberOutboundRouteResponse selectRouteByPolicy(String tenantId, Long nodeId, Long policyId) {
+        if (nodeId == null || policyId == null) return null;
+        return TenantHelper.dynamic(tenantId, () -> {
+            OutboundLinePolicy policy = findEnabledPolicy(policyId, nodeId);
+            if (policy == null) return null;
+            List<OutboundLinePolicyItem> items = findEnabledItems(policy.getId());
+            if (items.isEmpty()) {
+                log.warn("指定外呼线路策略没有启用的线路明细，tenantId={}，nodeId={}，policyId={}，policyCode={}",
+                    tenantId, nodeId, policy.getId(), policy.getPolicyCode());
+                return null;
+            }
+            for (OutboundLinePolicyItem item : orderedCandidates(tenantId, policy, items)) {
+                PhoneNumberOutboundRouteResponse route = phoneNumberQueryService.findOutboundRouteByNumberId(tenantId, nodeId, item.getPhoneNumberId());
+                if (route != null) {
+                    route.setPolicyId(policy.getId());
+                    route.setPolicyCode(policy.getPolicyCode());
+                    route.setPolicyName(policy.getPolicyName());
+                    route.setPolicyType(policy.getPolicyType());
+                    route.setPolicyItemId(item.getId());
+                    log.info("指定外呼线路策略选线成功，tenantId={}，nodeId={}，policyCode={}，policyType={}，phoneNumberId={}，gatewayCode={}",
+                        tenantId, nodeId, policy.getPolicyCode(), policy.getPolicyType(), item.getPhoneNumberId(), route.getGatewayCode());
+                    return route;
+                }
+            }
+            log.warn("指定外呼线路策略没有可用线路，tenantId={}，nodeId={}，policyCode={}", tenantId, nodeId, policy.getPolicyCode());
+            return null;
+        });
+    }
+
+    @Override
     public List<SkillGroupOutboundPolicyResponse> listSkillGroupPolicies(Long skillGroupId) {
         return skillGroupPolicyMapper.selectList(new LambdaQueryWrapper<SkillGroupOutboundPolicy>()
                 .eq(skillGroupId != null, SkillGroupOutboundPolicy::getSkillGroupId, skillGroupId)

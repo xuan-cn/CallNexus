@@ -119,11 +119,19 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
             .eq(AgentExtension::getSipAccountId, request.getSipAccountId())
             .ne(AgentExtension::getAgentId, agentId));
         if (occupied) throw new ServiceException("该 SIP 分机已被其他坐席绑定");
-        extensionMapper.delete(new LambdaQueryWrapper<AgentExtension>().eq(AgentExtension::getAgentId, agentId));
-        AgentExtension binding = new AgentExtension();
-        binding.setAgentId(agentId);
-        binding.setSipAccountId(request.getSipAccountId());
-        extensionMapper.insert(binding);
+        AgentExtension binding = extensionMapper.selectOne(new LambdaQueryWrapper<AgentExtension>()
+            .eq(AgentExtension::getAgentId, agentId));
+        if (binding == null) {
+            binding = new AgentExtension();
+            binding.setAgentId(agentId);
+            binding.setSipAccountId(request.getSipAccountId());
+            extensionMapper.insert(binding);
+        } else {
+            binding.setSipAccountId(request.getSipAccountId());
+            if (extensionMapper.updateById(binding) != 1) {
+                throw new ServiceException("坐席绑定分机已被其他用户修改，请刷新后重试");
+            }
+        }
         markQueuesNotSynced(agentId);
     }
 

@@ -76,6 +76,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
         response.setSipAccountId(registrationConfig.getSipAccountId());
         response.setNodeId(registrationConfig.getNodeId());
         response.setExtension(registrationConfig.getExtension());
+        response.setAuthUsername(registrationConfig.getAuthUsername());
         response.setSipDisplayName(sipAccount == null ? null : sipAccount.getDisplayName());
         response.setSipDomain(registrationConfig.getSipDomain());
         response.setWssUrl(registrationConfig.getWssUrl());
@@ -182,6 +183,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
             if (sipAccount != null && sipAccount.getNodeId() != null) {
                 SipRegistrationConfigResponse registrationConfig = sipAccountQueryService.getRegistrationConfig(binding.getSipAccountId());
                 response.setNodeId(registrationConfig.getNodeId());
+                response.setAuthUsername(registrationConfig.getAuthUsername());
                 response.setSipDomain(registrationConfig.getSipDomain());
                 response.setWssUrl(registrationConfig.getWssUrl());
             }

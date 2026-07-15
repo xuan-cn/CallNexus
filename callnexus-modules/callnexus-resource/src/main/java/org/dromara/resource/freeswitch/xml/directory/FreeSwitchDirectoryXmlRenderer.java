@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 public class FreeSwitchDirectoryXmlRenderer {
     public String render(SipDirectoryAccountResponse account) {
         String extension = FreeSwitchXmlRenderer.escape(account.getExtension());
+        String authUsername = FreeSwitchXmlRenderer.escape(account.getAuthUsername());
         String domain = FreeSwitchXmlRenderer.escape(account.getDomain());
         String displayName = FreeSwitchXmlRenderer.escape(account.getDisplayName());
         String password = FreeSwitchXmlRenderer.escape(account.getAuthPassword());
@@ -16,12 +17,12 @@ public class FreeSwitchDirectoryXmlRenderer {
               <section name="directory">
                 <domain name="%s">
                   <params>
-                    <param name="dial-string" value="{sip_invite_domain=${dialed_domain},presence_id=${dialed_user}@${dialed_domain}}${sofia_contact(${dialed_user}@${dialed_domain})}"/>
+                    <param name="dial-string" value="{sip_invite_domain=${dialed_domain},presence_id=%s@${dialed_domain}}${sofia_contact(%s@${dialed_domain})}"/>
                   </params>
                   <groups>
                     <group name="default">
                       <users>
-                        <user id="%s">
+                        <user id="%s" number-alias="%s">
                           <params>
                             <param name="password" value="%s"/>
                           </params>
@@ -37,6 +38,6 @@ public class FreeSwitchDirectoryXmlRenderer {
                 </domain>
               </section>
             </document>
-            """.formatted(domain, extension, password, extension, displayName);
+            """.formatted(domain, extension, authUsername, authUsername, extension, password, extension, displayName);
     }
 }

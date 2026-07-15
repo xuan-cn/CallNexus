@@ -7,8 +7,8 @@ import org.dromara.call.domain.CallOriginateContext;
 import java.util.Set;
 
 public interface TelephonyCommandGateway {
-    void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination, OutboundRoute outboundRoute,
-                   CallOriginateContext context);
+    void originate(EslEndpoint endpoint, String callId, String agentExtension, String agentDialUsername, String destination,
+                   String destinationDialUsername, OutboundRoute outboundRoute, CallOriginateContext context);
     void hangup(EslEndpoint endpoint, String callId);
     void hold(EslEndpoint endpoint, String callId);
     void unhold(EslEndpoint endpoint, String callId);

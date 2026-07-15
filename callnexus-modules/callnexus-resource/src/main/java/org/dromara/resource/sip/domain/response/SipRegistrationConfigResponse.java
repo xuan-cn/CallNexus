@@ -7,6 +7,7 @@ public class SipRegistrationConfigResponse {
     private Long sipAccountId;
     private Long nodeId;
     private String extension;
+    private String authUsername;
     private String sipDomain;
     private String wssUrl;
     private String authPassword;

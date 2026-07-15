@@ -31,10 +31,12 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     private static final Pattern REGISTERED_USER_PATTERN = Pattern.compile("(?m)^User:\\s*([^@\\s]+)@.+$");
 
     @Override
-    public void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination, OutboundRoute outboundRoute,
-                          CallOriginateContext context) {
+    public void originate(EslEndpoint endpoint, String callId, String agentExtension, String agentDialUsername, String destination,
+                          String destinationDialUsername, OutboundRoute outboundRoute, CallOriginateContext context) {
         requireDialValue(agentExtension);
+        requireDialValue(agentDialUsername);
         requireDialValue(destination);
+        requireDialValue(destinationDialUsername);
         requireDialValue(endpoint.sipDomain());
         String callerIdNumber = outboundRoute != null && outboundRoute.isExternal() ? outboundRoute.getCallerIdNumber() : agentExtension;
         requireDialValue(callerIdNumber);
@@ -54,12 +56,12 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + ",api_hangup_hook='bg_system /opt/callnexus/bin/upload-recording.sh " + businessCallId
             + " /var/lib/freeswitch/recordings/" + callId + ".wav'"
             + ",hangup_after_bridge=true}";
-        String destinationDialString = destinationDialString(destination, endpoint.sipDomain(), outboundRoute);
-        String command = "bgapi originate " + variables + userDialString(agentExtension, endpoint.sipDomain())
+        String destinationDialString = destinationDialString(destinationDialUsername, endpoint.sipDomain(), outboundRoute);
+        String command = "bgapi originate " + variables + userDialString(agentDialUsername, endpoint.sipDomain())
             + " &bridge(" + destinationDialString + ")";
         sendCommand(endpoint, command);
-        log.info("FreeSWITCH 发起呼叫命令已提交，channelUuid={}，businessCallId={}，agentExtension={}，destination={}，external={}，gatewayCode={}，callerIdNumber={}，customerId={}，outboundTaskId={}，outboundMemberId={}",
-            callId, businessCallId, agentExtension, destination, outboundRoute != null && outboundRoute.isExternal(),
+        log.info("FreeSWITCH 发起呼叫命令已提交，channelUuid={}，businessCallId={}，agentExtension={}，destination={}，destinationDialUsername={}，external={}，gatewayCode={}，callerIdNumber={}，customerId={}，outboundTaskId={}，outboundMemberId={}",
+            callId, businessCallId, agentExtension, destination, destinationDialUsername, outboundRoute != null && outboundRoute.isExternal(),
             outboundRoute == null ? null : outboundRoute.getGatewayCode(), callerIdNumber,
             safeContext.customerId(), safeContext.outboundTaskId(), safeContext.outboundMemberId());
     }

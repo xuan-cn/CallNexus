@@ -8,5 +8,6 @@ public class SipAccountRealtimeResponse {
     private String tenantId;
     private Long nodeId;
     private String extension;
+    private String authUsername;
     private String domain;
 }

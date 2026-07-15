@@ -26,6 +26,8 @@ public interface OutboundLinePolicyService {
 
     PhoneNumberOutboundRouteResponse selectRoute(String tenantId, Long nodeId, Long agentId, Long skillGroupId);
 
+    PhoneNumberOutboundRouteResponse selectRouteByPolicy(String tenantId, Long nodeId, Long policyId);
+
     List<SkillGroupOutboundPolicyResponse> listSkillGroupPolicies(Long skillGroupId);
 
     Long saveSkillGroupPolicy(SkillGroupOutboundPolicyRequest request);

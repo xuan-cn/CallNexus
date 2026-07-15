@@ -56,6 +56,8 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     private static final String STATUS_PROCESSING = "PROCESSING";
     private static final String STATUS_SUCCESS = "SUCCESS";
     private static final String STATUS_FAILED = "FAILED";
+    private static final String SPEAKER_UNKNOWN = "UNKNOWN";
+    private static final String SOURCE_RECORDING_ASR = "RECORDING_ASR";
     private static final String DEFAULT_AGENT_TEMPLATE = "工号{extension}为您服务";
     private static final Duration RECORDING_DOWNLOAD_TTL = Duration.ofHours(2);
 
@@ -275,7 +277,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
                     "businessCallId", source.getBusinessCallId(),
                     "trimStartMs", audioClip.offsetMs()
                 )));
-            saveTranscriptSuccess(transcript, result, audioClip.offsetMs());
+            saveTranscriptSuccess(transcript, result, audioClip.offsetMs(), SPEAKER_UNKNOWN, SOURCE_RECORDING_ASR, null, null);
             task.setTextContent(result.fullText());
             task.setStatus(STATUS_SUCCESS);
             task.setFinishedAt(LocalDateTime.now());
@@ -351,12 +353,18 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         return transcript;
     }
 
-    private void saveTranscriptSuccess(AiCallTranscript transcript, AsrTranscribeResult result, int offsetMs) {
+    private void saveTranscriptSuccess(AiCallTranscript transcript, AsrTranscribeResult result, int offsetMs,
+                                       String speaker, String sourceType, String legUuid, Long agentId) {
         transcript.setStatus(STATUS_SUCCESS);
         transcript.setFullText(result.fullText());
         transcript.setFailureReason(null);
         transcript.setFinishedAt(LocalDateTime.now());
         transcriptMapper.updateById(transcript);
+        appendTranscriptSegments(transcript, result, offsetMs, speaker, sourceType, legUuid, agentId);
+    }
+
+    private void appendTranscriptSegments(AiCallTranscript transcript, AsrTranscribeResult result, int offsetMs,
+                                          String speaker, String sourceType, String legUuid, Long agentId) {
         if (result.segments() != null) {
             for (AsrSegment segment : result.segments()) {
                 if (StringUtils.isBlank(segment.text())) {
@@ -366,16 +374,27 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
                 entity.setTranscriptId(transcript.getId());
                 entity.setCallSessionId(transcript.getCallSessionId());
                 entity.setBusinessCallId(transcript.getBusinessCallId());
-                entity.setSpeaker("UNKNOWN");
+                entity.setSpeaker(StringUtils.blankToDefault(speaker, SPEAKER_UNKNOWN));
+                entity.setSourceType(StringUtils.blankToDefault(sourceType, SOURCE_RECORDING_ASR));
+                entity.setLegUuid(legUuid);
+                entity.setAgentId(agentId);
                 entity.setSentenceIndex(segment.sentenceIndex());
                 entity.setStartMs(offsetTime(segment.startMs(), offsetMs));
                 entity.setEndMs(offsetTime(segment.endMs(), offsetMs));
+                entity.setMessageTime(resolveMessageTime(transcript.getStartedAt(), entity.getStartMs()));
                 entity.setTextContent(segment.text());
                 entity.setFinalResult(segment.finalResult());
                 entity.setConfidence(segment.confidence());
                 transcriptSegmentMapper.insert(entity);
             }
         }
+    }
+
+    private LocalDateTime resolveMessageTime(LocalDateTime transcriptStartedAt, Integer startMs) {
+        if (transcriptStartedAt == null || startMs == null) {
+            return null;
+        }
+        return transcriptStartedAt.plus(startMs, ChronoUnit.MILLIS);
     }
 
     private Integer offsetTime(Integer value, int offsetMs) {
@@ -520,7 +539,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
                 .stream().map(FreeSwitchNodeGroup::getId).toList()
             : nodeGroupIds;
         if (groups.isEmpty()) {
-            throw new ServiceException("娌℃湁鍙敤 FreeSWITCH 鑺傜偣缁勶紝鏃犳硶鍙戝竷鐢熸垚闊抽");
+            throw new ServiceException("没有可用 FreeSWITCH 节点组，无法发布生成音频");
         }
         mediaPublicationService.publish(mediaId, groups);
     }
@@ -800,10 +819,10 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
 
     private void validateAsrTestFile(MultipartFile file) {
         if (file == null || file.isEmpty()) {
-            throw new ServiceException("ASR 娴嬭瘯闊抽涓嶈兘涓虹┖");
+            throw new ServiceException("ASR 测试音频不能为空");
         }
         if (file.getSize() > 20L * 1024 * 1024) {
-            throw new ServiceException("ASR 娴嬭瘯闊抽涓嶈兘瓒呰繃 20MB");
+            throw new ServiceException("ASR 测试音频不能超过 20MB");
         }
     }
 
@@ -838,20 +857,20 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
 
     private void taskSanity(String text) {
         if (StringUtils.isBlank(text)) {
-            throw new ServiceException("TTS 鏂囨湰涓嶈兘涓虹┖");
+            throw new ServiceException("TTS 文本不能为空");
         }
     }
 
     private AiSpeechProvider requireProvider(Long id) {
         AiSpeechProvider provider = providerMapper.selectById(id);
-        if (provider == null) throw new ServiceException("璇煶鏈嶅姟鍟嗕笉瀛樺湪");
+        if (provider == null) throw new ServiceException("语音服务商不存在");
         return provider;
     }
 
     private AiSpeechProvider requireEnabledTtsProvider(Long id) {
         AiSpeechProvider provider = requireProvider(id);
-        if (!Boolean.TRUE.equals(provider.getEnabled())) throw new ServiceException("璇煶鏈嶅姟鍟嗘湭鍚敤");
-        if (!Boolean.TRUE.equals(provider.getTtsEnabled())) throw new ServiceException("璇煶鏈嶅姟鍟嗘湭鍚敤 TTS 鑳藉姏");
+        if (!Boolean.TRUE.equals(provider.getEnabled())) throw new ServiceException("语音服务商未启用");
+        if (!Boolean.TRUE.equals(provider.getTtsEnabled())) throw new ServiceException("语音服务商未启用 TTS 能力");
         return provider;
     }
 
@@ -865,7 +884,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         boolean exists = providerMapper.exists(new LambdaQueryWrapper<AiSpeechProvider>()
             .eq(AiSpeechProvider::getProviderCode, code)
             .ne(excludedId != null, AiSpeechProvider::getId, excludedId));
-        if (exists) throw new ServiceException("璇煶鏈嶅姟鍟嗙紪鐮佸凡瀛樺湪");
+        if (exists) throw new ServiceException("语音服务商编码已存在");
     }
 
     private void ensureTemplateCodeUnique(String code, Long excludedId) {
@@ -994,6 +1013,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         response.setCreateTime(transcript.getCreateTime());
         List<AiCallTranscriptSegmentResponse> segments = transcriptSegmentMapper.selectList(new LambdaQueryWrapper<AiCallTranscriptSegment>()
                 .eq(AiCallTranscriptSegment::getTranscriptId, transcript.getId())
+                .orderByAsc(AiCallTranscriptSegment::getStartMs)
                 .orderByAsc(AiCallTranscriptSegment::getSentenceIndex))
             .stream().map(this::segmentResponse).toList();
         response.setSegments(segments);
@@ -1004,9 +1024,13 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         AiCallTranscriptSegmentResponse response = new AiCallTranscriptSegmentResponse();
         response.setId(segment.getId());
         response.setSpeaker(segment.getSpeaker());
+        response.setSourceType(segment.getSourceType());
+        response.setLegUuid(segment.getLegUuid());
+        response.setAgentId(segment.getAgentId());
         response.setSentenceIndex(segment.getSentenceIndex());
         response.setStartMs(segment.getStartMs());
         response.setEndMs(segment.getEndMs());
+        response.setMessageTime(segment.getMessageTime());
         response.setTextContent(segment.getTextContent());
         response.setFinalResult(segment.getFinalResult());
         response.setConfidence(segment.getConfidence());

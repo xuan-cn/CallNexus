@@ -53,7 +53,11 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -86,6 +90,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
      * 因此在通话详情查询时按对象 key 实时签发临时直链。
      */
     private static final Duration RECORDING_PRESIGNED_TTL = Duration.ofHours(2);
+    private static final DateTimeFormatter FS_LOCAL_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     @Override
     public void handleEvent(TelephonyEvent event) {
@@ -143,14 +148,15 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     }
 
     private void persistEvent(TelephonyEvent event, String tenantId) {
-        CallSession session = resolveSession(event, tenantId);
+        LocalDateTime occurredAt = eventOccurredAt(event);
+        CallSession session = resolveSession(event, tenantId, occurredAt);
         applySessionMetadata(session, event);
-        CallRecord record = upsertLeg(event, tenantId, session.getId());
-        appendTimelineEvent(session.getId(), event);
+        CallRecord record = upsertLeg(event, tenantId, session.getId(), occurredAt);
+        appendTimelineEvent(session.getId(), event, occurredAt);
         aggregateSession(session, record);
     }
 
-    private CallSession resolveSession(TelephonyEvent event, String tenantId) {
+    private CallSession resolveSession(TelephonyEvent event, String tenantId, LocalDateTime occurredAt) {
         Set<String> relatedUuids = relatedUuids(event);
         String explicitBusinessCallId = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_BUSINESS_CALL_ID);
         List<CallSession> candidates = StringUtils.isNotBlank(explicitBusinessCallId)
@@ -181,7 +187,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             .sorted(Comparator.comparing(CallSession::getId))
             .toList();
         if (distinctCandidates.isEmpty()) {
-            return createSession(event, tenantId, StringUtils.isNotBlank(explicitBusinessCallId) ? explicitBusinessCallId : event.uuid());
+            return createSession(event, tenantId, StringUtils.isNotBlank(explicitBusinessCallId) ? explicitBusinessCallId : event.uuid(), occurredAt);
         }
 
         CallSession primary = distinctCandidates.get(0);
@@ -195,7 +201,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         return primary;
     }
 
-    private CallSession createSession(TelephonyEvent event, String tenantId, String businessCallId) {
+    private CallSession createSession(TelephonyEvent event, String tenantId, String businessCallId, LocalDateTime occurredAt) {
         CallSession session = new CallSession();
         session.setTenantId(tenantId);
         session.setBusinessCallId(businessCallId);
@@ -205,7 +211,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         session.setCalledNumber(originalCalled(event));
         applyAgent(session, event);
         session.setCallStatus("CREATED");
-        session.setStartedAt(LocalDateTime.now());
+        session.setStartedAt(occurredAt);
         session.setDurationSeconds(0);
         session.setBillableSeconds(0);
         try {
@@ -242,12 +248,12 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         log.info("合并同一业务通话的临时会话，primarySessionId={}，mergedSessionId={}", primary.getId(), duplicate.getId());
     }
 
-    private CallRecord upsertLeg(TelephonyEvent event, String tenantId, Long sessionId) {
+    private CallRecord upsertLeg(TelephonyEvent event, String tenantId, Long sessionId, LocalDateTime occurredAt) {
         CallRecord record = recordMapper.selectOne(new LambdaQueryWrapper<CallRecord>()
             .eq(CallRecord::getChannelUuid, event.uuid())
             .last("limit 1"));
         if (record == null) {
-            record = newLeg(event, tenantId, sessionId);
+            record = newLeg(event, tenantId, sessionId, occurredAt);
             try {
                 recordMapper.insert(record);
                 return record;
@@ -258,12 +264,12 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             }
         }
         record.setSessionId(sessionId);
-        applyLegEvent(record, event, LocalDateTime.now());
+        applyLegEvent(record, event, occurredAt);
         recordMapper.updateById(record);
         return record;
     }
 
-    private CallRecord newLeg(TelephonyEvent event, String tenantId, Long sessionId) {
+    private CallRecord newLeg(TelephonyEvent event, String tenantId, Long sessionId, LocalDateTime occurredAt) {
         CallRecord record = new CallRecord();
         record.setTenantId(tenantId);
         record.setSessionId(sessionId);
@@ -275,10 +281,10 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         record.setDirection(resolveDirection(event));
         applyAgent(record, event);
         record.setCallStatus("CREATED");
-        record.setStartedAt(LocalDateTime.now());
+        record.setStartedAt(occurredAt);
         record.setDurationSeconds(0);
         record.setBillableSeconds(0);
-        applyLegEvent(record, event, LocalDateTime.now());
+        applyLegEvent(record, event, occurredAt);
         return record;
     }
 
@@ -309,7 +315,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         }
     }
 
-    private void appendTimelineEvent(Long sessionId, TelephonyEvent event) {
+    private void appendTimelineEvent(Long sessionId, TelephonyEvent event, LocalDateTime occurredAt) {
         String eventType = timelineEventType(event.eventName());
         if (eventType == null) return;
         String relatedChannelUuid = firstRelatedChannelUuid(event);
@@ -334,8 +340,29 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         timelineEvent.setEventType(eventType);
         timelineEvent.setFromTarget(event.callerNumber());
         timelineEvent.setToTarget(event.destinationNumber());
-        timelineEvent.setOccurredAt(LocalDateTime.now());
+        timelineEvent.setOccurredAt(occurredAt);
         eventMapper.insert(timelineEvent);
+    }
+
+    private LocalDateTime eventOccurredAt(TelephonyEvent event) {
+        String timestamp = event.headers().get("Event-Date-Timestamp");
+        if (StringUtils.isNotBlank(timestamp) && timestamp.matches("^\\d+$")) {
+            try {
+                long micros = Long.parseLong(timestamp);
+                return LocalDateTime.ofInstant(Instant.ofEpochMilli(micros / 1000), ZoneId.systemDefault());
+            } catch (NumberFormatException ignored) {
+                // Fall through to Event-Date-Local / now.
+            }
+        }
+        String local = event.headers().get("Event-Date-Local");
+        if (StringUtils.isNotBlank(local)) {
+            try {
+                return LocalDateTime.parse(local, FS_LOCAL_TIME_FORMATTER);
+            } catch (DateTimeParseException ignored) {
+                // Fall through to now.
+            }
+        }
+        return LocalDateTime.now();
     }
 
     private boolean bridgePairExists(Long sessionId, String channelUuid, String relatedChannelUuid) {

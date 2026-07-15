@@ -31,7 +31,11 @@ public class CallRecordingApplicationServiceImpl implements CallRecordingApplica
             CallSession session = sessionMapper.selectOne(new LambdaQueryWrapper<CallSession>()
                 .eq(CallSession::getBusinessCallId, businessCallId)
                 .last("limit 1"));
-            if (session == null) throw new ServiceException("通话记录不存在");
+            if (session == null) {
+                log.warn("通话录音上传无法关联业务通话，tenantId={}，businessCallId={}，fileName={}，fileSize={}",
+                    tenantId, businessCallId, file.getOriginalFilename(), file.getSize());
+                throw new ServiceException("通话记录不存在");
+            }
             try {
                 updateRecordingStatus(businessCallId, "PENDING");
                 MediaAssetResponse media = mediaAssetService.storeRecording(businessCallId, recordingDurationMs(session), file);

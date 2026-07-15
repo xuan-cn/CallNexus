@@ -5,6 +5,7 @@ import lombok.Data;
 @Data
 public class SipAccountPageQuery {
     private String extension;
+    private String authUsername;
     private String displayName;
     private Boolean enabled;
 }

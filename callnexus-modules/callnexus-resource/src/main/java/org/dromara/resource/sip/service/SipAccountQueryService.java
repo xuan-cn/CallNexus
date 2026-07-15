@@ -11,4 +11,6 @@ public interface SipAccountQueryService {
     SipRegistrationConfigResponse getRegistrationConfig(Long id);
     SipAccountRealtimeResponse findEnabledByNodeAndExtension(Long nodeId, String extension);
     SipDirectoryAccountResponse findDirectoryAccount(String tenantId, String domain, String extension);
+    SipDirectoryAccountResponse findDirectoryAccountForAuth(String tenantId, String domain, String authUsername);
+    SipDirectoryAccountResponse findDirectoryAccountByExtension(String tenantId, String domain, String extension);
 }

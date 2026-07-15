@@ -110,7 +110,7 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
                 return FreeSwitchXmlRenderer.notFound();
             }
             return ivrDialplanQueryService.renderPublishedFlow(request.tenantId(), queueTransferIvrFlowId, nodeId(request),
-                destinationNumber, context, domain);
+                destinationNumber, context, domain, callerNumber(request));
         }
         Long queueTransferVoiceMailBoxId = queueTransferId(destinationNumber, "callnexus_queue_voicemail_");
         if (queueTransferVoiceMailBoxId != null) {
@@ -137,14 +137,15 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
                 return FreeSwitchXmlRenderer.notFound();
             }
             return ivrDialplanQueryService.renderPublishedFlow(request.tenantId(), internalIvrFlowId, null,
-                destinationNumber, context, domain);
+                destinationNumber, context, domain, callerNumber(request));
         }
 
         SipDirectoryAccountResponse internalAccount = findInternalAccount(request, context, domain, destinationNumber);
         if (internalAccount != null) {
             String xml = dialplanXmlRenderer.renderInternalExtensionRoute(internalAccount, context);
-            log.info("FreeSWITCH 动态拨号计划匹配到内部分机路由，context={}，extension={}，domain={}，callerNumber={}，tenantId={}，返回XML长度={}",
-                context, destinationNumber, internalAccount.getDomain(), callerNumber(request), request.tenantId(), xml.length());
+            log.info("FreeSWITCH 动态拨号计划匹配到内部分机路由，context={}，extension={}，authUsername={}，domain={}，callerNumber={}，tenantId={}，返回XML长度={}",
+                context, internalAccount.getExtension(), internalAccount.getAuthUsername(), internalAccount.getDomain(),
+                callerNumber(request), request.tenantId(), xml.length());
             return xml;
         }
 
@@ -175,7 +176,7 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
     private SipDirectoryAccountResponse findInternalAccount(FreeSwitchXmlCurlRequest request, String context,
                                                              String domain, String destinationNumber) {
         if (!"default".equalsIgnoreCase(context)) return null;
-        return sipAccountQueryService.findDirectoryAccount(request.tenantId(), domain, destinationNumber);
+        return sipAccountQueryService.findDirectoryAccountByExtension(request.tenantId(), domain, destinationNumber);
     }
 
     private OutboundAuthorizationResult authorizeOutbound(FreeSwitchXmlCurlRequest request, String context,

@@ -6,6 +6,7 @@ import lombok.Data;
 public class SipDirectoryAccountResponse {
     private Long id;
     private String extension;
+    private String authUsername;
     private String displayName;
     private String domain;
     private String authPassword;

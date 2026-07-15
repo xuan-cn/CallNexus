@@ -25,7 +25,8 @@ public class IvrDialplanRouteHandler implements DialplanRouteHandler {
             context.route().getNodeId(),
             context.route().getNumber(),
             context.dialplanContext(),
-            context.route().getSipDomain()
+            context.route().getSipDomain(),
+            context.callerNumber()
         );
         log.info("FreeSWITCH 动态拨号计划匹配到IVR路由，number={}，ivrId={}，nodeId={}，tenantId={}，返回XML长度={}",
             context.route().getNumber(), context.route().getRouteTarget(), context.route().getNodeId(),

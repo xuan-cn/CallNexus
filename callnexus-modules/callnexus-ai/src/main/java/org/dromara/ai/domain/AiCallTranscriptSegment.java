@@ -9,6 +9,7 @@ import lombok.EqualsAndHashCode;
 import org.dromara.common.tenant.core.TenantEntity;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -20,9 +21,13 @@ public class AiCallTranscriptSegment extends TenantEntity {
     private Long callSessionId;
     private String businessCallId;
     private String speaker;
+    private String sourceType;
+    private String legUuid;
+    private Long agentId;
     private Integer sentenceIndex;
     private Integer startMs;
     private Integer endMs;
+    private LocalDateTime messageTime;
     private String textContent;
     private Boolean finalResult;
     private BigDecimal confidence;

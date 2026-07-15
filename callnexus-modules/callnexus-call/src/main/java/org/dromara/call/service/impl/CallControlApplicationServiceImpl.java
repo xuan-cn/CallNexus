@@ -38,6 +38,8 @@ import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationCommand;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationResult;
 import org.dromara.resource.outboundauth.service.OutboundAuthorizationService;
+import org.dromara.resource.sip.domain.response.SipAccountRealtimeResponse;
+import org.dromara.resource.sip.service.SipAccountQueryService;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -70,6 +72,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final TelephonyCommandGateway telephonyCommandGateway;
     private final OutboundAuthorizationService outboundAuthorizationService;
+    private final SipAccountQueryService sipAccountQueryService;
     private final AgentRealtimeQueryService agentRealtimeQueryService;
     private final CallLegMapper callLegMapper;
     private final CallEventMapper callEventMapper;
@@ -100,8 +103,9 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         OutboundAuthorizationResult authorization = authorizeOutbound(agent, destination, effectiveContext);
         OutboundRoute outboundRoute = toOutboundRoute(authorization);
         String authorizedDestination = authorization.normalizedCallee();
-        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), authorizedDestination, outboundRoute,
-            effectiveContext);
+        String destinationDialUsername = destinationDialUsername(agent, authorization, authorizedDestination);
+        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), agentDialUsername(agent),
+            authorizedDestination, destinationDialUsername, outboundRoute, effectiveContext);
 
         AgentActiveCall activeCall = new AgentActiveCall();
         activeCall.setCallId(callId);
@@ -115,6 +119,24 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         RedisUtils.setCacheObject(key, activeCall, ACTIVE_CALL_TTL);
         agentSessionService.changeStatus(AgentPresenceStatus.BUSY);
         return toResponse(activeCall);
+    }
+
+    private String agentDialUsername(CurrentAgentResponse agent) {
+        return agent.getAuthUsername() != null && !agent.getAuthUsername().isBlank()
+            ? agent.getAuthUsername() : agent.getExtension();
+    }
+
+    private String destinationDialUsername(CurrentAgentResponse agent, OutboundAuthorizationResult authorization, String destination) {
+        if (authorization.external()) {
+            return destination;
+        }
+        SipAccountRealtimeResponse account = sipAccountQueryService.findEnabledByNodeAndExtension(agent.getNodeId(), destination);
+        if (account == null || account.getAuthUsername() == null || account.getAuthUsername().isBlank()) {
+            throw new ServiceException("目标分机未配置可用 SIP 鉴权账号");
+        }
+        log.info("内部分机呼叫目标已映射 SIP 鉴权名，nodeId={}，extension={}，authUsername={}",
+            agent.getNodeId(), destination, account.getAuthUsername());
+        return account.getAuthUsername();
     }
 
     @Override

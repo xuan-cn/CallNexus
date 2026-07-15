@@ -7,9 +7,11 @@ import org.dromara.ivr.support.IvrDialplanRenderSupport;
 import org.dromara.ivr.support.IvrMediaPathResolver;
 
 public record IvrNodeContext(
+    String tenantId,
     IvrFlow flow,
     Long freeSwitchNodeId,
     String sipDomain,
+    String callerNumber,
     IvrGraphDefinition graph,
     IvrNodeDefinition node,
     StringBuilder xml,

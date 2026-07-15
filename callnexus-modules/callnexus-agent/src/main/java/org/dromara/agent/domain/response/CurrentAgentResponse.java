@@ -16,6 +16,7 @@ public class CurrentAgentResponse {
     private Long sipAccountId;
     private Long nodeId;
     private String extension;
+    private String authUsername;
     private String sipDisplayName;
     private String sipDomain;
     private String wssUrl;
