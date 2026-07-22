@@ -29,14 +29,13 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     private static final int READ_TIMEOUT_MILLIS = 5000;
     private static final String OUTBOUND_GATEWAY_CODEC = "PCMA";
     private static final Pattern REGISTERED_USER_PATTERN = Pattern.compile("(?m)^User:\\s*([^@\\s]+)@.+$");
+    private static final Pattern REGISTERED_AUTH_USER_PATTERN = Pattern.compile("(?m)^Auth-User:\\s*([^\\s]+)\\s*$");
 
     @Override
-    public void originate(EslEndpoint endpoint, String callId, String agentExtension, String agentDialUsername, String destination,
-                          String destinationDialUsername, OutboundRoute outboundRoute, CallOriginateContext context) {
+    public void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination,
+                          OutboundRoute outboundRoute, CallOriginateContext context) {
         requireDialValue(agentExtension);
-        requireDialValue(agentDialUsername);
         requireDialValue(destination);
-        requireDialValue(destinationDialUsername);
         requireDialValue(endpoint.sipDomain());
         String callerIdNumber = outboundRoute != null && outboundRoute.isExternal() ? outboundRoute.getCallerIdNumber() : agentExtension;
         requireDialValue(callerIdNumber);
@@ -56,12 +55,12 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + ",api_hangup_hook='bg_system /opt/callnexus/bin/upload-recording.sh " + businessCallId
             + " /var/lib/freeswitch/recordings/" + callId + ".wav'"
             + ",hangup_after_bridge=true}";
-        String destinationDialString = destinationDialString(destinationDialUsername, endpoint.sipDomain(), outboundRoute);
-        String command = "bgapi originate " + variables + userDialString(agentDialUsername, endpoint.sipDomain())
+        String destinationDialString = destinationDialString(destination, endpoint.sipDomain(), outboundRoute);
+        String command = "bgapi originate " + variables + userDialString(agentExtension, endpoint.sipDomain())
             + " &bridge(" + destinationDialString + ")";
         sendCommand(endpoint, command);
-        log.info("FreeSWITCH 发起呼叫命令已提交，channelUuid={}，businessCallId={}，agentExtension={}，destination={}，destinationDialUsername={}，external={}，gatewayCode={}，callerIdNumber={}，customerId={}，outboundTaskId={}，outboundMemberId={}",
-            callId, businessCallId, agentExtension, destination, destinationDialUsername, outboundRoute != null && outboundRoute.isExternal(),
+        log.info("FreeSWITCH 发起呼叫命令已提交，channelUuid={}，businessCallId={}，agentExtension={}，destination={}，external={}，gatewayCode={}，callerIdNumber={}，customerId={}，outboundTaskId={}，outboundMemberId={}",
+            callId, businessCallId, agentExtension, destination, outboundRoute != null && outboundRoute.isExternal(),
             outboundRoute == null ? null : outboundRoute.getGatewayCode(), callerIdNumber,
             safeContext.customerId(), safeContext.outboundTaskId(), safeContext.outboundMemberId());
     }
@@ -182,8 +181,8 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     }
 
     @Override
-    public void originateConsultation(EslEndpoint endpoint, String businessCallId, String consultCallId, String agentExtension, String targetExtension,
-                                      String customerLegUuid, String sourceAgentLegUuid) {
+    public void originateConsultation(EslEndpoint endpoint, String businessCallId, String consultCallId, String agentExtension,
+                                      String targetExtension, String customerLegUuid, String sourceAgentLegUuid) {
         requireDialValue(businessCallId);
         requireCallId(consultCallId);
         requireCallId(customerLegUuid);
@@ -229,6 +228,10 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         Matcher matcher = REGISTERED_USER_PATTERN.matcher(response.body());
         while (matcher.find()) {
             extensions.add(matcher.group(1));
+        }
+        Matcher authMatcher = REGISTERED_AUTH_USER_PATTERN.matcher(response.body());
+        while (authMatcher.find()) {
+            extensions.add(authMatcher.group(1));
         }
         return extensions;
     }
@@ -378,7 +381,8 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + " &conference(" + conferenceArguments + ")";
         sendCommand(endpoint, command);
         log.info("FreeSWITCH 调度呼叫参与方命令已提交，businessCallId={}，dispatchTaskId={}，dispatchTargetId={}，purpose={}，participantLegUuid={}，extension={}，conferenceName={}",
-            businessCallId, dispatchTaskId, dispatchTargetId, purpose, participantLegUuid, extension, conferenceName);
+            businessCallId, dispatchTaskId, dispatchTargetId, purpose, participantLegUuid, extension,
+            conferenceName);
     }
 
     @Override
@@ -441,6 +445,16 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             throw new ServiceException("FreeSWITCH ESL 命令不能为空");
         }
         sendCommand(endpoint, command);
+    }
+
+    /**
+     * 精准清理 Sofia profile 中指定 SIP 身份的入站注册。
+     */
+    public void flushInboundRegistration(EslEndpoint endpoint, String identity, String domain) {
+        requireDialValue(identity);
+        requireDialValue(domain);
+        executeApiCommandIgnoringApplicationError(endpoint,
+            "api sofia profile internal flush_inbound_reg " + identity + "@" + domain);
     }
 
     private void sendCommand(EslEndpoint endpoint, String command) {

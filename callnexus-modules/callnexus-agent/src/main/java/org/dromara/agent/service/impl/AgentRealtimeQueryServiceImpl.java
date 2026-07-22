@@ -27,7 +27,7 @@ public class AgentRealtimeQueryServiceImpl implements AgentRealtimeQueryService 
     }
 
     private AgentRealtimeTargetResponse findIgnoringTenant(Long nodeId, String extension) {
-        SipAccountRealtimeResponse sipAccount = sipAccountQueryService.findEnabledByNodeAndExtension(nodeId, extension);
+        SipAccountRealtimeResponse sipAccount = sipAccountQueryService.findEnabledByNodeAndIdentity(nodeId, extension);
         if (sipAccount == null) return null;
         AgentExtension binding = extensionMapper.selectOne(new LambdaQueryWrapper<AgentExtension>()
             .eq(AgentExtension::getSipAccountId, sipAccount.getSipAccountId()));
@@ -40,6 +40,7 @@ public class AgentRealtimeQueryServiceImpl implements AgentRealtimeQueryService 
         response.setUserId(agent.getUserId());
         response.setNodeId(sipAccount.getNodeId());
         response.setExtension(sipAccount.getExtension());
+        response.setAuthUsername(sipAccount.getAuthUsername());
         response.setSipDomain(sipAccount.getDomain());
         return response;
     }

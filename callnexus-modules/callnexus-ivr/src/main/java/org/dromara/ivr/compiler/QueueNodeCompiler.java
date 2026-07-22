@@ -101,14 +101,7 @@ public class QueueNodeCompiler implements IvrNodeCompiler {
             }
             case "VOICEMAIL" -> appendInternalTransfer(context, "callnexus_queue_voicemail_" + safeTarget(target));
             case "IVR" -> appendInternalTransfer(context, "callnexus_queue_ivr_" + safeTarget(target));
-            case "EXTENSION" -> {
-                context.xml().append("      <action application=\"bridge\" data=\"user/")
-                    .append(context.renderSupport().escape(safeTarget(target)))
-                    .append("@")
-                    .append(context.renderSupport().escape(context.sipDomain()))
-                    .append("\"/>\n");
-                context.renderSupport().appendHangup(context.xml(), "NORMAL_CLEARING");
-            }
+            case "EXTENSION" -> appendExtensionTransfer(context, safeTarget(target));
             case "QUEUE" -> {
                 context.xml().append("      <action application=\"callcenter\" data=\"")
                     .append(context.renderSupport().escape(targetQueueCode))
@@ -124,6 +117,12 @@ public class QueueNodeCompiler implements IvrNodeCompiler {
         context.xml().append("      <action application=\"transfer\" data=\"")
             .append(context.renderSupport().escape(destination))
             .append(" XML ${context}\"/>\n");
+    }
+
+    private void appendExtensionTransfer(IvrNodeContext context, String extension) {
+        context.xml().append("      <action application=\"transfer\" data=\"")
+            .append(context.renderSupport().escape(extension))
+            .append(" XML default\"/>\n");
     }
 
     private String safeTarget(String value) {

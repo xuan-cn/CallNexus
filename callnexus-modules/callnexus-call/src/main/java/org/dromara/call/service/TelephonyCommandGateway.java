@@ -7,8 +7,8 @@ import org.dromara.call.domain.CallOriginateContext;
 import java.util.Set;
 
 public interface TelephonyCommandGateway {
-    void originate(EslEndpoint endpoint, String callId, String agentExtension, String agentDialUsername, String destination,
-                   String destinationDialUsername, OutboundRoute outboundRoute, CallOriginateContext context);
+    void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination,
+                   OutboundRoute outboundRoute, CallOriginateContext context);
     void hangup(EslEndpoint endpoint, String callId);
     void hold(EslEndpoint endpoint, String callId);
     void unhold(EslEndpoint endpoint, String callId);
@@ -22,8 +22,8 @@ public interface TelephonyCommandGateway {
     void setCallVariable(EslEndpoint endpoint, String callId, String name, String value);
     void bridgeCalls(EslEndpoint endpoint, String leftCallId, String rightCallId);
     void blindTransfer(EslEndpoint endpoint, String callId, String targetExtension);
-    void originateConsultation(EslEndpoint endpoint, String businessCallId, String consultCallId, String agentExtension, String targetExtension,
-                               String customerLegUuid, String sourceAgentLegUuid);
+    void originateConsultation(EslEndpoint endpoint, String businessCallId, String consultCallId, String agentExtension,
+                               String targetExtension, String customerLegUuid, String sourceAgentLegUuid);
     boolean callExists(EslEndpoint endpoint, String callId);
     Set<String> listRegisteredExtensions(EslEndpoint endpoint);
     void originateMonitor(EslEndpoint endpoint, String businessCallId, String monitorLegUuid,

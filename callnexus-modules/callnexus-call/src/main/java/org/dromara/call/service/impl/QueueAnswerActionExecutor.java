@@ -78,7 +78,7 @@ public class QueueAnswerActionExecutor {
         try {
             executeAction(endpoint, session.getNodeId(), customerLeg.getLegUuid(), answeredAgentLeg, queue, action);
             appendActionEvent(session, customerLeg, answeredAgentLeg, queue, queueName, action, "SUCCESS", null);
-            log.info("队列接通动作已执行，sessionId={}，businessCallId={}，queueId={}，action={}，customerLegUuid={}，agentLegUuid={}，agentExtension={}",
+            log.info("队列接通动作已在桥接后执行，sessionId={}，businessCallId={}，queueId={}，action={}，customerLegUuid={}，agentLegUuid={}，agentExtension={}",
                 sessionId, session.getBusinessCallId(), queueId, action, customerLeg.getLegUuid(),
                 answeredAgentLeg.getLegUuid(), answeredAgentLeg.getAgentExtension());
         } catch (Exception exception) {
@@ -95,7 +95,7 @@ public class QueueAnswerActionExecutor {
             if (queue == null || StringUtils.isBlank(queue.answerMediaPath())) {
                 throw new IllegalStateException("队列接通提示音尚未同步到当前 FreeSWITCH 节点");
             }
-            telephonyCommandGateway.broadcastPlayback(endpoint, customerLegUuid, queue.answerMediaPath(), "aleg");
+            telephonyCommandGateway.broadcastPlayback(endpoint, agentLeg.getLegUuid(), queue.answerMediaPath(), "both");
             return;
         }
         if (ACTION_PLAY_AGENT_NUMBER.equals(action)) {
@@ -114,7 +114,7 @@ public class QueueAnswerActionExecutor {
             if (StringUtils.isBlank(promptPath)) {
                 throw new IllegalStateException("坐席工号提示音尚未生成或未同步到当前 FreeSWITCH 节点");
             }
-            telephonyCommandGateway.broadcastPlayback(endpoint, customerLegUuid, promptPath, "aleg");
+            telephonyCommandGateway.broadcastPlayback(endpoint, agentLeg.getLegUuid(), promptPath, "both");
         }
     }
 
@@ -189,4 +189,5 @@ public class QueueAnswerActionExecutor {
         FreeSwitchNodeConnectionResponse node = nodeQueryService.getEnabledConnection(nodeId);
         return new EslEndpoint(node.getEslHost(), node.getEslPort(), node.getEslPassword(), node.getSipDomain());
     }
+
 }

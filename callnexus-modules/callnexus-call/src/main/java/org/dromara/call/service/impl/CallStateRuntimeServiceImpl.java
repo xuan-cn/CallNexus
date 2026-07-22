@@ -19,11 +19,10 @@ import org.dromara.call.mapper.CallBridgeMapper;
 import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.service.CallStateRuntimeService;
+import org.dromara.call.service.SipBusinessIdentityResolver;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
-import org.dromara.resource.sip.domain.response.SipAccountRealtimeResponse;
-import org.dromara.resource.sip.service.SipAccountQueryService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
@@ -43,7 +42,7 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     private final AgentCallSessionMapper agentCallSessionMapper;
     private final AgentRealtimeQueryService agentQueryService;
     private final FreeSwitchNodeQueryService nodeQueryService;
-    private final SipAccountQueryService sipAccountQueryService;
+    private final SipBusinessIdentityResolver sipBusinessIdentityResolver;
 
     @Override
     public void handleEvent(TelephonyEvent event) {
@@ -150,8 +149,8 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         session.setBusinessCallId(businessCallId);
         session.setNodeId(event.nodeId());
         session.setDirection(resolveDirection(event));
-        session.setCallerNumber(originalCaller(event));
-        session.setCalledNumber(originalCalled(event));
+        session.setCallerNumber(businessNumber(event, originalCaller(event)));
+        session.setCalledNumber(businessNumber(event, originalCalled(event)));
         session.setCallStatus("CREATED");
         session.setStartedAt(now);
         session.setDurationSeconds(0);
@@ -179,8 +178,8 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
             leg.setEndpointExtension(resolveEndpointExtension(event));
             applyAgent(leg, event);
             leg.setLegRole(resolveLegRole(event, leg));
-            leg.setCallerNumber(event.callerNumber());
-            leg.setCalledNumber(event.destinationNumber());
+            leg.setCallerNumber(businessNumber(event, event.callerNumber()));
+            leg.setCalledNumber(businessNumber(event, event.destinationNumber()));
             leg.setLegState("CREATED");
             leg.setActive(true);
             applyLegEvent(leg, event, now);
@@ -215,10 +214,10 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
             leg.setLegRole(resolveLegRole(event, leg));
         }
         if (StringUtils.isBlank(leg.getCallerNumber())) {
-            leg.setCallerNumber(event.callerNumber());
+            leg.setCallerNumber(businessNumber(event, event.callerNumber()));
         }
         if (StringUtils.isBlank(leg.getCalledNumber())) {
-            leg.setCalledNumber(event.destinationNumber());
+            leg.setCalledNumber(businessNumber(event, event.destinationNumber()));
         }
         applyLegEvent(leg, event, now);
         legMapper.updateById(leg);
@@ -264,12 +263,8 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
             case EslEventNames.CHANNEL_HANGUP, EslEventNames.CHANNEL_HANGUP_COMPLETE, EslEventNames.CHANNEL_DESTROY -> {
                 leg.setLegState("ENDED");
                 leg.setActive(false);
-                if (leg.getEndedAt() == null || now.isAfter(leg.getEndedAt())) {
-                    leg.setEndedAt(now);
-                }
-                if (StringUtils.isNotBlank(event.hangupCause())) {
-                    leg.setHangupCause(event.hangupCause());
-                }
+                leg.setEndedAt(CallHangupCauseResolver.preserveFirst(leg.getEndedAt(), now));
+                leg.setHangupCause(CallHangupCauseResolver.preserveFirst(leg.getHangupCause(), event.hangupCause()));
             }
             default -> {
             }
@@ -439,12 +434,16 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
             .set(CallSession::getOwnerAgentId, null)
             .set(CallSession::getOwnerAgentExtension, null)
             .set(CallSession::getOwnerAgentLegUuid, null);
-        if (StringUtils.isNotBlank(event.hangupCause())) {
-            update.set(CallSession::getHangupCause, event.hangupCause());
+        List<CallLeg> sessionLegs = legMapper.selectList(new LambdaQueryWrapper<CallLeg>()
+            .eq(CallLeg::getSessionId, session.getId()));
+        String resolvedHangupCause = CallHangupCauseResolver.resolveSessionCause(
+            sessionLegs, session.getHangupCause(), event.hangupCause());
+        if (StringUtils.isNotBlank(resolvedHangupCause)) {
+            update.set(CallSession::getHangupCause, resolvedHangupCause);
         }
         sessionMapper.update(null, update);
         log.info("稳定通话状态已在最后活动电话腿结束后收口，sessionId={}，businessCallId={}，lastLegUuid={}，cause={}",
-            session.getId(), session.getBusinessCallId(), event.uuid(), event.hangupCause());
+            session.getId(), session.getBusinessCallId(), event.uuid(), resolvedHangupCause);
     }
 
     private int secondsBetween(LocalDateTime start, LocalDateTime end) {
@@ -527,21 +526,20 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         } else {
             return null;
         }
-        return normalizeExtension(endpoint);
+        return stripDomainIdentity(endpoint);
     }
 
     private String enabledSipExtension(Long nodeId, String value) {
-        String extension = normalizeExtension(value);
-        if (extension == null) {
-            return null;
-        }
-        SipAccountRealtimeResponse account = sipAccountQueryService.findEnabledByNodeAndExtension(nodeId, extension);
-        return account == null ? null : account.getExtension();
+        return sipBusinessIdentityResolver.resolveExtension(nodeId, value);
+    }
+
+    private String businessNumber(TelephonyEvent event, String value) {
+        return sipBusinessIdentityResolver.resolveBusinessNumber(event.nodeId(), value);
     }
 
     private AgentRealtimeTargetResponse findAgentByExtension(TelephonyEvent event, String value) {
-        String extension = normalizeExtension(value);
-        return extension == null ? null : agentQueryService.findByNodeAndExtension(event.nodeId(), extension);
+        String identity = stripDomainIdentity(value);
+        return identity == null ? null : agentQueryService.findByNodeAndExtension(event.nodeId(), identity);
     }
 
     private String resolveLegRole(TelephonyEvent event, CallLeg leg) {
@@ -767,6 +765,25 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         }
         normalized = normalized.replaceAll("[^0-9*#+]", "");
         return normalized.isBlank() ? null : normalized;
+    }
+
+    private String stripDomainIdentity(String value) {
+        if (StringUtils.isBlank(value)) {
+            return null;
+        }
+        String identity = value.trim();
+        if (identity.startsWith("[")) {
+            int close = identity.indexOf(']');
+            if (close >= 0) identity = identity.substring(close + 1).trim();
+        }
+        if (identity.startsWith("user/")) {
+            identity = identity.substring("user/".length());
+        }
+        int atIndex = identity.indexOf('@');
+        if (atIndex > 0) {
+            identity = identity.substring(0, atIndex);
+        }
+        return identity.isBlank() ? null : identity;
     }
 
     private String firstNotBlank(String... values) {

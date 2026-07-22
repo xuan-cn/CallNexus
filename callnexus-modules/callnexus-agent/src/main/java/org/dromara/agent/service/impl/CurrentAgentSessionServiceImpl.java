@@ -289,7 +289,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
             SipAccountResponse sipAccount = sipAccountQueryService.get(binding.getSipAccountId());
             if (sipAccount == null || sipAccount.getNodeId() == null || sipAccount.getDomain() == null) return;
             queueRuntimeSyncService.syncAgentStatus(new AgentQueueRuntimeStatus(
-                sipAccount.getNodeId(), sipAccount.getExtension(), sipAccount.getDomain(), status));
+                sipAccount.getNodeId(), sipAccount.getExtension(), sipAccount.getAuthUsername(), sipAccount.getDomain(), status));
         } catch (Exception exception) {
             log.warn("同步 FreeSWITCH 队列坐席状态失败，不影响坐席本地状态，agentId={}，status={}，error={}",
                 agent.getId(), status, exception.getMessage());

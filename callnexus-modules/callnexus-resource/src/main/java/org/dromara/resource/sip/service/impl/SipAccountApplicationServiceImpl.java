@@ -8,6 +8,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.resource.event.sip.SipAccountDeletedEvent;
 import org.dromara.resource.node.domain.FreeSwitchNode;
 import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
 import org.dromara.resource.sip.domain.SipAccount;
@@ -20,6 +21,7 @@ import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
 import org.dromara.resource.sip.domain.response.SipRegistrationConfigResponse;
 import org.dromara.resource.sip.mapper.SipAccountMapper;
 import org.dromara.resource.sip.service.SipAccountApplicationService;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +33,7 @@ import java.util.UUID;
 public class SipAccountApplicationServiceImpl implements SipAccountApplicationService {
     private final SipAccountMapper mapper;
     private final FreeSwitchNodeMapper nodeMapper;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     public TableDataInfo<SipAccountResponse> page(SipAccountPageQuery query, PageQuery pageQuery) {
@@ -49,6 +52,16 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         SipAccount account = mapper.selectById(id);
         if (account == null) throw new ServiceException("SIP 分机不存在");
         return toResponse(account);
+    }
+
+    @Override
+    public SipAccountResponse findEnabledById(Long id) {
+        if (id == null) return null;
+        SipAccount account = mapper.selectOne(new LambdaQueryWrapper<SipAccount>()
+            .eq(SipAccount::getId, id)
+            .eq(SipAccount::getEnabled, true)
+            .last("LIMIT 1"));
+        return account == null ? null : toResponse(account);
     }
 
     @Override
@@ -99,8 +112,18 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
+        SipAccount account = mapper.selectById(id);
+        if (account == null) throw new ServiceException("SIP 分机不存在");
         if (mapper.deleteById(id) != 1) throw new ServiceException("SIP 分机不存在");
+        eventPublisher.publishEvent(new SipAccountDeletedEvent(
+            account.getTenantId(),
+            account.getNodeId(),
+            account.getExtension(),
+            account.getAuthUsername(),
+            account.getDomain()
+        ));
     }
 
     @Override
@@ -130,21 +153,39 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
                 .eq(SipAccount::getNodeId, nodeId)
                 .eq(SipAccount::getExtension, extension)
                 .eq(SipAccount::getEnabled, true));
-            if (account == null) return null;
-            SipAccountRealtimeResponse response = new SipAccountRealtimeResponse();
-            response.setSipAccountId(account.getId());
-            response.setTenantId(account.getTenantId());
-            response.setNodeId(account.getNodeId());
-            response.setExtension(account.getExtension());
-            response.setAuthUsername(account.getAuthUsername());
-            response.setDomain(account.getDomain());
-            return response;
+            return toRealtimeResponse(account);
+        });
+    }
+
+    @Override
+    public SipAccountRealtimeResponse findEnabledByNodeAndIdentity(Long nodeId, String extensionOrAuthUsername) {
+        if (nodeId == null || extensionOrAuthUsername == null || extensionOrAuthUsername.isBlank()) {
+            return null;
+        }
+        String identity = stripDomain(extensionOrAuthUsername);
+        return TenantHelper.ignore(() -> {
+            SipAccount account = mapper.selectOne(new LambdaQueryWrapper<SipAccount>()
+                .eq(SipAccount::getNodeId, nodeId)
+                .eq(SipAccount::getEnabled, true)
+                .and(wrapper -> wrapper
+                    .eq(SipAccount::getExtension, identity)
+                    .or()
+                    .eq(SipAccount::getAuthUsername, identity))
+                .last("LIMIT 1"));
+            return toRealtimeResponse(account);
         });
     }
 
     @Override
     public SipDirectoryAccountResponse findDirectoryAccount(String tenantId, String domain, String extensionOrAuthUsername) {
-        return findDirectoryAccountForAuth(tenantId, domain, extensionOrAuthUsername);
+        return TenantHelper.dynamic(tenantId, () -> {
+            SipAccount account = findDirectoryAccountByIdentity(domain, extensionOrAuthUsername);
+            boolean requestedDomainMatched = account != null;
+            if (account == null) {
+                account = findDirectoryAccountByIdentity(null, extensionOrAuthUsername);
+            }
+            return toDirectoryResponse(account, requestedDomainMatched ? null : domain);
+        });
     }
 
     @Override
@@ -172,16 +213,54 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
                     .eq(SipAccount::getEnabled, true)
                     .last("LIMIT 1"));
             }
-            if (account == null) return null;
-            SipDirectoryAccountResponse response = new SipDirectoryAccountResponse();
-            response.setId(account.getId());
-            response.setExtension(account.getExtension());
-            response.setAuthUsername(account.getAuthUsername());
-            response.setDisplayName(account.getDisplayName());
-            response.setDomain(requestedDomainMatched ? account.getDomain() : domain);
-            response.setAuthPassword(account.getAuthPassword());
-            return response;
+            return toDirectoryResponse(account, requestedDomainMatched ? null : domain);
         });
+    }
+
+    private SipAccount findDirectoryAccountByIdentity(String domain, String identity) {
+        LambdaQueryWrapper<SipAccount> query = new LambdaQueryWrapper<SipAccount>()
+            .eq(domain != null && !domain.isBlank(), SipAccount::getDomain, domain)
+            .eq(SipAccount::getEnabled, true)
+            .and(wrapper -> wrapper.eq(SipAccount::getExtension, identity)
+                .or()
+                .eq(SipAccount::getAuthUsername, identity))
+            .last("LIMIT 1");
+        return mapper.selectOne(query);
+    }
+
+    private SipDirectoryAccountResponse toDirectoryResponse(SipAccount account, String requestedDomain) {
+        if (account == null) return null;
+        SipDirectoryAccountResponse response = new SipDirectoryAccountResponse();
+        response.setId(account.getId());
+        response.setExtension(account.getExtension());
+        response.setAuthUsername(account.getAuthUsername());
+        response.setDisplayName(account.getDisplayName());
+        response.setDomain(requestedDomain == null ? account.getDomain() : requestedDomain);
+        response.setAuthPassword(account.getAuthPassword());
+        return response;
+    }
+
+    private SipAccountRealtimeResponse toRealtimeResponse(SipAccount account) {
+        if (account == null) return null;
+        SipAccountRealtimeResponse response = new SipAccountRealtimeResponse();
+        response.setSipAccountId(account.getId());
+        response.setTenantId(account.getTenantId());
+        response.setNodeId(account.getNodeId());
+        response.setExtension(account.getExtension());
+        response.setAuthUsername(account.getAuthUsername());
+        response.setDomain(account.getDomain());
+        return response;
+    }
+
+    private String stripDomain(String value) {
+        String stripped = value.trim();
+        int at = stripped.indexOf('@');
+        if (at > 0) stripped = stripped.substring(0, at);
+        if (stripped.startsWith("[")) {
+            int close = stripped.indexOf(']');
+            if (close >= 0) stripped = stripped.substring(close + 1).trim();
+        }
+        return stripped;
     }
 
     private void ensureExtensionUnique(String extension, Long excludedId) {
@@ -193,7 +272,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     }
 
     private void ensureAuthUsernameUnique(String authUsername, Long excludedId) {
-        if (authUsername == null || authUsername.isBlank()) throw new ServiceException("SIP 鉴权名不能为空");
+        if (authUsername == null || authUsername.isBlank()) throw new ServiceException("SIP 登录名不能为空");
         boolean exists = mapper.exists(new LambdaQueryWrapper<SipAccount>()
             .eq(SipAccount::getTenantId, LoginHelper.getTenantId())
             .eq(SipAccount::getAuthUsername, authUsername)

@@ -38,8 +38,6 @@ import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationCommand;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationResult;
 import org.dromara.resource.outboundauth.service.OutboundAuthorizationService;
-import org.dromara.resource.sip.domain.response.SipAccountRealtimeResponse;
-import org.dromara.resource.sip.service.SipAccountQueryService;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -72,7 +70,6 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final TelephonyCommandGateway telephonyCommandGateway;
     private final OutboundAuthorizationService outboundAuthorizationService;
-    private final SipAccountQueryService sipAccountQueryService;
     private final AgentRealtimeQueryService agentRealtimeQueryService;
     private final CallLegMapper callLegMapper;
     private final CallEventMapper callEventMapper;
@@ -103,9 +100,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         OutboundAuthorizationResult authorization = authorizeOutbound(agent, destination, effectiveContext);
         OutboundRoute outboundRoute = toOutboundRoute(authorization);
         String authorizedDestination = authorization.normalizedCallee();
-        String destinationDialUsername = destinationDialUsername(agent, authorization, authorizedDestination);
-        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(), agentDialUsername(agent),
-            authorizedDestination, destinationDialUsername, outboundRoute, effectiveContext);
+        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(),
+            authorizedDestination, outboundRoute, effectiveContext);
 
         AgentActiveCall activeCall = new AgentActiveCall();
         activeCall.setCallId(callId);
@@ -121,44 +117,41 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         return toResponse(activeCall);
     }
 
-    private String agentDialUsername(CurrentAgentResponse agent) {
-        return agent.getAuthUsername() != null && !agent.getAuthUsername().isBlank()
-            ? agent.getAuthUsername() : agent.getExtension();
-    }
-
-    private String destinationDialUsername(CurrentAgentResponse agent, OutboundAuthorizationResult authorization, String destination) {
-        if (authorization.external()) {
-            return destination;
-        }
-        SipAccountRealtimeResponse account = sipAccountQueryService.findEnabledByNodeAndExtension(agent.getNodeId(), destination);
-        if (account == null || account.getAuthUsername() == null || account.getAuthUsername().isBlank()) {
-            throw new ServiceException("目标分机未配置可用 SIP 鉴权账号");
-        }
-        log.info("内部分机呼叫目标已映射 SIP 鉴权名，nodeId={}，extension={}，authUsername={}",
-            agent.getNodeId(), destination, account.getAuthUsername());
-        return account.getAuthUsername();
-    }
-
     @Override
     public void hangup(String callId) {
         CurrentAgentResponse agent = requireSignedInAgent();
-        requireActiveCall(agent, callId);
+        AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
+        String hangupTarget = callId;
         try {
             if (!dispatchCallTaskService.terminateByOperatorLeg(callId)) {
-                telephonyCommandGateway.hangup(endpoint, callId);
+                hangupTarget = resolveAgentHangupTarget(endpoint, agent, activeCall, callId);
+                telephonyCommandGateway.hangup(endpoint, hangupTarget);
+                log.info("坐席挂机已作用于当前坐席腿，requestCallId={}，agentLegUuid={}，agentId={}，extension={}",
+                    callId, hangupTarget, agent.getAgentId(), agent.getExtension());
             }
         } catch (Exception exception) {
-            if (telephonyCommandGateway.callExists(endpoint, callId)) {
+            if (telephonyCommandGateway.callExists(endpoint, hangupTarget)) {
                 throw exception instanceof RuntimeException runtimeException
                     ? runtimeException
                     : new ServiceException("挂机失败：" + exception.getMessage());
             }
-            log.info("挂机时电话腿已在 FreeSWITCH 侧结束，按幂等成功处理，callId={}，agentId={}，extension={}",
-                callId, agent.getAgentId(), agent.getExtension());
+            log.info("挂机时电话腿已在 FreeSWITCH 侧结束，按幂等成功处理，requestCallId={}，hangupTarget={}，agentId={}，extension={}",
+                callId, hangupTarget, agent.getAgentId(), agent.getExtension());
         }
         RedisUtils.deleteObject(activeCallKey(agent.getAgentId()));
         agentSessionService.changeStatus(AgentPresenceStatus.AFTER_CALL);
+    }
+
+    private String resolveAgentHangupTarget(EslEndpoint endpoint, CurrentAgentResponse agent,
+                                            AgentActiveCall activeCall, String requestCallId) {
+        try {
+            return resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, requestCallId).agentLegUuid();
+        } catch (ServiceException exception) {
+            log.info("当前通话尚未形成完整客户腿与坐席腿，挂机沿用请求电话腿，requestCallId={}，agentId={}，extension={}，reason={}",
+                requestCallId, agent.getAgentId(), agent.getExtension(), exception.getMessage());
+            return requestCallId;
+        }
     }
 
     @Override
@@ -328,8 +321,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             parkSourceAgentChannelIfExists(endpoint, consultCall);
             waitForConsultBridgeReleased();
             saveConsultCall(agent, consultCall);
-            telephonyCommandGateway.originateConsultation(endpoint, businessCallId, consultCallId, agent.getExtension(), targetExtension,
-                customerCallId, sourceAgentCallId);
+            telephonyCommandGateway.originateConsultation(endpoint, businessCallId, consultCallId, agent.getExtension(),
+                targetExtension, customerCallId, sourceAgentCallId);
             consultCall.setStatus(AgentConsultCallStatus.DIALING);
             saveConsultCall(agent, consultCall);
         } catch (RuntimeException exception) {

@@ -29,22 +29,48 @@ public class DirectoryUserXmlCurlHandler implements FreeSwitchXmlCurlHandler {
     @Override
     public String handle(FreeSwitchXmlCurlRequest request) {
         String domain = request.domain();
-        String extension = request.firstValue("user");
-        if (StringUtils.isBlank(extension)) extension = request.firstValue("sip_auth_username");
-        if (StringUtils.isBlank(extension)) extension = request.firstValue("key_value");
-        if (StringUtils.isBlank(domain) || StringUtils.isBlank(extension)) return FreeSwitchXmlRenderer.notFound();
+        String requestedUser = request.firstValue("user");
+        if (StringUtils.isBlank(requestedUser)) requestedUser = request.firstValue("key_value");
+        String authUsername = request.firstValue("sip_auth_username");
+        if (StringUtils.isBlank(domain)
+            || (StringUtils.isBlank(requestedUser) && StringUtils.isBlank(authUsername))) {
+            log.warn("FreeSWITCH Directory 请求缺少身份参数，tenantId={}，domain={}，user={}，authUsername={}，action={}",
+                request.tenantId(), domain, requestedUser, authUsername, request.firstValue("action"));
+            return FreeSwitchXmlRenderer.notFound();
+        }
 
         // 识别 mod_callcenter 队列振铃请求：directory 请求会携带 cc_queue/cc_agent/cc_member_session_uuid。
         // 这是队列向坐席振铃的可靠信号，发布事件供 call 模块记录"坐席振铃"时间线节点。
         publishAgentRingSignalIfFromQueue(request, domain);
 
-        boolean queueAgentCall = StringUtils.isNotBlank(request.firstValue("cc_queue"))
-            && "user_call".equalsIgnoreCase(request.firstValue("action"));
-        SipDirectoryAccountResponse account = queueAgentCall
-            ? sipAccountQueryService.findDirectoryAccountByExtension(request.tenantId(), domain, extension)
-            : sipAccountQueryService.findDirectoryAccountForAuth(request.tenantId(), domain, extension);
-        if (account == null) return FreeSwitchXmlRenderer.notFound();
+        SipDirectoryAccountResponse account;
+        if (StringUtils.isNotBlank(authUsername)) {
+            account = sipAccountQueryService.findDirectoryAccountForAuth(
+                request.tenantId(), domain, authUsername);
+            if (!matchesRequestedUser(account, requestedUser)) {
+                log.warn("FreeSWITCH Directory 认证身份与分机不匹配，tenantId={}，domain={}，user={}，authUsername={}，resolvedExtension={}",
+                    request.tenantId(), domain, requestedUser, authUsername,
+                    account == null ? null : account.getExtension());
+                return FreeSwitchXmlRenderer.notFound();
+            }
+        } else {
+            account = sipAccountQueryService.findDirectoryAccountByExtension(
+                request.tenantId(), domain, requestedUser);
+        }
+        if (account == null) {
+            log.warn("FreeSWITCH Directory 未找到启用的 SIP 分机，tenantId={}，domain={}，user={}，authUsername={}，action={}",
+                request.tenantId(), domain, requestedUser, authUsername, request.firstValue("action"));
+            return FreeSwitchXmlRenderer.notFound();
+        }
+        log.debug("FreeSWITCH Directory 身份解析成功，tenantId={}，domain={}，user={}，authUsername={}，extension={}，resolvedAuthUsername={}",
+            request.tenantId(), domain, requestedUser, authUsername,
+            account.getExtension(), account.getAuthUsername());
         return directoryXmlRenderer.render(account);
+    }
+
+    private boolean matchesRequestedUser(SipDirectoryAccountResponse account, String requestedUser) {
+        if (account == null || StringUtils.isBlank(requestedUser)) return account != null;
+        return requestedUser.equals(account.getExtension()) || requestedUser.equals(account.getAuthUsername());
     }
 
     /**

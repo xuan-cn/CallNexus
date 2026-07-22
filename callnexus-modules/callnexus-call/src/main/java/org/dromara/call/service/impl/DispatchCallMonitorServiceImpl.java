@@ -102,6 +102,7 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
             FreeSwitchNode node = nodes.get(account.getNodeId());
             response.setNodeName(node == null ? null : node.getNodeName());
             response.setExtension(account.getExtension());
+            response.setAuthUsername(account.getAuthUsername());
             response.setDisplayName(account.getDisplayName());
             response.setDomain(account.getDomain());
             response.setEnabled(account.getEnabled());
@@ -110,7 +111,8 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
             } else if (!registrations.containsKey(account.getNodeId())) {
                 response.setRegistrationStatus("NODE_UNAVAILABLE");
             } else {
-                response.setRegistrationStatus(registrations.get(account.getNodeId()).contains(account.getExtension())
+                response.setRegistrationStatus(SipRegistrationMatcher.isRegistered(registrations.get(account.getNodeId()),
+                    account.getExtension(), account.getAuthUsername())
                     ? "REGISTERED" : "UNREGISTERED");
             }
             AgentExtension binding = bindings.get(account.getId());

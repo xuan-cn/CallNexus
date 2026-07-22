@@ -45,6 +45,8 @@ public class QueueDialplanRouteHandler implements DialplanRouteHandler {
                 context.route().getNumber(), queueId, context.route().getNodeId(), context.request().tenantId());
             return FreeSwitchXmlRenderer.notFound();
         }
+        callQueueQueryService.refreshQueueAgentRuntimeStatus(
+            context.request().tenantId(), queue.getId(), context.route().getNodeId());
         fillOutboundGatewayCode(queue, context);
         String xml = dialplanXmlRenderer.renderQueueRoute(context.route(), queue, context.dialplanContext());
         publishQueueEntrySignal(context, queue);

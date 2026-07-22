@@ -95,7 +95,8 @@ public class StickyAgentRegistryImpl implements StickyAgentRegistry {
         SipAccountResponse account = sipAccountQueryService.get(binding.getSipAccountId());
         if (account == null || !Boolean.TRUE.equals(account.getEnabled())
             || !nodeId.equals(account.getNodeId())
-            || StringUtils.isBlank(account.getExtension()) || StringUtils.isBlank(account.getDomain())) {
+            || StringUtils.isBlank(account.getExtension())
+            || StringUtils.isBlank(account.getDomain())) {
             log.info("记忆坐席分机不可用或跨节点，回落至普通队列分配，tenantId={}，queueId={}，callerNumber={}，agentId={}，nodeId={}",
                 tenantId, queueId, callerNumber, agentId, nodeId);
             return null;

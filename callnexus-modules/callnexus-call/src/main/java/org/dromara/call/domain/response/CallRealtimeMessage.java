@@ -9,6 +9,11 @@ public class CallRealtimeMessage {
     private String type;
     private String callId;
     private String callerNumber;
+    private String callerNumberType;
+    private String callerMobileSegment;
+    private String callerProvince;
+    private String callerCity;
+    private String callerCarrier;
     private String calledNumber;
     private String agentExtension;
     private String hangupCause;

@@ -11,5 +11,6 @@ public class AgentRealtimeTargetResponse implements Serializable {
     private Long userId;
     private Long nodeId;
     private String extension;
+    private String authUsername;
     private String sipDomain;
 }

@@ -38,6 +38,6 @@ public class FreeSwitchDirectoryXmlRenderer {
                 </domain>
               </section>
             </document>
-            """.formatted(domain, extension, authUsername, authUsername, extension, password, extension, displayName);
+            """.formatted(domain, extension, extension, authUsername, extension, password, extension, displayName);
     }
 }

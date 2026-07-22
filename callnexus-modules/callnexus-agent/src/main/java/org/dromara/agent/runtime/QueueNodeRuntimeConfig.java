@@ -10,6 +10,7 @@ public record QueueNodeRuntimeConfig(
     Boolean queueAnnounceEnabled,
     Integer queueAnnounceInterval,
     String queueAnnounceMediaPath,
+    String answerAction,
     String agentNoAnswerAction,
     Integer maxWaitSeconds,
     List<QueueAgentRuntimeConfig> agents

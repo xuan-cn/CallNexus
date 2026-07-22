@@ -34,13 +34,13 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
                       <action application="record_session" data="${callnexus_recording_path}"/>
                       <action application="set" data="domain_name=%s"/>
-                      <action application="bridge" data="user/%s@%s"/>
+                      <action application="transfer" data="%s XML default"/>
                     </condition>
                   </extension>
                 </context>
               </section>
             </document>
-            """.formatted(dialplanContext, number, number, route.getId(), number, number, domain, extension, domain);
+            """.formatted(dialplanContext, number, number, route.getId(), number, number, domain, extension);
     }
 
     public String renderQueueRoute(PhoneNumberDialplanRouteResponse route, CallQueueDialplanResponse queue, String context) {
@@ -362,9 +362,7 @@ public class FreeSwitchDialplanXmlRenderer {
                 + "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
             case "VOICEMAIL" -> internalTransfer("callnexus_queue_voicemail_" + safeTarget(target), context);
             case "IVR" -> internalTransfer("callnexus_queue_ivr_" + safeTarget(target), context);
-            case "EXTENSION" -> "                      <action application=\"bridge\" data=\"user/"
-                + FreeSwitchXmlRenderer.escape(safeTarget(target)) + "@${domain_name}\"/>\n"
-                + "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
+            case "EXTENSION" -> extensionTransfer(safeTarget(target));
             case "QUEUE" -> "                      <action application=\"callcenter\" data=\""
                 + FreeSwitchXmlRenderer.escape(targetQueueCode + "@default") + "\"/>\n"
                 + "                      <action application=\"hangup\" data=\"NORMAL_CLEARING\"/>\n";
@@ -376,6 +374,11 @@ public class FreeSwitchDialplanXmlRenderer {
         return "                      <action application=\"set\" data=\"callnexus_internal_transfer=QUEUE\"/>\n"
             + "                      <action application=\"transfer\" data=\"" + FreeSwitchXmlRenderer.escape(destination)
             + " XML " + FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "public" : context) + "\"/>\n";
+    }
+
+    private String extensionTransfer(String extension) {
+        return "                      <action application=\"transfer\" data=\""
+            + FreeSwitchXmlRenderer.escape(extension) + " XML default\"/>\n";
     }
 
     private String safeTarget(String value) {
@@ -455,7 +458,6 @@ public class FreeSwitchDialplanXmlRenderer {
         if (account.getAuthUsername() == null || account.getAuthUsername().isBlank()) {
             return FreeSwitchXmlRenderer.notFound();
         }
-        String authUsername = FreeSwitchXmlRenderer.escape(account.getAuthUsername());
         String domain = FreeSwitchXmlRenderer.escape(account.getDomain());
         return """
             <document type="freeswitch/xml">
@@ -479,6 +481,6 @@ public class FreeSwitchDialplanXmlRenderer {
                 </context>
               </section>
             </document>
-            """.formatted(dialplanContext, extension, extension, extension, domain, authUsername, domain);
+            """.formatted(dialplanContext, extension, extension, extension, domain, extension, domain);
     }
 }

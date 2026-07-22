@@ -10,6 +10,7 @@ public class DispatchOperatorExtensionResponse {
     private Long nodeId;
     private String nodeName;
     private String extension;
+    private String authUsername;
     private String displayName;
     private String domain;
 }

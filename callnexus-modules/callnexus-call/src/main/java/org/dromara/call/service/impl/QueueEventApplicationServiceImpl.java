@@ -344,6 +344,7 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
             }
             CallSession session = sessionMapper.selectById(sessionId);
             String agentIdentity = ccAgentValue.toString();
+            String agentExtension = extensionFromIdentity(agentIdentity, session == null ? null : session.getNodeId());
             CallRecord record = new CallRecord();
             record.setTenantId(session == null ? null : session.getTenantId());
             record.setSessionId(sessionId);
@@ -351,9 +352,9 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
             record.setChannelUuid(bridgeUuid);
             record.setCallUuid(session == null ? null : session.getBusinessCallId());
             record.setCallerNumber(session == null ? null : session.getCallerNumber());
-            record.setCalledNumber(extensionFromIdentity(agentIdentity));
+            record.setCalledNumber(agentExtension);
             record.setAgentId(Long.valueOf(agentIdValue.toString()));
-            record.setAgentExtension(extensionFromIdentity(agentIdentity));
+            record.setAgentExtension(agentExtension);
             record.setAnsweredAt(ringEvent.getOccurredAt());
             log.info("通过最近坐席振铃事件兜底解析队列接听坐席，sessionId={}，bridgeUuid={}，agentIdentity={}，agentId={}",
                 sessionId, bridgeUuid, agentIdentity, record.getAgentId());
@@ -365,9 +366,13 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         }
     }
 
-    private String extensionFromIdentity(String agentIdentity) {
+    private String extensionFromIdentity(String agentIdentity, Long nodeId) {
         if (StringUtils.isBlank(agentIdentity)) {
             return null;
+        }
+        String resolved = resourceQueryService.findAgentExtensionByIdentity(agentIdentity, nodeId);
+        if (StringUtils.isNotBlank(resolved)) {
+            return resolved;
         }
         int domainIndex = agentIdentity.indexOf('@');
         return domainIndex > 0 ? agentIdentity.substring(0, domainIndex) : agentIdentity;

@@ -42,6 +42,7 @@ import org.dromara.call.service.CallSessionCompletedListener;
 import org.dromara.call.service.BusinessAssociationQueryService;
 import org.dromara.call.service.QueueEventApplicationService;
 import org.dromara.call.service.CallBusinessAssociationService;
+import org.dromara.call.service.SipBusinessIdentityResolver;
 import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
@@ -49,6 +50,9 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.dromara.resource.number.domain.request.PhoneNumberNormalizeRequest;
+import org.dromara.resource.number.domain.response.PhoneNumberNormalizeResponse;
+import org.dromara.resource.number.service.PhoneNumberNormalizationService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
@@ -82,6 +86,8 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private final OssService ossService;
     private final QueueEventApplicationService queueEventApplicationService;
     private final BusinessAssociationQueryService businessAssociationQueryService;
+    private final PhoneNumberNormalizationService phoneNumberNormalizationService;
+    private final SipBusinessIdentityResolver sipBusinessIdentityResolver;
     private final List<CallSessionCompletedListener> sessionCompletedListeners;
 
     /**
@@ -152,7 +158,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         CallSession session = resolveSession(event, tenantId, occurredAt);
         applySessionMetadata(session, event);
         CallRecord record = upsertLeg(event, tenantId, session.getId(), occurredAt);
-        appendTimelineEvent(session.getId(), event, occurredAt);
+        appendTimelineEvent(tenantId, session.getId(), event, occurredAt);
         aggregateSession(session, record);
     }
 
@@ -207,8 +213,9 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         session.setBusinessCallId(businessCallId);
         session.setNodeId(event.nodeId());
         session.setDirection(resolveDirection(event));
-        session.setCallerNumber(originalCaller(event));
-        session.setCalledNumber(originalCalled(event));
+        session.setCallerNumber(businessNumber(event, originalCaller(event)));
+        session.setCalledNumber(businessNumber(event, originalCalled(event)));
+        applyNumberLocations(session, tenantId);
         applyAgent(session, event);
         session.setCallStatus("CREATED");
         session.setStartedAt(occurredAt);
@@ -276,8 +283,8 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         record.setNodeId(event.nodeId());
         record.setChannelUuid(event.uuid());
         record.setCallUuid(resolveCallUuid(event));
-        record.setCallerNumber(event.callerNumber());
-        record.setCalledNumber(event.destinationNumber());
+        record.setCallerNumber(businessNumber(event, event.callerNumber()));
+        record.setCalledNumber(businessNumber(event, event.destinationNumber()));
         record.setDirection(resolveDirection(event));
         applyAgent(record, event);
         record.setCallStatus("CREATED");
@@ -289,8 +296,12 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     }
 
     private void applyLegEvent(CallRecord record, TelephonyEvent event, LocalDateTime occurredAt) {
-        if (StringUtils.isBlank(record.getCallerNumber())) record.setCallerNumber(event.callerNumber());
-        if (StringUtils.isBlank(record.getCalledNumber())) record.setCalledNumber(event.destinationNumber());
+        if (StringUtils.isBlank(record.getCallerNumber())) {
+            record.setCallerNumber(businessNumber(event, event.callerNumber()));
+        }
+        if (StringUtils.isBlank(record.getCalledNumber())) {
+            record.setCalledNumber(businessNumber(event, event.destinationNumber()));
+        }
         if (StringUtils.isBlank(record.getCallUuid())) record.setCallUuid(resolveCallUuid(event));
         if (record.getAgentId() == null) applyAgent(record, event);
         switch (event.eventName()) {
@@ -305,17 +316,17 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             case EslEventNames.CHANNEL_BRIDGE -> record.setCallStatus("BRIDGED");
             case EslEventNames.CHANNEL_HANGUP, EslEventNames.CHANNEL_HANGUP_COMPLETE, EslEventNames.CHANNEL_DESTROY -> {
                 record.setCallStatus("ENDED");
-                if (record.getEndedAt() == null || occurredAt.isAfter(record.getEndedAt())) record.setEndedAt(occurredAt);
-                if (StringUtils.isNotBlank(event.hangupCause())) record.setHangupCause(event.hangupCause());
-                record.setDurationSeconds(secondsBetween(record.getStartedAt(), occurredAt));
-                record.setBillableSeconds(secondsBetween(record.getAnsweredAt(), occurredAt));
+                record.setEndedAt(CallHangupCauseResolver.preserveFirst(record.getEndedAt(), occurredAt));
+                record.setHangupCause(CallHangupCauseResolver.preserveFirst(record.getHangupCause(), event.hangupCause()));
+                record.setDurationSeconds(secondsBetween(record.getStartedAt(), record.getEndedAt()));
+                record.setBillableSeconds(secondsBetween(record.getAnsweredAt(), record.getEndedAt()));
             }
             default -> {
             }
         }
     }
 
-    private void appendTimelineEvent(Long sessionId, TelephonyEvent event, LocalDateTime occurredAt) {
+    private void appendTimelineEvent(String tenantId, Long sessionId, TelephonyEvent event, LocalDateTime occurredAt) {
         String eventType = timelineEventType(event.eventName());
         if (eventType == null) return;
         String relatedChannelUuid = firstRelatedChannelUuid(event);
@@ -334,12 +345,13 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             if (exists) return;
         }
         CallEvent timelineEvent = new CallEvent();
+        timelineEvent.setTenantId(tenantId);
         timelineEvent.setSessionId(sessionId);
         timelineEvent.setChannelUuid(event.uuid());
         timelineEvent.setRelatedChannelUuid(relatedChannelUuid);
         timelineEvent.setEventType(eventType);
-        timelineEvent.setFromTarget(event.callerNumber());
-        timelineEvent.setToTarget(event.destinationNumber());
+        timelineEvent.setFromTarget(businessNumber(event, event.callerNumber()));
+        timelineEvent.setToTarget(businessNumber(event, event.destinationNumber()));
         timelineEvent.setOccurredAt(occurredAt);
         eventMapper.insert(timelineEvent);
     }
@@ -397,11 +409,17 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         if (session.getEndedAt() != null) {
             session.setDurationSeconds(secondsBetween(session.getStartedAt(), session.getEndedAt()));
             session.setBillableSeconds(secondsBetween(session.getAnsweredAt(), session.getEndedAt()));
-            String hangupCause = legs.stream()
-                .filter(leg -> StringUtils.isNotBlank(leg.getHangupCause()))
-                .reduce((left, right) -> right)
-                .map(CallRecord::getHangupCause)
-                .orElse(currentRecord.getHangupCause());
+            List<CallLeg> stableLegs = callLegMapper.selectList(new LambdaQueryWrapper<CallLeg>()
+                .eq(CallLeg::getSessionId, session.getId()));
+            String hangupCause = CallHangupCauseResolver.resolveSessionCause(
+                stableLegs, session.getHangupCause(), currentRecord.getHangupCause());
+            if (StringUtils.isBlank(hangupCause)) {
+                hangupCause = legs.stream()
+                    .filter(leg -> StringUtils.isNotBlank(leg.getHangupCause()))
+                    .min(Comparator.comparing(CallRecord::getEndedAt, Comparator.nullsLast(Comparator.naturalOrder())))
+                    .map(CallRecord::getHangupCause)
+                    .orElse(null);
+            }
             session.setHangupCause(hangupCause);
         }
         sessionMapper.updateById(session);
@@ -523,21 +541,26 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private void applySessionMetadata(CallSession session, TelephonyEvent event) {
         boolean changed = false;
         String direction = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_DIRECTION);
-        String caller = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER);
-        String called = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLED);
+        String caller = businessNumber(event, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER));
+        String called = businessNumber(event, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLED));
         Long customerId = parseLong(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CUSTOMER_ID));
         Long outboundTaskId = parseLong(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_OUTBOUND_TASK_ID));
         Long outboundMemberId = parseLong(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_OUTBOUND_MEMBER_ID));
         if (StringUtils.isNotBlank(direction) && !direction.equals(session.getDirection())) {
             session.setDirection(direction);
+            if ("INTERNAL".equals(direction)) {
+                applyNumberLocations(session, resolveTenantId(event));
+            }
             changed = true;
         }
         if (StringUtils.isNotBlank(caller) && !caller.equals(session.getCallerNumber())) {
             session.setCallerNumber(caller);
+            applyCallerLocation(session, resolveTenantId(event));
             changed = true;
         }
         if (StringUtils.isNotBlank(called) && !called.equals(session.getCalledNumber())) {
             session.setCalledNumber(called);
+            applyCalledLocation(session, resolveTenantId(event));
             changed = true;
         }
         if (customerId != null && !customerId.equals(session.getCustomerId())) {
@@ -553,6 +576,79 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             changed = true;
         }
         if (changed) sessionMapper.updateById(session);
+    }
+
+    private void applyNumberLocations(CallSession session, String tenantId) {
+        if ("INTERNAL".equals(session.getDirection())) {
+            applyInternalExtensionLocations(session);
+            return;
+        }
+        applyCallerLocation(session, tenantId);
+        applyCalledLocation(session, tenantId);
+    }
+
+    private void applyCallerLocation(CallSession session, String tenantId) {
+        if ("INTERNAL".equals(session.getDirection())) {
+            clearCallerLocation(session, "EXTENSION");
+            return;
+        }
+        PhoneNumberNormalizeResponse location = resolveNumberLocation(tenantId, session.getCallerNumber());
+        if (location == null) return;
+        session.setCallerNumberType(location.getNumberType());
+        session.setCallerMobileSegment(location.getMobileSegment());
+        session.setCallerProvince(location.getProvince());
+        session.setCallerCity(location.getCity());
+        session.setCallerCarrier(location.getCarrier());
+    }
+
+    private void applyCalledLocation(CallSession session, String tenantId) {
+        if ("INTERNAL".equals(session.getDirection())) {
+            clearCalledLocation(session, "EXTENSION");
+            return;
+        }
+        PhoneNumberNormalizeResponse location = resolveNumberLocation(tenantId, session.getCalledNumber());
+        if (location == null) return;
+        session.setCalledNumberType(location.getNumberType());
+        session.setCalledMobileSegment(location.getMobileSegment());
+        session.setCalledProvince(location.getProvince());
+        session.setCalledCity(location.getCity());
+        session.setCalledCarrier(location.getCarrier());
+    }
+
+    private void applyInternalExtensionLocations(CallSession session) {
+        clearCallerLocation(session, "EXTENSION");
+        clearCalledLocation(session, "EXTENSION");
+    }
+
+    private void clearCallerLocation(CallSession session, String numberType) {
+        session.setCallerNumberType(numberType);
+        session.setCallerMobileSegment(null);
+        session.setCallerProvince(null);
+        session.setCallerCity(null);
+        session.setCallerCarrier(null);
+    }
+
+    private void clearCalledLocation(CallSession session, String numberType) {
+        session.setCalledNumberType(numberType);
+        session.setCalledMobileSegment(null);
+        session.setCalledProvince(null);
+        session.setCalledCity(null);
+        session.setCalledCarrier(null);
+    }
+
+    private PhoneNumberNormalizeResponse resolveNumberLocation(String tenantId, String number) {
+        if (StringUtils.isBlank(tenantId) || StringUtils.isBlank(number)) return null;
+        PhoneNumberNormalizeRequest request = new PhoneNumberNormalizeRequest();
+        request.setRawNumber(number);
+        request.setUsage("CALL_SESSION_LOCATION");
+        request.setStripChinaCountryCode(true);
+        request.setAddLocalAreaCode(false);
+        try {
+            return phoneNumberNormalizationService.normalize(tenantId, request);
+        } catch (Exception exception) {
+            log.debug("通话号码归属地解析失败，tenantId={}，number={}，error={}", tenantId, number, exception.getMessage());
+            return null;
+        }
     }
 
     private Long parseLong(String value) {
@@ -572,6 +668,10 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private String originalCalled(TelephonyEvent event) {
         String called = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLED);
         return StringUtils.isNotBlank(called) ? called : event.destinationNumber();
+    }
+
+    private String businessNumber(TelephonyEvent event, String value) {
+        return sipBusinessIdentityResolver.resolveBusinessNumber(event.nodeId(), value);
     }
 
     private void applyAgent(CallRecord record, TelephonyEvent event) {
@@ -622,6 +722,21 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         response.setDirection(session.getDirection());
         response.setCallerNumber(session.getCallerNumber());
         response.setCalledNumber(session.getCalledNumber());
+        if ("INTERNAL".equals(session.getDirection())) {
+            response.setCallerNumberType("EXTENSION");
+            response.setCalledNumberType("EXTENSION");
+        } else {
+            response.setCallerNumberType(session.getCallerNumberType());
+            response.setCallerMobileSegment(session.getCallerMobileSegment());
+            response.setCallerProvince(session.getCallerProvince());
+            response.setCallerCity(session.getCallerCity());
+            response.setCallerCarrier(session.getCallerCarrier());
+            response.setCalledNumberType(session.getCalledNumberType());
+            response.setCalledMobileSegment(session.getCalledMobileSegment());
+            response.setCalledProvince(session.getCalledProvince());
+            response.setCalledCity(session.getCalledCity());
+            response.setCalledCarrier(session.getCalledCarrier());
+        }
         response.setAgentId(session.getAgentId());
         response.setAgentExtension(session.getAgentExtension());
         response.setHandlingQueueId(session.getHandlingQueueId());

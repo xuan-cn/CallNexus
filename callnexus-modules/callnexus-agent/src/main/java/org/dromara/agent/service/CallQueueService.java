@@ -2,6 +2,7 @@ package org.dromara.agent.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.dromara.agent.domain.CallQueue;
 import org.dromara.agent.domain.Agent;
 import org.dromara.agent.domain.AgentExtension;
@@ -19,6 +20,8 @@ import org.dromara.agent.mapper.SkillGroupMemberMapper;
 import org.dromara.agent.runtime.QueueAgentRuntimeConfig;
 import org.dromara.agent.runtime.QueueNodeRuntimeConfig;
 import org.dromara.agent.runtime.QueueRuntimeSyncResult;
+import org.dromara.ai.service.AiGeneratedMediaQueryService;
+import org.dromara.ai.service.impl.AiSpeechApplicationServiceImpl;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
@@ -48,6 +51,7 @@ import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class CallQueueService implements CallQueueQueryService {
     private static final Set<String> STRATEGIES = Set.of(
         "LONGEST_IDLE_AGENT", "ROUND_ROBIN", "TOP_DOWN", "RING_ALL"
@@ -71,6 +75,7 @@ public class CallQueueService implements CallQueueQueryService {
     private final SipAccountQueryService sipAccountQueryService;
     private final CallQueueRuntimeSyncService runtimeSyncService;
     private final StickyAgentRegistry stickyAgentRegistry;
+    private final AiGeneratedMediaQueryService generatedMediaQueryService;
 
     public List<CallQueueResponse> list() {
         return queueMapper.selectList(new LambdaQueryWrapper<CallQueue>().orderByAsc(CallQueue::getQueueCode))
@@ -101,6 +106,32 @@ public class CallQueueService implements CallQueueQueryService {
             fillStickyAgentTarget(response, queue, tenantId, callerNumber, nodeId);
             fillMobileTransferOptions(response, queue, tenantId, nodeId);
             return response;
+        });
+    }
+
+    @Override
+    public void refreshQueueAgentRuntimeStatus(String tenantId, Long queueId, Long nodeId) {
+        if (queueId == null || nodeId == null) {
+            return;
+        }
+        TenantHelper.dynamic(tenantId, () -> {
+            CallQueue queue = queueMapper.selectById(queueId);
+            if (queue == null || !Boolean.TRUE.equals(queue.getEnabled()) || !"SYNCED".equals(queue.getSyncStatus())) {
+                return null;
+            }
+            boolean nodeMember = nodeGroupMemberMapper.exists(new LambdaQueryWrapper<FreeSwitchNodeGroupMember>()
+                .eq(FreeSwitchNodeGroupMember::getGroupId, queue.getNodeGroupId())
+                .eq(FreeSwitchNodeGroupMember::getNodeId, nodeId));
+            if (!nodeMember) {
+                return null;
+            }
+            try {
+                runtimeSyncService.syncQueueAgentStatuses(List.of(runtimeAgentStatusConfig(queue, nodeId)));
+            } catch (Exception exception) {
+                log.warn("Refresh queue agent runtime status failed before queue entry, tenantId={}, queueId={}, nodeId={}, error={}",
+                    tenantId, queueId, nodeId, exception.getMessage());
+            }
+            return null;
         });
     }
 
@@ -428,8 +459,9 @@ public class CallQueueService implements CallQueueQueryService {
                 SipAccountResponse sipAccount = sipAccountQueryService.get(binding.getSipAccountId());
                 if (sipAccount == null || !Boolean.TRUE.equals(sipAccount.getEnabled()) || !nodeId.equals(sipAccount.getNodeId())) continue;
                 agents.add(new QueueAgentRuntimeConfig(agent.getId(), agent.getAgentName(), sipAccount.getExtension(),
-                    sipAccount.getDomain(), member.getSkillLevel(), member.getPriority(), queue.getRingTimeoutSeconds(),
-                    queue.getMaxNoAnswer(), queue.getWrapUpSeconds(), presenceStatus(agent.getId())));
+                    sipAccount.getAuthUsername(), sipAccount.getDomain(), member.getSkillLevel(), member.getPriority(), queue.getRingTimeoutSeconds(),
+                    queue.getMaxNoAnswer(), queue.getWrapUpSeconds(), presenceStatus(queue.getTenantId(), agent.getId()),
+                    answerActionMediaPath(queue, agent.getId(), nodeId)));
             }
             if (agents.isEmpty()) {
                 throw new ServiceException("节点 " + nodeId + " 没有绑定可用 SIP 分机的技能组坐席");
@@ -439,6 +471,7 @@ public class CallQueueService implements CallQueueQueryService {
                 Boolean.TRUE.equals(queue.getQueueAnnounceEnabled()),
                 queue.getQueueAnnounceInterval(),
                 mediaPath(queue.getQueueAnnounceMediaId(), nodeId, "排队提醒音"),
+                blankDefault(queue.getAnswerAction(), "NONE"),
                 blankDefault(queue.getAgentNoAnswerAction(), "NEXT_AGENT"),
                 queue.getMaxWaitSeconds(), agents));
         }
@@ -446,6 +479,46 @@ public class CallQueueService implements CallQueueQueryService {
             throw new ServiceException("队列关联的 FreeSWITCH 节点组没有成员节点");
         }
         return configs;
+    }
+
+    private QueueNodeRuntimeConfig runtimeAgentStatusConfig(CallQueue queue, Long nodeId) {
+        List<SkillGroupMember> members = skillGroupMemberMapper.selectList(new LambdaQueryWrapper<SkillGroupMember>()
+            .eq(SkillGroupMember::getSkillGroupId, queue.getSkillGroupId())
+            .orderByAsc(SkillGroupMember::getPriority));
+        List<QueueAgentRuntimeConfig> agents = new ArrayList<>();
+        for (SkillGroupMember member : members) {
+            Agent agent = agentMapper.selectById(member.getAgentId());
+            if (agent == null || !Boolean.TRUE.equals(agent.getEnabled())) continue;
+            AgentExtension binding = agentExtensionMapper.selectOne(new LambdaQueryWrapper<AgentExtension>()
+                .eq(AgentExtension::getAgentId, agent.getId()));
+            if (binding == null) continue;
+            SipAccountResponse sipAccount = sipAccountQueryService.get(binding.getSipAccountId());
+            if (sipAccount == null || !Boolean.TRUE.equals(sipAccount.getEnabled()) || !nodeId.equals(sipAccount.getNodeId())) continue;
+            agents.add(new QueueAgentRuntimeConfig(agent.getId(), agent.getAgentName(), sipAccount.getExtension(),
+                sipAccount.getAuthUsername(), sipAccount.getDomain(), member.getSkillLevel(), member.getPriority(), queue.getRingTimeoutSeconds(),
+                queue.getMaxNoAnswer(), queue.getWrapUpSeconds(), presenceStatus(queue.getTenantId(), agent.getId()),
+                answerActionMediaPath(queue, agent.getId(), nodeId)));
+        }
+        if (agents.isEmpty()) {
+            throw new ServiceException("No available SIP extension agent is bound to node " + nodeId);
+        }
+        return new QueueNodeRuntimeConfig(nodeId, queue.getQueueCode(), queue.getStrategy(),
+            null, false, null, null, blankDefault(queue.getAnswerAction(), "NONE"), "NEXT_AGENT", queue.getMaxWaitSeconds(), agents);
+    }
+
+    private String answerActionMediaPath(CallQueue queue, Long agentId, Long nodeId) {
+        String action = blankDefault(queue.getAnswerAction(), "NONE");
+        if ("PLAY_MEDIA".equals(action)) {
+            return mediaPath(queue.getAnswerMediaId(), nodeId, "queue answer prompt");
+        }
+        if ("PLAY_AGENT_NUMBER".equals(action) && agentId != null) {
+            return generatedMediaQueryService.findSyncedPath(
+                AiSpeechApplicationServiceImpl.BUSINESS_AGENT_NUMBER_PROMPT,
+                agentId,
+                nodeId
+            );
+        }
+        return null;
     }
 
     private List<Long> nodeIds(Long nodeGroupId) {
@@ -490,8 +563,9 @@ public class CallQueueService implements CallQueueQueryService {
         return value.substring(0, 1000);
     }
 
-    private AgentPresenceStatus presenceStatus(Long agentId) {
-        AgentPresence presence = RedisUtils.getCacheObject("callnexus:agent:presence:" + LoginHelper.getTenantId() + ":" + agentId);
+    private AgentPresenceStatus presenceStatus(String tenantId, Long agentId) {
+        String resolvedTenantId = org.apache.commons.lang3.StringUtils.defaultIfBlank(tenantId, LoginHelper.getTenantId());
+        AgentPresence presence = RedisUtils.getCacheObject("callnexus:agent:presence:" + resolvedTenantId + ":" + agentId);
         return presence == null ? AgentPresenceStatus.OFFLINE : presence.getStatus();
     }
 

@@ -6,12 +6,14 @@ public record QueueAgentRuntimeConfig(
     Long agentId,
     String agentName,
     String extension,
+    String authUsername,
     String sipDomain,
     Integer level,
     Integer position,
     Integer ringTimeoutSeconds,
     Integer maxNoAnswer,
     Integer wrapUpSeconds,
-    AgentPresenceStatus presenceStatus
+    AgentPresenceStatus presenceStatus,
+    String answerActionMediaPath
 ) {
 }

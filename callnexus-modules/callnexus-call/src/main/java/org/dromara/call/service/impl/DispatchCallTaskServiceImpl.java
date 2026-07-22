@@ -96,12 +96,14 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
         List<DispatchCallTarget> targets = createTargets(task, accounts);
         int submittedCount = 0;
         for (DispatchCallTarget target : targets) {
+            SipAccountRealtimeResponse account = requireTargetAccount(accounts, target);
             target.setTargetState("SUBMITTED");
             target.setSubmittedAt(LocalDateTime.now());
             targetMapper.updateById(target);
             try {
                 commandGateway.originateDispatchPlayback(endpoint, task.getBusinessCallId(), target.getTargetLegUuid(),
-                    target.getTargetExtension(), operator.getExtension(), media.mediaPath(), task.getId(), target.getId());
+                    target.getTargetExtension(), operator.getExtension(), media.mediaPath(),
+                    task.getId(), target.getId());
                 submittedCount++;
             } catch (Exception exception) {
                 target.setTargetState("FAILED");
@@ -133,7 +135,8 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
         DispatchOperatorExtensionResponse operator = operatorExtensionService.requireCurrent();
         EslEndpoint endpoint = endpoint(operator.getNodeId());
         Set<String> registeredExtensions = commandGateway.listRegisteredExtensions(endpoint);
-        if (!registeredExtensions.contains(operator.getExtension())) {
+        if (!SipRegistrationMatcher.isRegistered(registeredExtensions,
+            operator.getExtension(), operator.getAuthUsername())) {
             throw new ServiceException("当前调度分机未在 FreeSWITCH 注册");
         }
         if (isExtensionBusy(operator.getNodeId(), operator.getExtension())) {
@@ -162,7 +165,6 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
         taskMapper.insert(task);
 
         List<DispatchCallTarget> targets = createTargets(task, accounts);
-
         try {
             commandGateway.originateDispatchParticipant(endpoint, task.getBusinessCallId(), task.getOperatorLegUuid(),
                 task.getConferenceName(), task.getOperatorExtension(), task.getOperatorExtension(),
@@ -179,6 +181,7 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
 
         int submittedCount = 0;
         for (DispatchCallTarget target : targets) {
+            SipAccountRealtimeResponse account = requireTargetAccount(accounts, target);
             target.setTargetState("SUBMITTED");
             target.setSubmittedAt(LocalDateTime.now());
             targetMapper.updateById(target);
@@ -597,7 +600,8 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
             if (account == null) {
                 throw new ServiceException("目标分机不存在、已停用或不属于当前 FreeSWITCH 节点：" + extension);
             }
-            if (!registeredExtensions.contains(extension)) {
+            if (!SipRegistrationMatcher.isRegistered(registeredExtensions,
+                account.getExtension(), account.getAuthUsername())) {
                 throw new ServiceException("目标分机未注册，无法发起调度呼叫：" + extension);
             }
             if (isExtensionBusy(nodeId, extension)) {
@@ -631,6 +635,14 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
             targets.add(target);
         }
         return targets;
+    }
+
+    private SipAccountRealtimeResponse requireTargetAccount(List<SipAccountRealtimeResponse> accounts,
+                                                             DispatchCallTarget target) {
+        return accounts.stream()
+            .filter(account -> account.getSipAccountId().equals(target.getSipAccountId()))
+            .findFirst()
+            .orElseThrow(() -> new ServiceException("调度目标 SIP 账号不存在：" + target.getTargetExtension()));
     }
 
     private BroadcastMedia resolveBroadcastMedia(Long mediaAssetId, Long nodeId) {

@@ -83,6 +83,30 @@ public class AiRealtimeTtsInternalService {
     }
 
     /**
+     * 查询已经预生成的实时语音。只读缓存，不触发厂商调用。
+     */
+    public RealtimeTtsAudio findCachedForStream(AiRealtimeTtsRequest request) {
+        if (request == null || StringUtils.isBlank(request.getTenantId()) || StringUtils.isBlank(request.getText())) {
+            return null;
+        }
+        AiSpeechProvider provider = defaultRealtimeProvider();
+        String outputFormat = normalizeFormat(request.getFormat());
+        int sampleRate = request.getSampleRate() == null || request.getSampleRate() <= 0
+            ? DEFAULT_SAMPLE_RATE : request.getSampleRate();
+        String voice = normalizeVoice(request.getVoice(), provider.getDefaultVoice());
+        String cacheKey = cacheKey(request.getTenantId(), provider, voice, outputFormat, sampleRate, request.getText());
+        CachedAudio cached = audioCache.get(cacheKey);
+        if (cached == null) {
+            return null;
+        }
+        if (cached.expired()) {
+            audioCache.remove(cacheKey, cached);
+            return null;
+        }
+        return cached.audio();
+    }
+
+    /**
      * 真正的流式 TTS 入口：走 {@link StreamingTtsProvider}，逐 chunk 通过 listener 回调裸 PCM。
      *
      * <p>未配置默认流式 TTS 时抛 {@link ServiceException}，由上层（WS handler）决定是否

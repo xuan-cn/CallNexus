@@ -32,6 +32,9 @@ import org.dromara.common.websocket.dto.WebSocketMessageDto;
 import org.dromara.common.websocket.utils.WebSocketUtils;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionResponse;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.dromara.resource.number.domain.request.PhoneNumberNormalizeRequest;
+import org.dromara.resource.number.domain.response.PhoneNumberNormalizeResponse;
+import org.dromara.resource.number.service.PhoneNumberNormalizationService;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -71,6 +74,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private final DispatchCallTaskService dispatchCallTaskService;
     private final QueueEventApplicationService queueEventApplicationService;
     private final AiRealtimeMrcpEventService aiRealtimeMrcpEventService;
+    private final PhoneNumberNormalizationService phoneNumberNormalizationService;
 
     @Override
     public void onEvent(TelephonyEvent event) {
@@ -123,6 +127,13 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         } catch (Exception exception) {
             log.error("AI UniMRCP 实时语音事件处理失败，不影响通话主流程，nodeId={}，eventName={}，uuid={}，error={}",
                 event.nodeId(), event.eventName(), event.uuid(), exception.getMessage(), exception);
+        }
+        // Dialplan application events are high-volume process signals. They are consumed above by
+        // the UniMRCP integration when needed, but must not block lifecycle events behind database,
+        // Redis, target resolution, and WebSocket/SSE work.
+        if (EslEventNames.CHANNEL_EXECUTE.equals(event.eventName())
+            || EslEventNames.CHANNEL_EXECUTE_COMPLETE.equals(event.eventName())) {
+            return;
         }
         try {
             callRecordApplicationService.handleEvent(event);
@@ -501,8 +512,8 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         if (extension == null) {
             return false;
         }
-        return !extension.equals(normalizeExtension(event.callerNumber()))
-            && !extension.equals(normalizeExtension(event.destinationNumber()));
+        return !eventEndpointMatchesExtension(event.nodeId(), extension, event.callerNumber())
+            && !eventEndpointMatchesExtension(event.nodeId(), extension, event.destinationNumber());
     }
 
     private Map<Long, AgentRealtimeTargetResponse> resolveTargets(TelephonyEvent event) {
@@ -562,9 +573,9 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     }
 
     private void addTargetByExtension(Map<Long, AgentRealtimeTargetResponse> targets, Long nodeId, String extension) {
-        String normalized = normalizeExtension(extension);
-        if (normalized == null) return;
-        AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(nodeId, normalized);
+        String identity = stripDomainIdentity(extension);
+        if (identity == null) return;
+        AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(nodeId, identity);
         if (target != null) targets.put(target.getAgentId(), target);
     }
 
@@ -573,9 +584,9 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             && !EslEventNames.SUBCLASS_CC_AGENT_ANSWER.equals(event.eventSubclass())) {
             return;
         }
-        String extension = normalizeExtension(event.headers().get(EslHeaders.CC_AGENT));
-        if (extension == null) return;
-        AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(event.nodeId(), extension);
+        String agentIdentity = stripDomainIdentity(event.headers().get(EslHeaders.CC_AGENT));
+        if (agentIdentity == null) return;
+        AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(event.nodeId(), agentIdentity);
         if (target == null) return;
         CallRealtimeMessage message = new CallRealtimeMessage();
         message.setType(EslEventNames.SUBCLASS_CC_AGENT_ANSWER.equals(event.eventSubclass()) ? "CALL_ANSWER" : "CALL_PROGRESS");
@@ -584,6 +595,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         message.setCalledNumber(target.getExtension());
         message.setAgentExtension(target.getExtension());
         message.setOccurredAt(LocalDateTime.now());
+        enrichCallerLocation(message, target.getTenantId());
         publishRealtimeMessage(target.getUserId(), JsonUtils.toJsonString(message));
         if (EslEventNames.SUBCLASS_CC_AGENT_ANSWER.equals(event.eventSubclass())) {
             TenantHelper.dynamic(target.getTenantId(), () -> {
@@ -607,11 +619,28 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         return normalized.isBlank() ? null : normalized;
     }
 
+    private String stripDomainIdentity(String value) {
+        if (value == null || value.isBlank()) return null;
+        String identity = value.trim();
+        if (identity.startsWith("[")) {
+            int close = identity.indexOf(']');
+            if (close >= 0) identity = identity.substring(close + 1).trim();
+        }
+        if (identity.startsWith("user/")) {
+            identity = identity.substring("user/".length());
+        }
+        int atIndex = identity.indexOf('@');
+        if (atIndex > 0) {
+            identity = identity.substring(0, atIndex);
+        }
+        return identity.isBlank() ? null : identity;
+    }
+
     private String extensionFromDialString(String value) {
         if (value == null || value.isBlank()) return null;
         int userIndex = value.indexOf("user/");
         if (userIndex < 0) return null;
-        return normalizeExtension(value.substring(userIndex + "user/".length()));
+        return stripDomainIdentity(value.substring(userIndex));
     }
 
     private CallRealtimeMessage toMessage(TelephonyEvent event, AgentRealtimeTargetResponse target) {
@@ -623,7 +652,30 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         message.setAgentExtension(target.getExtension());
         message.setHangupCause(event.hangupCause());
         message.setOccurredAt(LocalDateTime.now());
+        enrichCallerLocation(message, target.getTenantId());
         return message;
+    }
+
+    private void enrichCallerLocation(CallRealtimeMessage message, String tenantId) {
+        if (message == null || tenantId == null || tenantId.isBlank() || message.getCallerNumber() == null || message.getCallerNumber().isBlank()) {
+            return;
+        }
+        PhoneNumberNormalizeRequest request = new PhoneNumberNormalizeRequest();
+        request.setRawNumber(message.getCallerNumber());
+        request.setUsage("CALL_REALTIME_LOCATION");
+        request.setStripChinaCountryCode(true);
+        request.setAddLocalAreaCode(false);
+        try {
+            PhoneNumberNormalizeResponse location = phoneNumberNormalizationService.normalize(tenantId, request);
+            message.setCallerNumberType(location.getNumberType());
+            message.setCallerMobileSegment(location.getMobileSegment());
+            message.setCallerProvince(location.getProvince());
+            message.setCallerCity(location.getCity());
+            message.setCallerCarrier(location.getCarrier());
+        } catch (Exception exception) {
+            log.debug("实时通话号码归属地解析失败，tenantId={}，callerNumber={}，error={}",
+                tenantId, message.getCallerNumber(), exception.getMessage());
+        }
     }
 
     private String activeCallKey(AgentRealtimeTargetResponse target) {
@@ -844,8 +896,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
 
     private String resolvePeerNumber(TelephonyEvent event, AgentRealtimeTargetResponse target) {
         String extension = normalizeExtension(target.getExtension());
-        String caller = normalizeExtension(event.callerNumber());
-        if (extension != null && extension.equals(caller)) {
+        if (extension != null && eventEndpointMatchesExtension(event.nodeId(), extension, event.callerNumber())) {
             return event.destinationNumber();
         }
         String originalCaller = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER);
@@ -863,16 +914,31 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         if (extension == null) {
             return null;
         }
-        if (extension.equals(normalizeExtension(event.callerNumber()))
-            || extension.equals(normalizeExtension(event.destinationNumber()))
-            || extension.equals(normalizeExtension(event.headers().get(EslHeaders.CALLER_CALLEE_ID_NUMBER)))
-            || extension.equals(normalizeExtension(event.headers().get(EslHeaders.VARIABLE_SIP_TO_USER)))
-            || extension.equals(normalizeExtension(event.headers().get(EslHeaders.VARIABLE_SIP_REQ_USER)))
-            || extension.equals(normalizeExtension(event.headers().get(EslHeaders.VARIABLE_DIALED_USER)))
-            || extension.equals(normalizeExtension(event.headers().get(EslHeaders.VARIABLE_DIALLED_USER)))) {
+        if (eventEndpointMatchesExtension(event.nodeId(), extension, event.callerNumber())
+            || eventEndpointMatchesExtension(event.nodeId(), extension, event.destinationNumber())
+            || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.CALLER_CALLEE_ID_NUMBER))
+            || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_SIP_TO_USER))
+            || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_SIP_REQ_USER))
+            || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_DIALED_USER))
+            || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_DIALLED_USER))) {
             return event.uuid();
         }
         return null;
+    }
+
+    private boolean eventEndpointMatchesExtension(Long nodeId, String expectedExtension, String endpointIdentity) {
+        String expected = normalizeExtension(expectedExtension);
+        String actual = resolveEndpointExtension(nodeId, endpointIdentity);
+        return expected != null && expected.equals(normalizeExtension(actual));
+    }
+
+    private String resolveEndpointExtension(Long nodeId, String endpointIdentity) {
+        String identity = stripDomainIdentity(endpointIdentity);
+        if (identity == null) {
+            return null;
+        }
+        AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(nodeId, identity);
+        return target == null ? identity : target.getExtension();
     }
 
     private String firstNotBlank(String... values) {
@@ -950,7 +1016,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         try {
             if (target.getNodeId() == null || target.getSipDomain() == null || target.getSipDomain().isBlank()) return;
             queueRuntimeSyncService.syncAgentStatus(new AgentQueueRuntimeStatus(
-                target.getNodeId(), target.getExtension(), target.getSipDomain(), status));
+                target.getNodeId(), target.getExtension(), target.getAuthUsername(), target.getSipDomain(), status));
         } catch (Exception exception) {
             log.warn("通话事件同步 FreeSWITCH 队列坐席状态失败，不影响本地坐席状态，agentId={}，status={}，error={}",
                 target.getAgentId(), status, exception.getMessage());

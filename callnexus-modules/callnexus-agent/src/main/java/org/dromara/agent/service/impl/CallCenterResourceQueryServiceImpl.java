@@ -77,16 +77,27 @@ public class CallCenterResourceQueryServiceImpl implements CallCenterResourceQue
     @Override
     public Long findAgentIdByIdentity(String agentWithDomain, Long nodeId) {
         if (agentWithDomain == null || agentWithDomain.isBlank() || nodeId == null) return null;
-        String extension = stripDomain(agentWithDomain);
-        if (extension == null) return null;
+        String identity = stripDomain(agentWithDomain);
+        if (identity == null) return null;
         return TenantHelper.ignore(() -> {
-            SipAccountRealtimeResponse sipAccount = sipAccountQueryService.findEnabledByNodeAndExtension(nodeId, extension);
+            SipAccountRealtimeResponse sipAccount = sipAccountQueryService.findEnabledByNodeAndIdentity(nodeId, identity);
             if (sipAccount == null) return null;
             AgentExtension binding = extensionMapper.selectOne(new LambdaQueryWrapper<AgentExtension>()
                 .eq(AgentExtension::getSipAccountId, sipAccount.getSipAccountId()));
             if (binding == null) return null;
             Agent agent = agentMapper.selectById(binding.getAgentId());
             return agent != null && Boolean.TRUE.equals(agent.getEnabled()) ? agent.getId() : null;
+        });
+    }
+
+    @Override
+    public String findAgentExtensionByIdentity(String agentWithDomain, Long nodeId) {
+        if (agentWithDomain == null || agentWithDomain.isBlank() || nodeId == null) return null;
+        String identity = stripDomain(agentWithDomain);
+        if (identity == null) return null;
+        return TenantHelper.ignore(() -> {
+            SipAccountRealtimeResponse sipAccount = sipAccountQueryService.findEnabledByNodeAndIdentity(nodeId, identity);
+            return sipAccount == null ? null : sipAccount.getExtension();
         });
     }
 

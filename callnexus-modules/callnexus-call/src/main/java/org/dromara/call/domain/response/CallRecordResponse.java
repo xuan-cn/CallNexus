@@ -14,7 +14,17 @@ public class CallRecordResponse {
     private String callUuid;
     private String direction;
     private String callerNumber;
+    private String callerNumberType;
+    private String callerMobileSegment;
+    private String callerProvince;
+    private String callerCity;
+    private String callerCarrier;
     private String calledNumber;
+    private String calledNumberType;
+    private String calledMobileSegment;
+    private String calledProvince;
+    private String calledCity;
+    private String calledCarrier;
     private Long agentId;
     private String agentExtension;
     private Long handlingQueueId;

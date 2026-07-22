@@ -36,6 +36,11 @@ public interface CallCenterResourceQueryService {
     Long findAgentIdByIdentity(String agentWithDomain, Long nodeId);
 
     /**
+     * 根据坐席标识（分机或 SIP 鉴权名，可带域名）和 FreeSWITCH 节点查询真实分机号。
+     */
+    String findAgentExtensionByIdentity(String agentWithDomain, Long nodeId);
+
+    /**
      * 队列基础信息。
      *
      * @param queueId             队列 ID

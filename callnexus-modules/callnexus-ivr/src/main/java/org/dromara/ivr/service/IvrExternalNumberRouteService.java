@@ -6,6 +6,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.ivr.compiler.IvrNodeContext;
+import org.dromara.resource.number.domain.request.PhoneNumberNormalizeRequest;
+import org.dromara.resource.number.domain.response.PhoneNumberNormalizeResponse;
+import org.dromara.resource.number.service.PhoneNumberNormalizationService;
 import org.dromara.resource.outboundline.service.OutboundLinePolicyService;
 import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
@@ -30,6 +33,7 @@ public class IvrExternalNumberRouteService {
 
     private final OutboundLinePolicyService outboundLinePolicyService;
     private final PhoneNumberQueryService phoneNumberQueryService;
+    private final PhoneNumberNormalizationService numberNormalizationService;
 
     public BridgePlan buildBridgePlan(IvrNodeContext context) {
         JsonNode config = externalConfig(context.node().config());
@@ -44,7 +48,7 @@ public class IvrExternalNumberRouteService {
         int timeoutSeconds = timeoutSeconds(config);
         boolean failoverEnabled = !config.has("failoverEnabled") || config.path("failoverEnabled").asBoolean(true);
         List<ExternalTarget> dialTargets = failoverEnabled ? targets : List.of(targets.get(0));
-        String bridgeData = buildBridgeData(route, dialTargets, timeoutSeconds);
+        String bridgeData = buildBridgeData(context, config, route, dialTargets, timeoutSeconds);
         rememberSelectedTarget(context, config, targets.get(0));
         return new BridgePlan(bridgeData, targets.get(0).number(), strategy(config), route, timeoutSeconds);
     }
@@ -150,17 +154,30 @@ public class IvrExternalNumberRouteService {
         return phoneNumberQueryService.findDefaultOutboundRoute(context.tenantId(), context.freeSwitchNodeId());
     }
 
-    private String buildBridgeData(PhoneNumberOutboundRouteResponse route, List<ExternalTarget> targets, int timeoutSeconds) {
+    private String buildBridgeData(IvrNodeContext context, JsonNode config, PhoneNumberOutboundRouteResponse route,
+                                   List<ExternalTarget> targets, int timeoutSeconds) {
         String callerId = safeDialValue(route.getNumber());
         String gatewayCode = safeDialValue(route.getGatewayCode());
         List<String> endpoints = new ArrayList<>();
         for (ExternalTarget target : targets) {
+            PhoneNumberNormalizeResponse normalized = normalizeDialTarget(context, config, target.number());
             endpoints.add("{ignore_early_media=true,originate_timeout=" + timeoutSeconds
                 + ",origination_caller_id_number=" + callerId
                 + ",origination_caller_id_name=" + callerId
-                + "}sofia/gateway/" + gatewayCode + "/" + safeDialValue(target.number()));
+                + "}sofia/gateway/" + gatewayCode + "/" + safeDialValue(normalized.getDialNumber()));
         }
         return String.join("|", endpoints);
+    }
+
+    private PhoneNumberNormalizeResponse normalizeDialTarget(IvrNodeContext context, JsonNode config, String rawNumber) {
+        PhoneNumberNormalizeRequest request = new PhoneNumberNormalizeRequest();
+        request.setRawNumber(rawNumber);
+        request.setUsage("IVR_EXTERNAL_NUMBER");
+        request.setLocalAreaCode(textValue(config.path("localAreaCode")));
+        request.setAddLocalAreaCode(config.has("addLocalAreaCode") && config.path("addLocalAreaCode").asBoolean(false));
+        request.setStripChinaCountryCode(!config.has("stripChinaCountryCode") || config.path("stripChinaCountryCode").asBoolean(true));
+        request.setOutboundPrefix(textValue(config.path("outboundPrefix")));
+        return numberNormalizationService.normalize(context.tenantId(), request);
     }
 
     private String strategy(JsonNode config) {
@@ -192,6 +209,14 @@ public class IvrExternalNumberRouteService {
         } catch (NumberFormatException exception) {
             throw new ServiceException("外呼线路策略 ID 不合法");
         }
+    }
+
+    private String textValue(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        String value = node.asText("");
+        return value.isBlank() ? null : value;
     }
 
     private String normalizeNumber(String value) {

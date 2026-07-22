@@ -11,5 +11,7 @@ public interface CallQueueRuntimeSyncService {
 
     QueueRuntimeSyncResult removeQueue(List<Long> nodeIds, String queueCode);
 
+    void syncQueueAgentStatuses(List<QueueNodeRuntimeConfig> nodes);
+
     void syncAgentStatus(AgentQueueRuntimeStatus status);
 }

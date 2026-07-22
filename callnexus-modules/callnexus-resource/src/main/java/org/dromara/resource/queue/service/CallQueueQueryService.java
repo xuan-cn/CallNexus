@@ -21,4 +21,7 @@ public interface CallQueueQueryService {
      * @return 队列 dialplan 响应；不可用返回 {@code null}
      */
     CallQueueDialplanResponse findAvailableQueue(String tenantId, Long queueId, Long nodeId, String callerNumber);
+
+    default void refreshQueueAgentRuntimeStatus(String tenantId, Long queueId, Long nodeId) {
+    }
 }

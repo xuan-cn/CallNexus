@@ -146,7 +146,8 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
         if (!commandGateway.callExists(endpoint, targetLeg.getLegUuid())) {
             throw new ServiceException("目标分机电话腿已在 FreeSWITCH 中结束");
         }
-        if (!commandGateway.listRegisteredExtensions(endpoint).contains(supervisor.getExtension())) {
+        if (!SipRegistrationMatcher.isRegistered(commandGateway.listRegisteredExtensions(endpoint),
+            supervisor.getExtension(), supervisor.getAuthUsername())) {
             throw new ServiceException("当前调度员分机未在 FreeSWITCH 注册");
         }
         String supervisionLegUuid = UUID.randomUUID().toString();
@@ -197,7 +198,8 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
         if (!commandGateway.callExists(endpoint, sourceLeg.getLegUuid())) {
             throw new ServiceException("原始呼叫电话腿已在 FreeSWITCH 中结束，无法强接");
         }
-        if (!commandGateway.listRegisteredExtensions(endpoint).contains(supervisor.getExtension())) {
+        if (!SipRegistrationMatcher.isRegistered(commandGateway.listRegisteredExtensions(endpoint),
+            supervisor.getExtension(), supervisor.getAuthUsername())) {
             throw new ServiceException("当前调度员分机未在 FreeSWITCH 注册");
         }
         String pickupLegUuid = UUID.randomUUID().toString();

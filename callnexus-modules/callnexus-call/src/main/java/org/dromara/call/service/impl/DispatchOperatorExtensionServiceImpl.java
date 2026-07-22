@@ -2,6 +2,7 @@ package org.dromara.call.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.dromara.call.domain.DispatchOperatorExtension;
 import org.dromara.call.domain.response.DispatchOperatorExtensionResponse;
 import org.dromara.call.mapper.DispatchOperatorExtensionMapper;
@@ -16,11 +17,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class DispatchOperatorExtensionServiceImpl implements DispatchOperatorExtensionService {
     private final DispatchOperatorExtensionMapper mapper;
     private final SipAccountQueryService sipAccountQueryService;
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public DispatchOperatorExtensionResponse current() {
         Long userId = LoginHelper.getUserId();
         DispatchOperatorExtension binding = mapper.selectOne(new LambdaQueryWrapper<DispatchOperatorExtension>()
@@ -32,7 +35,17 @@ public class DispatchOperatorExtensionServiceImpl implements DispatchOperatorExt
             response.setUserId(userId);
             return response;
         }
-        return toResponse(binding, sipAccountQueryService.get(binding.getSipAccountId()));
+        SipAccountResponse account = sipAccountQueryService.findEnabledById(binding.getSipAccountId());
+        if (account == null) {
+            mapper.deleteById(binding.getId());
+            log.warn("已清理失效的调度员分机绑定，userId={}，sipAccountId={}",
+                userId, binding.getSipAccountId());
+            DispatchOperatorExtensionResponse response = new DispatchOperatorExtensionResponse();
+            response.setConfigured(false);
+            response.setUserId(userId);
+            return response;
+        }
+        return toResponse(binding, account);
     }
 
     @Override
@@ -88,6 +101,7 @@ public class DispatchOperatorExtensionServiceImpl implements DispatchOperatorExt
             response.setNodeId(account.getNodeId());
             response.setNodeName(account.getNodeName());
             response.setExtension(account.getExtension());
+            response.setAuthUsername(account.getAuthUsername());
             response.setDisplayName(account.getDisplayName());
             response.setDomain(account.getDomain());
         }

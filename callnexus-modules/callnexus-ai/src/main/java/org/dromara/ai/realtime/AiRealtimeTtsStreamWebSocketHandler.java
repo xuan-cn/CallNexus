@@ -298,12 +298,29 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         long startNanos = System.nanoTime();
+        AiRealtimeTtsRequest request = buildRequest(state, sentence);
+        AiRealtimeTtsInternalService.RealtimeTtsAudio cached = ttsService.findCachedForStream(request);
+        if (cached != null) {
+            sendSegmentStarted(session, segment);
+            try {
+                synchronized (session) {
+                    session.sendMessage(new BinaryMessage(ByteBuffer.wrap(cached.bytes())));
+                }
+                sendSegmentCompleted(session, state, segment, cached.bytes().length);
+                log.info("AI 实时 TTS WS 命中预热缓存，sessionId={}，textLen={}，bytes={}，costMs={}",
+                    session.getId(), sentence.length(), cached.bytes().length,
+                    (System.nanoTime() - startNanos) / 1_000_000L);
+            } catch (Exception exception) {
+                log.warn("AI 实时 TTS WS 推送预热音频失败，sessionId={}，seq={}",
+                    session.getId(), segment.seq(), exception);
+                sendError(session, exception.getMessage());
+            }
+            return;
+        }
         CountDownLatch done = new CountDownLatch(1);
         AtomicInteger totalBytes = new AtomicInteger();
         AtomicBoolean firstChunk = new AtomicBoolean(true);
         AtomicBoolean fallbackTriggered = new AtomicBoolean();
-        AiRealtimeTtsRequest request = buildRequest(state, sentence);
-
         StreamingTtsListener listener = new StreamingTtsListener() {
             @Override
             public void onStarted() {

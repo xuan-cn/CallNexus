@@ -22,11 +22,9 @@ public class ExtensionNodeCompiler implements IvrNodeCompiler {
     @Override
     public void compile(IvrNodeContext context) {
         context.renderSupport().appendNodeStart(context.xml(), context.flow().getId(), context.node());
-        context.xml().append("      <action application=\"bridge\" data=\"user/")
+        context.xml().append("      <action application=\"transfer\" data=\"")
             .append(context.renderSupport().escape(context.node().config().path("extension").asText()))
-            .append("@")
-            .append(context.renderSupport().escape(context.sipDomain()))
-            .append("\"/>\n");
+            .append(" XML default\"/>\n");
         context.renderSupport().appendNodeEnd(context.xml());
     }
 }
