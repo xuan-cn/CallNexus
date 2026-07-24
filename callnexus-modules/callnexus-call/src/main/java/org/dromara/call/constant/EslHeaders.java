@@ -16,6 +16,9 @@ public final class EslHeaders {
     public static final String VARIABLE_DIALLED_USER = "variable_dialled_user";
     public static final String VARIABLE_CURRENT_APPLICATION_DATA = "variable_current_application_data";
     public static final String HANGUP_CAUSE = "Hangup-Cause";
+    public static final String VARIABLE_HANGUP_CAUSE = "variable_hangup_cause";
+    public static final String VARIABLE_ORIGINATE_DISPOSITION = "variable_originate_disposition";
+    public static final String VARIABLE_LAST_BRIDGE_HANGUP_CAUSE = "variable_last_bridge_hangup_cause";
     public static final String OTHER_LEG_UNIQUE_ID = "Other-Leg-Unique-ID";
     public static final String BRIDGE_A_UNIQUE_ID = "Bridge-A-Unique-ID";
     public static final String BRIDGE_B_UNIQUE_ID = "Bridge-B-Unique-ID";

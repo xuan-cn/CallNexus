@@ -44,9 +44,11 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledFuture;
@@ -129,6 +131,19 @@ public class AiRealtimeMrcpEventService {
     public void handle(Long nodeId, String eventName, String uuid, Map<String, String> headers) {
         long receivedAtNanos = System.nanoTime();
         if (!Boolean.TRUE.equals(properties.getRealtimeEnabled())) {
+            return;
+        }
+        // Hangup events frequently omit application-specific channel variables. Resolve an existing
+        // runtime first so a terminal event cannot be discarded by the UniMRCP context filter.
+        if (isTerminal(eventName)) {
+            List<RuntimeSession> terminalSessions = findTerminalSessions(nodeId, uuid, headers);
+            for (RuntimeSession runtime : terminalSessions) {
+                TenantHelper.dynamic(runtime.tenantId, () -> end(runtime, eventName));
+            }
+            if (!terminalSessions.isEmpty()) {
+                log.info("AI UniMRCP 已按终止事件关闭实时会话，nodeId={}，eventName={}，uuid={}，sessionCount={}",
+                    nodeId, eventName, uuid, terminalSessions.size());
+            }
             return;
         }
         if (!isUniMrcpEvent(uuid, headers)) {
@@ -359,6 +374,9 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void start(RuntimeSession runtime) {
+        if (runtime.closed.get()) {
+            return;
+        }
         long startNanos = System.nanoTime();
         try {
             log.info("AI UniMRCP 开始建立会话，sessionId={}，businessCallId={}，customerLegUuid={}，agentId={}，voiceTransport={}",
@@ -372,6 +390,9 @@ public class AiRealtimeMrcpEventService {
             long conversationNanos = System.nanoTime();
             AiConversationStartResponse start = agentService.startRealtimeConversation(runtime.agentId);
             long conversationCostMs = elapsedMillis(conversationNanos);
+            if (runtime.closed.get()) {
+                return;
+            }
             long updateNanos = System.nanoTime();
             runtime.entity.setConversationId(Long.valueOf(String.valueOf(start.getConversation().getId())));
             sessionMapper.updateById(runtime.entity);
@@ -392,6 +413,9 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void processTurn(RuntimeSession runtime, String text, long recognitionAcceptedNanos) {
+        if (runtime.closed.get()) {
+            return;
+        }
         long processStartedNanos = System.nanoTime();
         AiRealtimeCallTurn turn = new AiRealtimeCallTurn();
         turn.setRealtimeSessionId(runtime.entity.getId());
@@ -424,6 +448,9 @@ public class AiRealtimeMrcpEventService {
         long chatNanos = System.nanoTime();
 
         BiConsumer<String, Object> consumer = (event, data) -> {
+            if (runtime.closed.get()) {
+                return;
+            }
             if (!(data instanceof Map<?, ?> values)) {
                 return;
             }
@@ -467,6 +494,10 @@ public class AiRealtimeMrcpEventService {
 
         try {
             agentService.streamChat(runtime.agentId, 0L, request, consumer);
+            if (runtime.closed.get()) {
+                cancelTurnAfterHangup(runtime, turn);
+                return;
+            }
             String tail = runtime.segmenter.drain();
             if (StringUtils.isNotBlank(tail)) {
                 if (firstSpeakReadyNanos.compareAndSet(0L, System.nanoTime())) {
@@ -509,6 +540,10 @@ public class AiRealtimeMrcpEventService {
                 }
             }
         } catch (Exception exception) {
+            if (runtime.closed.get()) {
+                cancelTurnAfterHangup(runtime, turn);
+                return;
+            }
             runtime.llmStreaming.set(false);
             synchronized (runtime.pendingSpeakSegments) {
                 runtime.pendingSpeakSegments.clear();
@@ -557,6 +592,9 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void speak(RuntimeSession runtime, String text, AiRealtimeCallTurn turn) {
+        if (runtime.closed.get()) {
+            return;
+        }
         if (StringUtils.isBlank(text)) {
             markListening(runtime);
             return;
@@ -588,6 +626,9 @@ public class AiRealtimeMrcpEventService {
             old.cancel(false);
         }
         ScheduledFuture<?> handle = scheduler.schedule(() -> TenantHelper.dynamic(runtime.tenantId, () -> {
+            if (runtime.closed.get()) {
+                return;
+            }
             if (runtime.activeSpeak.get() != activeSpeak) {
                 return;
             }
@@ -658,6 +699,9 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void completeSpeak(RuntimeSession runtime, ActiveSpeak expected, String source) {
+        if (runtime.closed.get()) {
+            return;
+        }
         if (!runtime.activeSpeak.compareAndSet(expected, null)) {
             return;
         }
@@ -690,7 +734,7 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void enqueueSpeak(RuntimeSession runtime, String sentence) {
-        if (StringUtils.isBlank(sentence)) {
+        if (runtime.closed.get() || StringUtils.isBlank(sentence)) {
             return;
         }
         int pending;
@@ -752,6 +796,9 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void dispatchNextSegment(RuntimeSession runtime) {
+        if (runtime.closed.get()) {
+            return;
+        }
         String next;
         synchronized (runtime.pendingSpeakSegments) {
             if (runtime.waitingSpeakComplete.get()) {
@@ -771,6 +818,10 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void finishTurn(RuntimeSession runtime, AiRealtimeCallTurn turn) {
+        if (runtime.closed.get()) {
+            cancelTurnAfterHangup(runtime, turn);
+            return;
+        }
         String state = turn.getTurnState();
         if (!"COMPLETED".equals(state) && !"FAILED".equals(state)) {
             turn.setTurnState("COMPLETED");
@@ -794,6 +845,13 @@ public class AiRealtimeMrcpEventService {
         }
         long recognizeNanos = System.nanoTime();
         try {
+            if (!gateway().callExists(runtime.nodeId, runtime.customerLegUuid)) {
+                log.info("AI UniMRCP 提交识别前发现客户通道已不存在，结束会话，sessionId={}，businessCallId={}，customerLegUuid={}",
+                    runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid);
+                runtime.recognizing.set(false);
+                end(runtime, "CHANNEL_GONE_BEFORE_RECOGNIZE");
+                return;
+            }
             gateway().recognize(runtime.nodeId, runtime.customerLegUuid);
             log.info("AI UniMRCP 已提交识别，sessionId={}，businessCallId={}，customerLegUuid={}，gatewayCostMs={}",
                 runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, elapsedMillis(recognizeNanos));
@@ -820,12 +878,20 @@ public class AiRealtimeMrcpEventService {
         if (!runtime.closed.compareAndSet(false, true)) {
             return;
         }
+        runtime.recognizing.set(false);
+        runtime.turnInProgress.set(false);
+        runtime.llmStreaming.set(false);
         runtime.activeSpeak.set(null);
         runtime.waitingSpeakComplete.set(false);
+        synchronized (runtime.pendingSpeakSegments) {
+            runtime.pendingSpeakSegments.clear();
+        }
         ScheduledFuture<?> pendingSpeak = runtime.pendingSpeakTimer.getAndSet(null);
         if (pendingSpeak != null) {
             pendingSpeak.cancel(false);
         }
+        AiRealtimeCallTurn currentTurn = runtime.currentTurn.getAndSet(null);
+        cancelTurnAfterHangup(runtime, currentTurn);
         runtime.entity.setSessionState("FAILED".equals(runtime.entity.getSessionState()) ? "FAILED" : "ENDED");
         runtime.entity.setEndedAt(LocalDateTime.now());
         runtime.entity.setLastActivityAt(LocalDateTime.now());
@@ -959,6 +1025,9 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void updateState(RuntimeSession runtime, String state, String reason) {
+        if (runtime.closed.get() && !"ENDED".equals(state) && !"FAILED".equals(state)) {
+            return;
+        }
         runtime.entity.setSessionState(state);
         runtime.entity.setLastActivityAt(LocalDateTime.now());
         runtime.entity.setFailureReason(reason);
@@ -1039,6 +1108,75 @@ public class AiRealtimeMrcpEventService {
             }
         }
         return false;
+    }
+
+    private List<RuntimeSession> findTerminalSessions(Long nodeId, String uuid, Map<String, String> headers) {
+        List<RuntimeSession> directMatches = sessions.values().stream()
+            .filter(runtime -> nodeId == null || nodeId.equals(runtime.nodeId))
+            .filter(runtime -> StringUtils.equals(uuid, runtime.customerLegUuid)
+                || StringUtils.equals(uuid, runtime.businessCallId))
+            .distinct()
+            .toList();
+        if (!directMatches.isEmpty()) {
+            return directMatches;
+        }
+        Set<String> relatedIds = new LinkedHashSet<>();
+        addRelatedId(relatedIds, header(headers, VAR_CUSTOMER_LEG_UUID));
+        addRelatedId(relatedIds, header(headers, VAR_BUSINESS_CALL_ID));
+        addRelatedId(relatedIds, header(headers, "Channel-Call-UUID"));
+        addRelatedId(relatedIds, header(headers, "Other-Leg-Unique-ID"));
+        addRelatedId(relatedIds, header(headers, "Bridge-A-Unique-ID"));
+        addRelatedId(relatedIds, header(headers, "Bridge-B-Unique-ID"));
+        addRelatedId(relatedIds, header(headers, "bridge_uuid"));
+        addRelatedId(relatedIds, header(headers, "origination_uuid"));
+        addRelatedId(relatedIds, header(headers, "cc_member_uuid"));
+        if (headers != null) {
+            headers.forEach((name, value) -> {
+                String normalizedName = name == null ? "" : name.toLowerCase(Locale.ROOT);
+                if (normalizedName.contains("uuid") || normalizedName.contains("business_call_id")) {
+                    addRelatedId(relatedIds, value);
+                }
+            });
+        }
+        if (relatedIds.isEmpty()) {
+            return List.of();
+        }
+        return sessions.values().stream()
+            .filter(runtime -> nodeId == null || nodeId.equals(runtime.nodeId))
+            .filter(runtime -> relatedIds.contains(runtime.customerLegUuid)
+                || relatedIds.contains(runtime.businessCallId))
+            // Related UUIDs are also inherited by short-lived MRCP media channels. Only close an
+            // indirectly matched runtime after the actual customer channel has disappeared.
+            .filter(runtime -> !customerChannelExists(runtime))
+            .distinct()
+            .toList();
+    }
+
+    private boolean customerChannelExists(RuntimeSession runtime) {
+        try {
+            return gateway().callExists(runtime.nodeId, runtime.customerLegUuid);
+        } catch (Exception exception) {
+            log.warn("AI UniMRCP 终止事件校验客户通道失败，暂不关闭间接匹配会话，sessionId={}，customerLegUuid={}，error={}",
+                runtime.entity.getId(), runtime.customerLegUuid, exception.getMessage());
+            return true;
+        }
+    }
+
+    private void addRelatedId(Set<String> relatedIds, String value) {
+        if (StringUtils.isNotBlank(value)) {
+            relatedIds.add(value.trim());
+        }
+    }
+
+    private void cancelTurnAfterHangup(RuntimeSession runtime, AiRealtimeCallTurn turn) {
+        if (turn == null || "COMPLETED".equals(turn.getTurnState())
+            || "FAILED".equals(turn.getTurnState()) || "CANCELLED".equals(turn.getTurnState())) {
+            return;
+        }
+        turn.setTurnState("CANCELLED");
+        turn.setFailureReason("通话已挂断，取消未完成的 AI 回合");
+        turn.setPlaybackEndedAt(LocalDateTime.now());
+        turnMapper.updateById(turn);
     }
 
     private boolean isTerminal(String eventName) {

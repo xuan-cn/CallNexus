@@ -4,16 +4,45 @@ import com.fasterxml.jackson.databind.JsonNode;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.json.utils.JsonUtils;
 import org.springframework.stereotype.Component;
+import lombok.extern.slf4j.Slf4j;
 
+import java.io.IOException;
 import java.net.http.HttpResponse;
 import java.util.*;
 
 @Component
+@Slf4j
 public class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
     @Override public String providerType() { return "OPENAI_COMPATIBLE"; }
 
     @Override
     public EmbeddingResult embed(EmbeddingRequest request) {
+        IOException transportFailure = null;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            try {
+                return execute(request);
+            } catch (IOException exception) {
+                transportFailure = exception;
+                if (attempt == 1) {
+                    OpenAiCompatibleSupport.invalidateClient(request.provider());
+                    log.warn("Embedding 连接在响应前被关闭，已淘汰失效连接并重试一次，providerCode={}，model={}，error={}",
+                        request.provider().getProviderCode(), request.model().getModelName(), exception.getMessage());
+                    continue;
+                }
+                break;
+            } catch (ServiceException exception) {
+                throw exception;
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new ServiceException("Embedding 模型调用被中断");
+            } catch (Exception exception) {
+                throw new ServiceException("Embedding 模型调用异常：" + exception.getMessage());
+            }
+        }
+        throw new ServiceException("Embedding 模型调用异常：" + transportFailure.getMessage());
+    }
+
+    private EmbeddingResult execute(EmbeddingRequest request) throws Exception {
         try {
             Map<String, Object> body = OpenAiCompatibleSupport.options(request.model());
             body.put("model", request.model().getModelName());
@@ -42,10 +71,9 @@ public class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
         } catch (ServiceException e) {
             throw e;
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ServiceException("Embedding 模型调用被中断");
-        } catch (Exception e) {
-            throw new ServiceException("Embedding 模型调用异常：" + e.getMessage());
+            throw e;
+        } catch (IOException e) {
+            throw e;
         }
     }
 

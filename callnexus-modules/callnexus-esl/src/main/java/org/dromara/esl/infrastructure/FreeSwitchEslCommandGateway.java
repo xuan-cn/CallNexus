@@ -155,6 +155,18 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     }
 
     @Override
+    public boolean callsAreBridged(EslEndpoint endpoint, String leftCallId, String rightCallId) {
+        requireCallId(leftCallId);
+        requireCallId(rightCallId);
+        EslFrame response = executeCommand(endpoint, "api uuid_getvar " + leftCallId + " bridge_uuid");
+        String bridgeUuid = response.body();
+        if (bridgeUuid == null || bridgeUuid.isBlank()) {
+            bridgeUuid = response.header("Reply-Text");
+        }
+        return rightCallId.equals(bridgeUuid == null ? null : bridgeUuid.trim());
+    }
+
+    @Override
     public void setCallVariable(EslEndpoint endpoint, String callId, String name, String value) {
         requireCallId(callId);
         requireDialValue(name);

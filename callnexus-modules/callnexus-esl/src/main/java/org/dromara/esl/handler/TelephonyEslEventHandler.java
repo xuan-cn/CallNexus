@@ -34,9 +34,9 @@ public class TelephonyEslEventHandler implements EslEventHandler {
             uuid,
             event.firstHeader(EslHeaders.CC_CALLER_CID_NUMBER, EslHeaders.CALLER_CALLER_ID_NUMBER, EslHeaders.CALLER_USERNAME),
             event.firstHeader(EslHeaders.CALLER_DESTINATION_NUMBER, EslHeaders.VARIABLE_SIP_TO_USER),
-            event.header(EslHeaders.HANGUP_CAUSE),
+            event.firstHeader(EslHeaders.HANGUP_CAUSE, EslHeaders.VARIABLE_HANGUP_CAUSE,
+                EslHeaders.VARIABLE_LAST_BRIDGE_HANGUP_CAUSE, EslHeaders.VARIABLE_ORIGINATE_DISPOSITION),
             event.headers()
         ));
     }
 }
-

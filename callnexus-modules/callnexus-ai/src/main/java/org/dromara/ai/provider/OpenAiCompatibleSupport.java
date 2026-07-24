@@ -29,6 +29,11 @@ final class OpenAiCompatibleSupport {
             .build());
     }
 
+    static void invalidateClient(AiModelProvider provider) {
+        int connectTimeoutSeconds = defaultValue(provider.getConnectTimeoutSeconds(), 10);
+        CLIENTS.remove(connectTimeoutSeconds);
+    }
+
     static HttpRequest request(AiModelProvider provider, String path, Object body) {
         String base = provider.getBaseUrl().replaceAll("/+$", "");
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(base + path))

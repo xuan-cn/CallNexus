@@ -21,6 +21,7 @@ public interface TelephonyCommandGateway {
     void recoverMedia(EslEndpoint endpoint, String callId);
     void setCallVariable(EslEndpoint endpoint, String callId, String name, String value);
     void bridgeCalls(EslEndpoint endpoint, String leftCallId, String rightCallId);
+    boolean callsAreBridged(EslEndpoint endpoint, String leftCallId, String rightCallId);
     void blindTransfer(EslEndpoint endpoint, String callId, String targetExtension);
     void originateConsultation(EslEndpoint endpoint, String businessCallId, String consultCallId, String agentExtension,
                                String targetExtension, String customerLegUuid, String sourceAgentLegUuid);
