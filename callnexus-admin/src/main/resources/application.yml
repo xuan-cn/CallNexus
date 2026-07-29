@@ -297,6 +297,8 @@ ai:
     detect-script: ${CALLNEXUS_AI_UNIMRCP_DETECT_SCRIPT:/usr/share/freeswitch/scripts/callnexus_detect_speech.lua}
     speak-complete-delay-ms: ${CALLNEXUS_AI_UNIMRCP_SPEAK_COMPLETE_DELAY_MS:600}
     recognize-retry-delay-ms: ${CALLNEXUS_AI_UNIMRCP_RECOGNIZE_RETRY_DELAY_MS:500}
+    channel-probe-interval-ms: ${CALLNEXUS_AI_UNIMRCP_CHANNEL_PROBE_INTERVAL_MS:2000}
+    intent-hangup-delay-ms: ${CALLNEXUS_AI_UNIMRCP_INTENT_HANGUP_DELAY_MS:1000}
     result-header-candidates: ${CALLNEXUS_AI_UNIMRCP_RESULT_HEADER_CANDIDATES:variable_detect_speech_result,variable_speech_result,Detect-Speech-Result,Speech-Result}
 
 --- # warm-flow工作流配置

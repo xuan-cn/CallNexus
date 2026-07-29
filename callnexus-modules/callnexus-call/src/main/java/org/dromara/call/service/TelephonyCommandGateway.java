@@ -39,6 +39,12 @@ public interface TelephonyCommandGateway {
     void originateDispatchParticipant(EslEndpoint endpoint, String businessCallId, String participantLegUuid,
                                       String conferenceName, String extension, String callerIdNumber,
                                       String purpose, Long dispatchTaskId, Long dispatchTargetId);
+    void promoteBridgeToConference(EslEndpoint endpoint, String anchorLegUuid, String conferenceName);
+    void originateConferenceParticipant(EslEndpoint endpoint, String businessCallId, String participantLegUuid,
+                                        String conferenceName, String extension, String callerIdNumber);
+    String conferenceMemberList(EslEndpoint endpoint, String conferenceName);
+    void muteConferenceMember(EslEndpoint endpoint, String conferenceName, String conferenceMemberId, boolean muted);
+    void removeConferenceMember(EslEndpoint endpoint, String conferenceName, String conferenceMemberId);
     void terminateConference(EslEndpoint endpoint, String conferenceName);
     void originateDispatchPlayback(EslEndpoint endpoint, String businessCallId, String targetLegUuid,
                                    String extension, String callerIdNumber, String mediaPath,

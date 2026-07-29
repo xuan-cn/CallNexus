@@ -82,6 +82,15 @@ public class FlwDefinitionServiceImpl implements IFlwDefinitionService {
         return new TableDataInfo<>(list, page.getTotal());
     }
 
+    @Override
+    public List<FlowDefinitionVo> publishedOptions() {
+        LambdaQueryWrapper<FlowDefinition> wrapper = Wrappers.lambdaQuery();
+        wrapper.eq(FlowDefinition::getIsPublish, PublishStatus.PUBLISHED.getKey());
+        wrapper.eq(FlowDefinition::getActivityStatus, 1);
+        wrapper.orderByAsc(FlowDefinition::getFlowName, FlowDefinition::getFlowCode);
+        return BeanUtil.copyToList(flowDefinitionMapper.selectList(wrapper), FlowDefinitionVo.class);
+    }
+
     /**
      * 查询未发布的流程定义列表
      *

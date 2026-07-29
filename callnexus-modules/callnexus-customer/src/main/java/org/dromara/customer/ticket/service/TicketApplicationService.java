@@ -10,4 +10,6 @@ public interface TicketApplicationService {
     TableDataInfo<TicketResponse> page(TicketPageQuery query, PageQuery pageQuery);
     TicketResponse get(Long id);
     Long create(CreateTicketRequest request);
+    void submit(Long id);
+    void close(Long id);
 }

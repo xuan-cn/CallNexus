@@ -13,6 +13,7 @@ public class FormTemplateResponse {
     private String templateCode;
     private String templateName;
     private FormBusinessType businessType;
+    private String workflowCode;
     private Boolean enabled;
     private Integer version;
     private List<FieldResponse> fields = new ArrayList<>();

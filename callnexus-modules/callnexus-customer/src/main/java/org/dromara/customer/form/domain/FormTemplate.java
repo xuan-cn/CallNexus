@@ -17,6 +17,7 @@ public class FormTemplate extends TenantEntity {
     private String templateCode;
     private String templateName;
     private FormBusinessType businessType;
+    private String workflowCode;
     private Boolean enabled;
     @Version
     private Integer version;

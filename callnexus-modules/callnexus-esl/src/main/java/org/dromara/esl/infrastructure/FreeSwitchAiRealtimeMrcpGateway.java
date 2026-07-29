@@ -8,6 +8,7 @@ import org.dromara.ai.service.VoiceTransport;
 import org.dromara.call.domain.EslEndpoint;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.resource.ivr.service.IvrDialplanQueryService;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionResponse;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.springframework.stereotype.Component;
@@ -21,6 +22,7 @@ import java.util.Map;
 public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGateway {
     private final AiKnowledgeProperties properties;
     private final FreeSwitchNodeQueryService nodeQueryService;
+    private final IvrDialplanQueryService ivrDialplanQueryService;
     private final FreeSwitchEslCommandGateway eslCommandGateway;
 
     @Override
@@ -62,6 +64,73 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
         eslCommandGateway.sendRawCommand(endpoint, command);
         log.info("AI UniMRCP 识别命令已提交，nodeId={}，customerLegUuid={}，costMs={}，command={}",
             nodeId, customerLegUuid, elapsedMillis(startNanos), command);
+    }
+
+    @Override
+    public void stopPlayback(Long nodeId, String customerLegUuid) {
+        requireCallId(customerLegUuid);
+        eslCommandGateway.sendRawCommand(endpoint(nodeId), "api uuid_break " + customerLegUuid + " all");
+        log.info("AI intent stopped channel playback, nodeId={}, customerLegUuid={}", nodeId, customerLegUuid);
+    }
+
+    @Override
+    public void transferToExtension(Long nodeId, String customerLegUuid, String targetExtension) {
+        requireCallId(customerLegUuid);
+        requireRouteTarget(targetExtension, "target extension");
+        EslEndpoint endpoint = endpoint(nodeId);
+        prepareForTransfer(endpoint, customerLegUuid);
+        eslCommandGateway.blindTransfer(endpoint, customerLegUuid, targetExtension);
+        log.info("AI intent transferred call to extension, nodeId={}, customerLegUuid={}, targetExtension={}",
+            nodeId, customerLegUuid, targetExtension);
+    }
+
+    @Override
+    public void transferToQueue(Long nodeId, String customerLegUuid, String queueCode) {
+        requireCallId(customerLegUuid);
+        requireRouteTarget(queueCode, "queue code");
+        EslEndpoint endpoint = endpoint(nodeId);
+        prepareForTransfer(endpoint, customerLegUuid);
+        String queueName = queueCode.endsWith("@default") ? queueCode : queueCode + "@default";
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_transfer " + customerLegUuid + " 'callcenter:" + queueName + "' inline");
+        log.info("AI intent transferred call to queue, nodeId={}, customerLegUuid={}, queueName={}",
+            nodeId, customerLegUuid, queueName);
+    }
+
+    @Override
+    public void transferToIvr(String tenantId, Long nodeId, String customerLegUuid, String flowId) {
+        requireCallId(customerLegUuid);
+        if (StringUtils.isBlank(flowId) || !flowId.matches("^[0-9]{1,20}$")) {
+            throw new ServiceException("AI 意图的 IVR 流程 ID 不合法");
+        }
+        Long targetFlowId;
+        try {
+            targetFlowId = Long.valueOf(flowId);
+        } catch (NumberFormatException exception) {
+            throw new ServiceException("AI 意图的 IVR 流程 ID 不合法");
+        }
+        String destination = ivrDialplanQueryService.resolvePublishedStartDestination(tenantId, targetFlowId, nodeId);
+        if (StringUtils.isBlank(destination)) {
+            throw new ServiceException("目标 IVR 流程未发布、未启用或不适用于当前 FreeSWITCH 节点");
+        }
+        EslEndpoint endpoint = endpoint(nodeId);
+        prepareForTransfer(endpoint, customerLegUuid);
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_setvar " + customerLegUuid + " callnexus_ivr_flow_id " + targetFlowId);
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_setvar " + customerLegUuid + " callnexus_route_type IVR");
+        String context = resolveDialplanContext(endpoint, customerLegUuid);
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_transfer " + customerLegUuid + " " + destination + " XML " + context);
+        log.info("AI intent transferred call to IVR, tenantId={}, nodeId={}, customerLegUuid={}, flowId={}, destination={}, context={}",
+            tenantId, nodeId, customerLegUuid, targetFlowId, destination, context);
+    }
+
+    @Override
+    public void hangup(Long nodeId, String customerLegUuid) {
+        requireCallId(customerLegUuid);
+        eslCommandGateway.hangup(endpoint(nodeId), customerLegUuid);
+        log.info("AI intent hung up call, nodeId={}, customerLegUuid={}", nodeId, customerLegUuid);
     }
 
     @Override
@@ -122,6 +191,29 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
             && !value.contains("\"")
             && !value.contains("'")
             && (value.startsWith("ws://") || value.startsWith("wss://"));
+    }
+
+    private void prepareForTransfer(EslEndpoint endpoint, String customerLegUuid) {
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_setvar " + customerLegUuid + " callnexus_satisfaction_skip true");
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_setvar " + customerLegUuid + " hangup_after_bridge true");
+        eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_setvar " + customerLegUuid + " park_after_bridge false");
+    }
+
+    private void requireRouteTarget(String value, String field) {
+        if (StringUtils.isBlank(value) || !value.matches("^[A-Za-z0-9_.@+-]{1,64}$")) {
+            throw new ServiceException("Invalid AI intent " + field);
+        }
+    }
+
+    private String resolveDialplanContext(EslEndpoint endpoint, String customerLegUuid) {
+        String response = eslCommandGateway.executeApiCommandForResult(
+            endpoint, "api uuid_getvar " + customerLegUuid + " context");
+        String context = normalizeGetvarResponse(response);
+        return StringUtils.isNotBlank(context) && context.matches("^[A-Za-z0-9_.-]{1,64}$")
+            ? context : "public";
     }
 
     private EslEndpoint endpoint(Long nodeId) {

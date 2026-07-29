@@ -1,7 +1,9 @@
 package org.dromara.customer.customer.controller;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.mybatis.core.page.PageQuery;
@@ -10,9 +12,17 @@ import org.dromara.customer.customer.domain.request.CreateCustomerRequest;
 import org.dromara.customer.customer.domain.request.CustomerPageQuery;
 import org.dromara.customer.customer.domain.request.AddCustomerFollowUpRequest;
 import org.dromara.customer.customer.domain.request.UpdateCustomerRequest;
+import org.dromara.customer.customer.domain.request.CustomerPhoneRequest;
 import org.dromara.customer.customer.domain.response.CustomerResponse;
 import org.dromara.customer.customer.domain.response.CustomerFollowUpResponse;
+import org.dromara.customer.customer.domain.response.CustomerPhoneResponse;
+import org.dromara.customer.customer.domain.response.CustomerImportResponse;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.dromara.customer.customer.service.CustomerApplicationService;
+import org.dromara.customer.customer.service.CustomerImportService;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -29,6 +39,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class CustomerController {
     private final CustomerApplicationService applicationService;
+    private final CustomerImportService importService;
 
     @GetMapping
     public TableDataInfo<CustomerResponse> page(CustomerPageQuery query, PageQuery pageQuery) {
@@ -46,13 +57,58 @@ public class CustomerController {
     }
 
     @PostMapping
+    @SaCheckPermission("callcenter:customer:create")
     public R<Long> create(@Valid @RequestBody CreateCustomerRequest request) {
         return R.ok(applicationService.create(request));
+    }
+
+    @PostMapping("/import-template")
+    @SaCheckPermission("callcenter:customer:import")
+    public void downloadImportTemplate(HttpServletResponse response) {
+        importService.downloadTemplate(response);
+    }
+
+    @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @SaCheckPermission("callcenter:customer:import")
+    public R<CustomerImportResponse> importCustomers(@RequestPart("file") MultipartFile file) {
+        return R.ok(importService.importCustomers(file));
     }
 
     @PutMapping("/{id}")
     public R<Void> update(@PathVariable Long id, @Valid @RequestBody UpdateCustomerRequest request) {
         applicationService.update(id, request);
+        return R.ok();
+    }
+
+    @GetMapping("/{id}/phones")
+    public R<List<CustomerPhoneResponse>> listPhones(@PathVariable Long id) {
+        return R.ok(applicationService.listPhones(id));
+    }
+
+    @PostMapping("/{id}/phones")
+    public R<Long> addPhone(@PathVariable Long id, @Valid @RequestBody CustomerPhoneRequest request) {
+        return R.ok(applicationService.addPhone(id, request));
+    }
+
+    @PutMapping("/{id}/phones/{phoneId}")
+    public R<Void> updatePhone(
+        @PathVariable Long id,
+        @PathVariable Long phoneId,
+        @Valid @RequestBody CustomerPhoneRequest request
+    ) {
+        applicationService.updatePhone(id, phoneId, request);
+        return R.ok();
+    }
+
+    @PutMapping("/{id}/phones/{phoneId}/primary")
+    public R<Void> setPrimaryPhone(@PathVariable Long id, @PathVariable Long phoneId) {
+        applicationService.setPrimaryPhone(id, phoneId);
+        return R.ok();
+    }
+
+    @DeleteMapping("/{id}/phones/{phoneId}")
+    public R<Void> deletePhone(@PathVariable Long id, @PathVariable Long phoneId) {
+        applicationService.deletePhone(id, phoneId);
         return R.ok();
     }
 

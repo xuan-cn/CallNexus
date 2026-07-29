@@ -27,6 +27,11 @@ public interface IFlwDefinitionService {
     TableDataInfo<FlowDefinitionVo> queryList(FlowDefinition flowDefinition, PageQuery pageQuery);
 
     /**
+     * Lists active published definitions for business configuration selectors.
+     */
+    List<FlowDefinitionVo> publishedOptions();
+
+    /**
      * 查询未发布的流程定义列表
      *
      * @param flowDefinition 参数

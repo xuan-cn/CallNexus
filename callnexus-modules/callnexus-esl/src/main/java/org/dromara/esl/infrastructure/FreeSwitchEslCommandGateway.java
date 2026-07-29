@@ -27,6 +27,7 @@ import java.util.regex.Pattern;
 public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     private static final int CONNECT_TIMEOUT_MILLIS = 5000;
     private static final int READ_TIMEOUT_MILLIS = 5000;
+    private static final int OUTBOUND_RING_TIMEOUT_SECONDS = 60;
     private static final String OUTBOUND_GATEWAY_CODEC = "PCMA";
     private static final Pattern REGISTERED_USER_PATTERN = Pattern.compile("(?m)^User:\\s*([^@\\s]+)@.+$");
     private static final Pattern REGISTERED_AUTH_USER_PATTERN = Pattern.compile("(?m)^Auth-User:\\s*([^\\s]+)\\s*$");
@@ -398,8 +399,70 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     }
 
     @Override
+    public void promoteBridgeToConference(EslEndpoint endpoint, String anchorLegUuid, String conferenceName) {
+        requireCallId(anchorLegUuid);
+        requireConferenceName(conferenceName);
+        sendCommand(endpoint, "api uuid_transfer " + anchorLegUuid + " -both 'conference:"
+            + conferenceName + "@default' inline");
+        log.info("FreeSWITCH 双人通话升级会议命令已提交，anchorLegUuid={}，conferenceName={}",
+            anchorLegUuid, conferenceName);
+    }
+
+    @Override
+    public void originateConferenceParticipant(EslEndpoint endpoint, String businessCallId, String participantLegUuid,
+                                               String conferenceName, String extension, String callerIdNumber) {
+        requireDialValue(businessCallId);
+        requireCallId(participantLegUuid);
+        requireConferenceName(conferenceName);
+        requireDialValue(extension);
+        requireDialValue(callerIdNumber);
+        requireDialValue(endpoint.sipDomain());
+        String variables = "{origination_uuid=" + participantLegUuid
+            + ",callnexus_business_call_id=" + businessCallId
+            + ",callnexus_direction=INTERNAL"
+            + ",callnexus_call_purpose=CALL_CONFERENCE_MEMBER"
+            + ",callnexus_conference_name=" + conferenceName
+            + ",callnexus_original_caller=" + callerIdNumber
+            + ",callnexus_original_called=" + extension
+            + ",origination_caller_id_number=" + callerIdNumber
+            + ",origination_caller_id_name=多方通话"
+            + ",hangup_after_bridge=true}";
+        String command = "bgapi originate " + variables + userDialString(extension, endpoint.sipDomain())
+            + " &conference(" + conferenceName + "@default)";
+        sendCommand(endpoint, command);
+        log.info("FreeSWITCH 多方通话邀请已提交，businessCallId={}，participantLegUuid={}，extension={}，conferenceName={}",
+            businessCallId, participantLegUuid, extension, conferenceName);
+    }
+
+    @Override
+    public String conferenceMemberList(EslEndpoint endpoint, String conferenceName) {
+        requireConferenceName(conferenceName);
+        return executeApiCommandForResult(endpoint, "api conference " + conferenceName + " json_list");
+    }
+
+    @Override
+    public void muteConferenceMember(EslEndpoint endpoint, String conferenceName,
+                                     String conferenceMemberId, boolean muted) {
+        requireConferenceName(conferenceName);
+        requireConferenceMemberId(conferenceMemberId);
+        sendCommand(endpoint, "api conference " + conferenceName + " "
+            + (muted ? "mute " : "unmute ") + conferenceMemberId);
+        log.info("FreeSWITCH 会议成员静音状态已提交，conferenceName={}，memberId={}，muted={}",
+            conferenceName, conferenceMemberId, muted);
+    }
+
+    @Override
+    public void removeConferenceMember(EslEndpoint endpoint, String conferenceName, String conferenceMemberId) {
+        requireConferenceName(conferenceName);
+        requireConferenceMemberId(conferenceMemberId);
+        sendCommand(endpoint, "api conference " + conferenceName + " kick " + conferenceMemberId);
+        log.info("FreeSWITCH 会议成员移除命令已提交，conferenceName={}，memberId={}",
+            conferenceName, conferenceMemberId);
+    }
+
+    @Override
     public void terminateConference(EslEndpoint endpoint, String conferenceName) {
-        requireDialValue(conferenceName);
+        requireConferenceName(conferenceName);
         sendCommand(endpoint, "api conference " + conferenceName + " hup all");
         log.info("FreeSWITCH 调度会议全员挂断命令已提交，conferenceName={}", conferenceName);
     }
@@ -510,6 +573,18 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         }
     }
 
+    private void requireConferenceName(String conferenceName) {
+        if (conferenceName == null || !conferenceName.matches("^[A-Za-z0-9_-]{1,128}$")) {
+            throw new ServiceException("会议房间名称不合法");
+        }
+    }
+
+    private void requireConferenceMemberId(String conferenceMemberId) {
+        if (conferenceMemberId == null || !conferenceMemberId.matches("^\\d{1,12}$")) {
+            throw new ServiceException("会议成员 ID 不合法");
+        }
+    }
+
     private void requireEndpoint(EslEndpoint endpoint) {
         if (endpoint.host() == null || endpoint.host().isBlank() || endpoint.port() <= 0 || endpoint.port() > 65535
             || endpoint.password() == null || endpoint.password().isBlank()) {
@@ -571,13 +646,15 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         requireDialValue(outboundRoute.getGatewayCode());
         requireDialValue(outboundRoute.getCallerIdNumber());
         String callerIdNumber = outboundRoute.getCallerIdNumber();
-        String legVariables = "[origination_caller_id_number=" + callerIdNumber
+        String originateVariables = "{ignore_early_media=true"
+            + ",originate_timeout=" + OUTBOUND_RING_TIMEOUT_SECONDS
+            + ",origination_caller_id_number=" + callerIdNumber
             + ",origination_caller_id_name=" + callerIdNumber
             + ",effective_caller_id_number=" + callerIdNumber
             + ",effective_caller_id_name=" + callerIdNumber
             + ",absolute_codec_string=" + OUTBOUND_GATEWAY_CODEC
-            + ",codec_string=" + OUTBOUND_GATEWAY_CODEC + "]";
-        return legVariables + "sofia/gateway/" + outboundRoute.getGatewayCode() + "/" + destination;
+            + ",codec_string=" + OUTBOUND_GATEWAY_CODEC + "}";
+        return originateVariables + "sofia/gateway/" + outboundRoute.getGatewayCode() + "/" + destination;
     }
 
     private String optionalVariable(String name, Long value) {

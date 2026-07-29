@@ -24,6 +24,8 @@ public class SaveFormTemplateRequest {
     private String templateName;
     @NotNull
     private FormBusinessType businessType;
+    @Size(max = 64)
+    private String workflowCode;
     @NotNull
     private Boolean enabled;
     @Valid

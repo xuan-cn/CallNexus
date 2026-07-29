@@ -82,15 +82,18 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
     private final AiRealtimeTtsInternalService ttsService;
     private final Executor consumeExecutor;
     private final ThreadPoolTaskScheduler scheduler;
+    private final AiRealtimeTtsConnectionRegistry connectionRegistry;
 
     private final Map<String, StreamState> states = new ConcurrentHashMap<>();
 
     public AiRealtimeTtsStreamWebSocketHandler(AiRealtimeTtsInternalService ttsService,
                                                @Qualifier("aiRealtimeExecutor") Executor consumeExecutor,
-                                               @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler scheduler) {
+                                               @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler scheduler,
+                                               AiRealtimeTtsConnectionRegistry connectionRegistry) {
         this.ttsService = ttsService;
         this.consumeExecutor = consumeExecutor;
         this.scheduler = scheduler;
+        this.connectionRegistry = connectionRegistry;
     }
 
     @Override
@@ -137,6 +140,7 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
             removed.cancelled.set(true);
             removed.consuming.set(false);
             cancelIdleTimer(removed);
+            connectionRegistry.unregister(removed.callId, session.getId());
         }
         log.info("AI 实时 TTS WS 连接关闭，sessionId={}，status={}", session.getId(), status);
     }
@@ -155,6 +159,8 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
             sendError(session, "start 缺少 tenantId");
             return;
         }
+        connectionRegistry.register(state.callId, session.getId(),
+            () -> cancelSession(session, state, "call ended", false));
         startConsumeLoop(session, state);
         scheduleIdleTimer(session, state);
         sendJson(session, Map.of("type", "started", "turnId", StringUtils.blankToDefault(state.turnId, "")));
@@ -201,14 +207,23 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void handleCancel(WebSocketSession session, StreamState state) {
+        cancelSession(session, state, "cancelled", true);
+    }
+
+    private void cancelSession(WebSocketSession session, StreamState state, String reason, boolean notifyPeer) {
         state.cancelled.set(true);
+        state.consuming.set(false);
         state.segmentQueue.clear();
         if (state.segmenter != null) {
             state.segmenter.drain();
         }
-        log.info("AI 实时 TTS WS 已被 cancel，sessionId={}", session.getId());
-        sendJson(session, Map.of("type", "cancelled"));
-        closeSession(session, state, new CloseStatus(1000, "cancelled"));
+        connectionRegistry.unregister(state.callId, session.getId());
+        log.info("AI 实时 TTS WS 已取消，sessionId={}，callId={}，reason={}",
+            session.getId(), state.callId, reason);
+        if (notifyPeer) {
+            sendJson(session, Map.of("type", "cancelled"));
+        }
+        closeSession(session, state, new CloseStatus(1000, reason));
     }
 
     /**

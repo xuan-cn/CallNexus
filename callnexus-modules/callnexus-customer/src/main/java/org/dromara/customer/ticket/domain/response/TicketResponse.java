@@ -15,6 +15,14 @@ public class TicketResponse {
     private String callerNumber;
     private String sourceCallId;
     private Long templateId;
+    private String workflowCode;
+    private String processStatus;
+    private Long flowInstanceId;
+    private String currentNodeCode;
+    private String currentNodeName;
+    private LocalDateTime submittedAt;
+    private LocalDateTime resolvedAt;
+    private LocalDateTime closedAt;
     private LocalDateTime createTime;
     private Map<String, Object> formData;
 }

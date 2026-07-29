@@ -4,13 +4,17 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationCommand;
+import org.dromara.resource.outboundauth.domain.OutboundAuthorizationRejection;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationResult;
+import org.dromara.resource.outboundauth.service.OutboundAuthorizationRule;
 import org.dromara.resource.outboundauth.service.OutboundAuthorizationService;
 import org.dromara.resource.outboundline.service.OutboundLinePolicyService;
 import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
 import org.dromara.resource.sip.service.SipAccountQueryService;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -20,6 +24,7 @@ public class OutboundAuthorizationServiceImpl implements OutboundAuthorizationSe
     private final SipAccountQueryService sipAccountQueryService;
     private final PhoneNumberQueryService phoneNumberQueryService;
     private final OutboundLinePolicyService outboundLinePolicyService;
+    private final List<OutboundAuthorizationRule> authorizationRules;
 
     @Override
     public OutboundAuthorizationResult authorize(OutboundAuthorizationCommand command) {
@@ -35,6 +40,17 @@ public class OutboundAuthorizationServiceImpl implements OutboundAuthorizationSe
             log.info("外呼授权通过：目标为内部分机，sourceType={}，nodeId={}，caller={}，callee={}，tenantId={}",
                 command.sourceType(), command.nodeId(), command.callerExtension(), normalizedCallee, command.tenantId());
             return OutboundAuthorizationResult.allowInternal(normalizedCallee);
+        }
+
+        for (OutboundAuthorizationRule rule : authorizationRules) {
+            OutboundAuthorizationRejection rejection = rule.validate(command, normalizedCallee);
+            if (rejection != null) {
+                log.warn("外呼授权拒绝：命中扩展规则，sourceType={}，nodeId={}，caller={}，callee={}，"
+                        + "rejectCode={}，tenantId={}",
+                    command.sourceType(), command.nodeId(), command.callerExtension(), normalizedCallee,
+                    rejection.code(), command.tenantId());
+                return OutboundAuthorizationResult.reject(rejection.code(), rejection.message(), normalizedCallee);
+            }
         }
 
         PhoneNumberOutboundRouteResponse route = resolveOutboundRoute(command);

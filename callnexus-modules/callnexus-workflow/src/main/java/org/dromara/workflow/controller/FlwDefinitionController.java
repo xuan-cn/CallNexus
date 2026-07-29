@@ -1,6 +1,7 @@
 package org.dromara.workflow.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
@@ -49,6 +50,15 @@ public class FlwDefinitionController extends BaseController {
     @SaCheckPermission("workflow:definition:list")
     public TableDataInfo<FlowDefinitionVo> list(FlowDefinition flowDefinition, PageQuery pageQuery) {
         return flwDefinitionService.queryList(flowDefinition, pageQuery);
+    }
+
+    /**
+     * Published active definitions available to business modules.
+     */
+    @SaCheckLogin
+    @GetMapping("/options")
+    public R<List<FlowDefinitionVo>> options() {
+        return R.ok(flwDefinitionService.publishedOptions());
     }
 
     /**

@@ -144,7 +144,13 @@ public class FormTemplateApplicationServiceImpl implements FormTemplateApplicati
         template.setTemplateCode(request.getTemplateCode());
         template.setTemplateName(request.getTemplateName());
         template.setBusinessType(request.getBusinessType());
+        template.setWorkflowCode(request.getBusinessType() == FormBusinessType.TICKET
+            ? normalizeWorkflowCode(request.getWorkflowCode()) : null);
         template.setEnabled(request.getEnabled());
+    }
+
+    private String normalizeWorkflowCode(String workflowCode) {
+        return workflowCode == null || workflowCode.isBlank() ? null : workflowCode.trim();
     }
 
     private FormTemplateResponse toResponse(FormTemplate template) {
@@ -153,6 +159,7 @@ public class FormTemplateApplicationServiceImpl implements FormTemplateApplicati
         response.setTemplateCode(template.getTemplateCode());
         response.setTemplateName(template.getTemplateName());
         response.setBusinessType(template.getBusinessType());
+        response.setWorkflowCode(template.getWorkflowCode());
         response.setEnabled(template.getEnabled());
         response.setVersion(template.getVersion());
         List<FormField> fields = fieldMapper.selectList(new LambdaQueryWrapper<FormField>()

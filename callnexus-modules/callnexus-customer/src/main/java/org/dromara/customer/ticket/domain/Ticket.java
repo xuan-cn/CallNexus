@@ -8,6 +8,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.tenant.core.TenantEntity;
 
+import java.util.Date;
+
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("cc_ticket")
@@ -20,6 +22,14 @@ public class Ticket extends TenantEntity {
     private String callerNumber;
     private String sourceCallId;
     private Long templateId;
+    private String workflowCode;
+    private String processStatus;
+    private Long flowInstanceId;
+    private String currentNodeCode;
+    private String currentNodeName;
+    private Date submittedAt;
+    private Date resolvedAt;
+    private Date closedAt;
     @Version
     private Integer version;
     @TableLogic

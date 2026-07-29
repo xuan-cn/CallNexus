@@ -52,6 +52,32 @@ public class IvrDialplanQueryServiceImpl implements IvrDialplanQueryService {
     }
 
     @Override
+    public String resolvePublishedStartDestination(String tenantId, Long flowId, Long nodeId) {
+        if (flowId == null || nodeId == null) {
+            return null;
+        }
+        return TenantHelper.dynamic(tenantId, () -> {
+            try {
+                if (!isPublishedFlowAvailable(tenantId, flowId, nodeId)) {
+                    return null;
+                }
+                IvrFlow flow = flowService.requirePublished(flowId);
+                IvrFlowVersion version = flowService.latestVersion(flow);
+                IvrGraphDefinition graph = graphParser.parse(version.getGraphJson());
+                IvrNodeDefinition start = graph.nodes().stream()
+                    .filter(node -> "START".equals(node.type()))
+                    .findFirst()
+                    .orElse(null);
+                return start == null ? null : renderSupport.extension(flowId, start.id());
+            } catch (Exception exception) {
+                log.warn("解析已发布 IVR 流程开始节点失败，flowId={}，nodeId={}，tenantId={}，error={}",
+                    flowId, nodeId, tenantId, exception.getMessage());
+                return null;
+            }
+        });
+    }
+
+    @Override
     public String renderPublishedFlow(String tenantId, Long flowId, Long nodeId, String number, String context, String sipDomain) {
         return renderPublishedFlow(tenantId, flowId, nodeId, number, context, sipDomain, null);
     }

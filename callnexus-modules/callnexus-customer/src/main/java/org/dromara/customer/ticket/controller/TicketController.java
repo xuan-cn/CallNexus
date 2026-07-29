@@ -1,6 +1,7 @@
 package org.dromara.customer.ticket.controller;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
@@ -35,7 +36,20 @@ public class TicketController {
     }
 
     @PostMapping
+    @SaCheckPermission("callcenter:ticket:create")
     public R<Long> create(@Valid @RequestBody CreateTicketRequest request) {
         return R.ok(applicationService.create(request));
+    }
+
+    @PostMapping("/{id}/submit")
+    public R<Void> submit(@PathVariable Long id) {
+        applicationService.submit(id);
+        return R.ok();
+    }
+
+    @PostMapping("/{id}/close")
+    public R<Void> close(@PathVariable Long id) {
+        applicationService.close(id);
+        return R.ok();
     }
 }

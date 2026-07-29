@@ -1,10 +1,13 @@
 package org.dromara.customer.customer.service;
 
 import org.dromara.customer.customer.domain.request.CreateCustomerRequest;
+import org.dromara.customer.customer.domain.request.CustomerImportData;
 import org.dromara.customer.customer.domain.request.CustomerPageQuery;
 import org.dromara.customer.customer.domain.request.UpdateCustomerRequest;
+import org.dromara.customer.customer.domain.request.CustomerPhoneRequest;
 import org.dromara.customer.customer.domain.response.CustomerResponse;
 import org.dromara.customer.customer.domain.response.CustomerFollowUpResponse;
+import org.dromara.customer.customer.domain.response.CustomerPhoneResponse;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import java.util.List;
@@ -14,7 +17,13 @@ public interface CustomerApplicationService {
     CustomerResponse get(Long id);
     CustomerResponse getByPhone(String primaryPhone);
     Long create(CreateCustomerRequest request);
+    Long importCustomer(CustomerImportData data);
     void update(Long id, UpdateCustomerRequest request);
+    List<CustomerPhoneResponse> listPhones(Long customerId);
+    Long addPhone(Long customerId, CustomerPhoneRequest request);
+    void updatePhone(Long customerId, Long phoneId, CustomerPhoneRequest request);
+    void setPrimaryPhone(Long customerId, Long phoneId);
+    void deletePhone(Long customerId, Long phoneId);
     List<CustomerFollowUpResponse> listFollowUps(Long customerId);
     Long addFollowUp(Long customerId, String content);
 }

@@ -20,6 +20,16 @@ public interface AiRealtimeTelephonyGateway {
 
     void recognize(Long nodeId, String customerLegUuid);
 
+    void stopPlayback(Long nodeId, String customerLegUuid);
+
+    void transferToExtension(Long nodeId, String customerLegUuid, String targetExtension);
+
+    void transferToQueue(Long nodeId, String customerLegUuid, String queueCode);
+
+    void transferToIvr(String tenantId, Long nodeId, String customerLegUuid, String flowId);
+
+    void hangup(Long nodeId, String customerLegUuid);
+
     boolean callExists(Long nodeId, String customerLegUuid);
 
     Map<String, String> getChannelVariables(Long nodeId, String customerLegUuid, String... names);
