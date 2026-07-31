@@ -23,6 +23,7 @@
         <module>callnexus-ivr</module>
         <module>callnexus-customer</module>
         <module>callnexus-outbound</module>
+        <module>callnexus-chat</module>
     </modules>
 
     <artifactId>callnexus-modules</artifactId>

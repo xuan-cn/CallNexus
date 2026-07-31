@@ -72,6 +72,17 @@ public class FreeSwitchDirectoryController {
         return dispatchXmlCurl(requestParams, token, "configuration", "callcenter", "呼叫队列配置");
     }
 
+    @PostMapping(value = "/configuration/acl", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE, produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> aclConfiguration(@RequestParam MultiValueMap<String, String> params,
+                                                   @RequestHeader(value = TOKEN_HEADER, required = false) String token,
+                                                   @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+                                                   HttpServletRequest servletRequest) {
+        MultiValueMap<String, String> requestParams = new LinkedMultiValueMap<>(params);
+        requestParams.set("_remoteAddress", clientAddress(servletRequest));
+        applyNodeCredentials(requestParams, authorization);
+        return dispatchXmlCurl(requestParams, token, "configuration", "acl", "访问控制配置");
+    }
+
     private ResponseEntity<String> dispatchXmlCurl(MultiValueMap<String, String> params, String token, String section, String purpose, String requestType) {
         if (!validToken(token, firstValue(params, "token"))) {
             log.warn("FreeSWITCH 动态 XML 配置请求鉴权失败，类型={}，section={}，purpose={}，domain={}",
