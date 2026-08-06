@@ -24,10 +24,11 @@ public interface QueueEventApplicationService {
      * <p>由 {@link org.dromara.call.service.impl.TelephonyEventHandlerImpl} 在 BRIDGE 时调用。
      * 实现内部会判断该 session 是否为队列来电（有 QUEUE_IN 时间线节点），非队列来电直接返回。
      *
-     * @param channelUuid 桥接坐席腿的 channel uuid
+     * @param channelUuid CHANNEL_BRIDGE 事件自身的通话腿 UUID
+     * @param peerUuid    CHANNEL_BRIDGE 的 Other-Leg-Unique-ID，表示本次桥接的另一条腿
      * @return 实际接听队列 ID；无队列来电或未关联到队列返回 null
      */
-    Long recordAgentAnswerOnBridge(String channelUuid);
+    Long recordAgentAnswerOnBridge(String channelUuid, String peerUuid);
 
     /**
      * 在业务通话聚合结束（所有通话腿挂断）时，判断队列来电是否未被接听，

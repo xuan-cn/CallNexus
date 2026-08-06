@@ -142,10 +142,14 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
 
         SipDirectoryAccountResponse internalAccount = findInternalAccount(request, context, domain, destinationNumber);
         if (internalAccount != null) {
-            String xml = dialplanXmlRenderer.renderInternalExtensionRoute(internalAccount, context);
-            log.info("FreeSWITCH 动态拨号计划匹配到内部分机路由，context={}，extension={}，authUsername={}，domain={}，callerNumber={}，tenantId={}，返回XML长度={}",
+            String businessCallId = firstValue(request,
+                "variable_callnexus_business_call_id", "callnexus_business_call_id");
+            String originalCaller = originalCallerNumber(request);
+            String xml = dialplanXmlRenderer.renderInternalExtensionRoute(
+                internalAccount, context, businessCallId, originalCaller);
+            log.info("FreeSWITCH 动态拨号计划匹配到内部分机路由，context={}，extension={}，authUsername={}，domain={}，callerNumber={}，businessCallId={}，tenantId={}，返回XML长度={}",
                 context, internalAccount.getExtension(), internalAccount.getAuthUsername(), internalAccount.getDomain(),
-                callerNumber(request), request.tenantId(), xml.length());
+                originalCaller, businessCallId, request.tenantId(), xml.length());
             return xml;
         }
 
@@ -232,6 +236,14 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         if (value == null || value.isBlank()) value = request.firstValue("Caller-Caller-ID-Number");
         if (value == null || value.isBlank()) value = request.firstValue("variable_caller_id_number");
         return value;
+    }
+
+    private String originalCallerNumber(FreeSwitchXmlCurlRequest request) {
+        String value = firstValue(request,
+            "variable_callnexus_original_caller", "callnexus_original_caller",
+            "variable_effective_caller_id_number", "effective_caller_id_number",
+            "Hunt-Orig-Caller-ID-Number", "Caller-Orig-Caller-ID-Number");
+        return value == null || value.isBlank() ? callerNumber(request) : value;
     }
 
     private Long nodeId(FreeSwitchXmlCurlRequest request) {

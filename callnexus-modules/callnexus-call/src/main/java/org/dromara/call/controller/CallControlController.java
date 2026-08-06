@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import org.dromara.call.domain.request.CallNoteRequest;
 import org.dromara.call.domain.request.CallConferenceInviteRequest;
 import org.dromara.call.domain.request.CallConferenceMuteRequest;
+import org.dromara.call.domain.request.IvrTransferRequest;
 import org.dromara.call.domain.request.OriginateCallRequest;
 import org.dromara.call.domain.request.SendDtmfRequest;
 import org.dromara.call.domain.request.TransferCallRequest;
@@ -83,6 +84,12 @@ public class CallControlController {
         return R.ok();
     }
 
+    @PostMapping("/{callId}/ivr-transfer")
+    public R<Void> transferToIvr(@PathVariable String callId, @Valid @RequestBody IvrTransferRequest request) {
+        applicationService.transferToIvr(callId, request.getFlowId());
+        return R.ok();
+    }
+
     @PostMapping("/{callId}/consult-transfer")
     public R<CallControlResponse> startConsultTransfer(@PathVariable String callId, @Valid @RequestBody TransferCallRequest request) {
         return R.ok(applicationService.startConsultTransfer(callId, request.getTargetExtension(), request.getPhoneMode()));
@@ -98,6 +105,11 @@ public class CallControlController {
     public R<Void> completeConsultTransfer(@PathVariable String callId) {
         applicationService.completeConsultTransfer(callId);
         return R.ok();
+    }
+
+    @PostMapping("/{callId}/consult-transfer/conference")
+    public R<CallConferenceResponse> promoteConsultToConference(@PathVariable String callId) {
+        return R.ok(conferenceService.promoteConsult(callId));
     }
 
     @PostMapping("/{callId}/conference")

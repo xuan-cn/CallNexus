@@ -541,6 +541,13 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
             throw new ServiceException("WS 端点地址必须以 ws:// 或 wss:// 开头");
         }
         item.setVoiceTransportWsUrl(StringUtils.isBlank(wsUrl) ? null : wsUrl);
+        item.setBargeInEnabled(Boolean.TRUE.equals(request.getBargeInEnabled()));
+        item.setOpeningBargeInEnabled(Boolean.TRUE.equals(request.getOpeningBargeInEnabled()));
+        item.setBargeInMode(defaultValue(request.getBargeInMode(), "STANDARD").trim().toUpperCase(Locale.ROOT));
+        if (!Set.of("SENSITIVE", "STANDARD", "NOISY").contains(item.getBargeInMode())) {
+            throw new ServiceException("未知的语音打断环境模式");
+        }
+        item.setBargeInGraceMs(request.getBargeInGraceMs() == null ? 500 : request.getBargeInGraceMs());
         item.setRetrievalMode(defaultValue(request.getRetrievalMode(), "RAG").trim().toUpperCase(Locale.ROOT));
         if (!Set.of("RAG", "DIRECT_RETRIEVAL").contains(item.getRetrievalMode())) {
             throw new ServiceException("未知的知识库回答模式");
@@ -589,6 +596,10 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         value.setWelcomeMessage(item.getWelcomeMessage());
         value.setVoiceTransport(item.getVoiceTransport());
         value.setVoiceTransportWsUrl(item.getVoiceTransportWsUrl());
+        value.setBargeInEnabled(Boolean.TRUE.equals(item.getBargeInEnabled()));
+        value.setOpeningBargeInEnabled(Boolean.TRUE.equals(item.getOpeningBargeInEnabled()));
+        value.setBargeInMode(defaultValue(item.getBargeInMode(), "STANDARD"));
+        value.setBargeInGraceMs(item.getBargeInGraceMs() == null ? 500 : item.getBargeInGraceMs());
         value.setRetrievalMode(item.getRetrievalMode());
         value.setRetrievalFailurePolicy(item.getRetrievalFailurePolicy());
         value.setTopK(item.getTopK());

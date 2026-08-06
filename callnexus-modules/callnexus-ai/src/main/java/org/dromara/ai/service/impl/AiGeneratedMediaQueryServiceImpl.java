@@ -32,7 +32,6 @@ public class AiGeneratedMediaQueryServiceImpl implements AiGeneratedMediaQuerySe
         AiGeneratedMedia binding = generatedMediaMapper.selectOne(new LambdaQueryWrapper<AiGeneratedMedia>()
             .eq(AiGeneratedMedia::getBusinessType, businessType)
             .eq(AiGeneratedMedia::getBusinessId, businessId)
-            .eq(AiGeneratedMedia::getGenerationStatus, "SUCCESS")
             .orderByDesc(AiGeneratedMedia::getGeneratedAt)
             .last("limit 1"));
         if (binding == null || binding.getMediaId() == null) {

@@ -10,7 +10,9 @@ import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
 import org.dromara.agent.domain.response.CurrentAgentResponse;
 import org.dromara.agent.service.AgentRealtimeQueryService;
+import org.dromara.agent.service.AgentSessionApplicationService;
 import org.dromara.agent.service.CurrentAgentSessionService;
+import org.dromara.ai.service.AiRealtimeTelephonyGateway;
 import org.dromara.call.domain.CallEvent;
 import org.dromara.call.domain.CallLeg;
 import org.dromara.call.domain.CallOriginateContext;
@@ -22,13 +24,14 @@ import org.dromara.call.domain.response.CallRealtimeMessage;
 import org.dromara.call.mapper.CallEventMapper;
 import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallSessionMapper;
+import org.dromara.call.service.CallConferenceApplicationService;
 import org.dromara.call.service.CallControlApplicationService;
 import org.dromara.call.service.DispatchCallTaskService;
 import org.dromara.call.service.TelephonyCommandGateway;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.redis.utils.RedisUtils;
-import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.common.sse.dto.SseMessageDto;
 import org.dromara.common.sse.utils.SseMessageUtils;
 import org.dromara.common.websocket.dto.WebSocketMessageDto;
@@ -69,6 +72,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     private static final long BLIND_TRANSFER_MEDIA_RECOVERY_DELAY_MILLIS = 200L;
 
     private final CurrentAgentSessionService agentSessionService;
+    private final AgentSessionApplicationService explicitAgentSessionService;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final TelephonyCommandGateway telephonyCommandGateway;
     private final OutboundAuthorizationService outboundAuthorizationService;
@@ -77,6 +81,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     private final CallEventMapper callEventMapper;
     private final CallSessionMapper callSessionMapper;
     private final DispatchCallTaskService dispatchCallTaskService;
+    private final CallConferenceApplicationService callConferenceApplicationService;
+    private final AiRealtimeTelephonyGateway aiRealtimeTelephonyGateway;
 
     @Override
     public CallControlResponse originate(String destination) {
@@ -85,7 +91,12 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
     @Override
     public CallControlResponse originate(String destination, CallOriginateContext context) {
-        CurrentAgentResponse agent = requireSignedInAgent();
+        return originate(null, destination, context);
+    }
+
+    @Override
+    public CallControlResponse originate(Long agentId, String destination, CallOriginateContext context) {
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
         String key = activeCallKey(agent.getAgentId());
         AgentActiveCall existingCall = RedisUtils.getCacheObject(key);
         if (existingCall != null) {
@@ -102,9 +113,6 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         OutboundAuthorizationResult authorization = authorizeOutbound(agent, destination, effectiveContext);
         OutboundRoute outboundRoute = toOutboundRoute(authorization);
         String authorizedDestination = authorization.normalizedCallee();
-        telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(),
-            authorizedDestination, outboundRoute, effectiveContext);
-
         AgentActiveCall activeCall = new AgentActiveCall();
         activeCall.setCallId(callId);
         activeCall.setBusinessCallId(businessCallId);
@@ -115,13 +123,29 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         activeCall.setGatewayCode(outboundRoute.getGatewayCode());
         activeCall.setCallerIdNumber(outboundRoute.getCallerIdNumber());
         RedisUtils.setCacheObject(key, activeCall, ACTIVE_CALL_TTL);
-        agentSessionService.changeStatus(AgentPresenceStatus.BUSY);
+        try {
+            changeAgentStatus(agent, AgentPresenceStatus.BUSY);
+            telephonyCommandGateway.originate(endpoint(agent.getNodeId()), callId, agent.getExtension(),
+                authorizedDestination, outboundRoute, effectiveContext);
+        } catch (RuntimeException exception) {
+            RedisUtils.deleteObject(key);
+            restoreAgentStatusAfterOriginateFailure(agent);
+            throw exception;
+        }
         return toResponse(activeCall);
     }
 
     @Override
     public void hangup(String callId) {
-        CurrentAgentResponse agent = requireSignedInAgent();
+        hangup(null, callId);
+    }
+
+    @Override
+    public void hangup(Long agentId, String callId) {
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
+        if (callConferenceApplicationService.endIfActiveOwner(agent.getAgentId(), callId)) {
+            return;
+        }
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         String hangupTarget = callId;
@@ -142,7 +166,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
                 callId, hangupTarget, agent.getAgentId(), agent.getExtension());
         }
         RedisUtils.deleteObject(activeCallKey(agent.getAgentId()));
-        agentSessionService.changeStatus(AgentPresenceStatus.AFTER_CALL);
+        changeAgentStatus(agent, AgentPresenceStatus.AFTER_CALL);
     }
 
     private String resolveAgentHangupTarget(EslEndpoint endpoint, CurrentAgentResponse agent,
@@ -158,62 +182,87 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
     @Override
     public void hold(String callId) {
-        CurrentAgentResponse agent = requireSignedInAgent();
+        hold(null, callId);
+    }
+
+    @Override
+    public void hold(Long agentId, String callId) {
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
         telephonyCommandGateway.hold(endpoint, legs.customerLegUuid());
         log.info("已保持当前客户腿，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}",
-            LoginHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
+            TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension());
     }
 
     @Override
     public void unhold(String callId) {
-        CurrentAgentResponse agent = requireSignedInAgent();
+        unhold(null, callId);
+    }
+
+    @Override
+    public void unhold(Long agentId, String callId) {
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
         telephonyCommandGateway.unhold(endpoint, legs.customerLegUuid());
         log.info("已恢复当前客户腿，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}",
-            LoginHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
+            TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension());
     }
 
     @Override
     public void mute(String callId) {
-        CurrentAgentResponse agent = requireSignedInAgent();
+        mute(null, callId);
+    }
+
+    @Override
+    public void mute(Long agentId, String callId) {
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
         telephonyCommandGateway.mute(endpoint, legs.agentLegUuid());
         log.info("已静音当前坐席腿，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}，mute=true",
-            LoginHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
+            TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension());
     }
 
     @Override
     public void unmute(String callId) {
-        CurrentAgentResponse agent = requireSignedInAgent();
+        unmute(null, callId);
+    }
+
+    @Override
+    public void unmute(Long agentId, String callId) {
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
         telephonyCommandGateway.unmute(endpoint, legs.agentLegUuid());
         log.info("已取消静音当前坐席腿，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}，mute=false",
-            LoginHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
+            TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension());
     }
 
     @Override
     public void sendDtmf(String callId, String digits) {
+        sendDtmf(null, callId, digits);
+    }
+
+    @Override
+    public void sendDtmf(Long agentId, String callId, String digits) {
         String safeDigits = normalizeDtmfDigits(digits);
-        CurrentAgentResponse agent = requireSignedInAgent();
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
         telephonyCommandGateway.sendDtmf(endpoint, legs.agentLegUuid(), safeDigits);
         log.info("已向当前坐席腿发送 DTMF，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}，digits={}",
-            LoginHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
+            TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension(), safeDigits);
     }
 
@@ -253,16 +302,21 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         event.setMetadataJson(JsonUtils.toJsonString(metadata));
         callEventMapper.insert(event);
         log.info("已保存通话备注，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}，contentLength={}",
-            LoginHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
+            TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension(), safeContent.length());
     }
 
     @Override
     public void blindTransfer(String callId, String targetExtension) {
-        CurrentAgentResponse agent = requireSignedInAgent();
+        blindTransfer(null, callId, targetExtension);
+    }
+
+    @Override
+    public void blindTransfer(Long agentId, String callId, String targetExtension) {
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
-        String businessCallId = firstNotBlank(activeCall.getBusinessCallId(), resolveBusinessCallIdFromActiveCall(activeCall), activeCall.getCallId());
+        String businessCallId = resolveAuthoritativeBusinessCallId(activeCall);
         String customerCallId = resolveCurrentCustomerLegId(endpoint, businessCallId, activeCall, agent);
         if (customerCallId == null || customerCallId.isBlank() || !telephonyCommandGateway.callExists(endpoint, customerCallId)) {
             throw new ServiceException("当前客户通话腿不存在，无法盲转");
@@ -278,16 +332,63 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         }
         prepareCustomerLegForBlindTransfer(endpoint, customerCallId);
         telephonyCommandGateway.setCallVariable(endpoint, customerCallId, "callnexus_satisfaction_skip", "true");
+        telephonyCommandGateway.setCallVariable(endpoint, customerCallId, "callnexus_business_call_id", businessCallId);
+        telephonyCommandGateway.setCallVariable(endpoint, customerCallId, "callnexus_original_caller",
+            firstNotBlank(activeCall.getDestination(), activeCall.getCallerIdNumber(), agent.getExtension()));
+        telephonyCommandGateway.setCallVariable(endpoint, customerCallId, "callnexus_original_called", targetExtension);
+        markBlindTransferSource(agent, activeCall);
         telephonyCommandGateway.blindTransfer(endpoint, customerCallId, targetExtension);
-        notifyBlindTransferTargetAgent(agent, activeCall, targetExtension, businessCallId, customerCallId);
         RedisUtils.deleteObject(activeCallKey(agent.getAgentId()));
         RedisUtils.deleteObject(consultCallKey(agent.getAgentId()));
-        agentSessionService.changeStatus(AgentPresenceStatus.AFTER_CALL);
+        changeAgentStatus(agent, AgentPresenceStatus.AFTER_CALL);
+    }
+
+    @Override
+    public void transferToIvr(String callId, Long flowId) {
+        transferToIvr(null, callId, flowId);
+    }
+
+    @Override
+    public void transferToIvr(Long agentId, String callId, Long flowId) {
+        if (flowId == null) {
+            throw new ServiceException("请选择 IVR 流程");
+        }
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
+        AgentActiveCall activeCall = requireActiveCall(agent, callId);
+        EslEndpoint endpoint = endpoint(agent.getNodeId());
+        String businessCallId = resolveAuthoritativeBusinessCallId(activeCall);
+        String customerCallId = resolveCurrentCustomerLegId(endpoint, businessCallId, activeCall, agent);
+        if (customerCallId == null || customerCallId.isBlank()
+            || !telephonyCommandGateway.callExists(endpoint, customerCallId)) {
+            throw new ServiceException("当前客户通话腿不存在，无法转入 IVR");
+        }
+        businessCallId = firstNotBlank(resolveBusinessCallIdByLegUuid(customerCallId), businessCallId, customerCallId);
+        String customerRole = legRole(businessCallId, customerCallId);
+        if (customerRole != null && !isAllowedCounterpartyRole(businessCallId, customerRole)) {
+            throw new ServiceException("当前目标通话腿不是客户腿，已拒绝转入 IVR");
+        }
+
+        telephonyCommandGateway.setCallVariable(endpoint, customerCallId,
+            "callnexus_business_call_id", businessCallId);
+        aiRealtimeTelephonyGateway.transferToIvr(TenantHelper.getTenantId(), agent.getNodeId(),
+            customerCallId, flowId.toString());
+
+        RedisUtils.deleteObject(activeCallKey(agent.getAgentId()));
+        RedisUtils.deleteObject(consultCallKey(agent.getAgentId()));
+        changeAgentStatus(agent, AgentPresenceStatus.AFTER_CALL);
+        log.info("坐席已将客户通话转入 IVR，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，agentId={}，extension={}，flowId={}",
+            TenantHelper.getTenantId(), agent.getNodeId(), businessCallId, callId, customerCallId,
+            agent.getAgentId(), agent.getExtension(), flowId);
     }
 
     @Override
     public CallControlResponse startConsultTransfer(String callId, String targetExtension, String phoneMode) {
-        CurrentAgentResponse agent = requireSignedInAgent();
+        return startConsultTransfer(null, callId, targetExtension, phoneMode);
+    }
+
+    @Override
+    public CallControlResponse startConsultTransfer(Long agentId, String callId, String targetExtension, String phoneMode) {
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         AgentConsultCall existing = RedisUtils.getCacheObject(consultCallKey(agent.getAgentId()));
         if (existing != null) {
@@ -299,7 +400,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         String consultCallId = UUID.randomUUID().toString();
-        String businessCallId = firstNotBlank(activeCall.getBusinessCallId(), resolveBusinessCallIdFromActiveCall(activeCall), activeCall.getCallId());
+        String businessCallId = resolveAuthoritativeBusinessCallId(activeCall);
         String customerCallId = resolveCurrentCustomerLegId(endpoint, businessCallId, activeCall, agent);
         businessCallId = firstNotBlank(resolveBusinessCallIdByLegUuid(customerCallId), businessCallId, customerCallId);
         String sourceAgentCallId = resolveCurrentSourceAgentLegId(endpoint, businessCallId, agent, activeCall, customerCallId);
@@ -312,7 +413,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         consultCall.setCustomerCallId(customerCallId);
         consultCall.setSourceAgentCallId(sourceAgentCallId);
         consultCall.setTargetAgentCallId(consultCallId);
-        consultCall.setTenantId(LoginHelper.getTenantId());
+        consultCall.setTenantId(TenantHelper.getTenantId());
         consultCall.setNodeId(agent.getNodeId());
         consultCall.setCustomerLegUuid(customerCallId);
         consultCall.setSourceAgentLegUuid(sourceAgentCallId);
@@ -334,11 +435,10 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             waitForConsultBridgeReleased();
             log.info("咨询转接原桥已拆分并驻留，businessCallId={}，counterpartyLegUuid={}，sourceAgentLegUuid={}",
                 businessCallId, customerCallId, sourceAgentCallId);
+            consultCall.setStatus(AgentConsultCallStatus.DIALING);
             saveConsultCall(agent, consultCall);
             telephonyCommandGateway.originateConsultation(endpoint, businessCallId, consultCallId, agent.getExtension(),
                 targetExtension, customerCallId, sourceAgentCallId);
-            consultCall.setStatus(AgentConsultCallStatus.DIALING);
-            saveConsultCall(agent, consultCall);
         } catch (RuntimeException exception) {
             deleteConsultCall(agent, consultCall);
             restoreOriginalBridgeIfPossible(agent, consultCall);
@@ -357,7 +457,12 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
     @Override
     public void cancelConsultTransfer(String callId) {
-        CurrentAgentResponse agent = requireSignedInAgent();
+        cancelConsultTransfer(null, callId);
+    }
+
+    @Override
+    public void cancelConsultTransfer(Long agentId, String callId) {
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentConsultCall consultCall = requireConsultCall(agent, callId);
         consultCall.setStatus(AgentConsultCallStatus.CANCELLING);
         saveConsultCall(agent, consultCall);
@@ -371,7 +476,12 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
     @Override
     public void completeConsultTransfer(String callId) {
-        CurrentAgentResponse agent = requireSignedInAgent();
+        completeConsultTransfer(null, callId);
+    }
+
+    @Override
+    public void completeConsultTransfer(Long agentId, String callId) {
+        CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentConsultCall consultCall = requireConsultCall(agent, callId);
         AgentActiveCall activeCall = requireActiveCall(agent, consultCall.getCustomerCallId());
         EslEndpoint endpoint = endpoint(agent.getNodeId());
@@ -418,7 +528,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         consultCall.setCompletedAt(LocalDateTime.now());
         RedisUtils.deleteObject(activeCallKey(agent.getAgentId()));
         deleteConsultCall(agent, consultCall);
-        agentSessionService.changeStatus(AgentPresenceStatus.AFTER_CALL);
+        changeAgentStatus(agent, AgentPresenceStatus.AFTER_CALL);
     }
 
     private void saveConsultCall(CurrentAgentResponse agent, AgentConsultCall consultCall) {
@@ -453,34 +563,37 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         if (agent == null || agent.getAgentId() == null || consultCall == null) {
             return;
         }
-        Set<String> relatedUuids = new LinkedHashSet<>();
-        if (activeCall != null) {
-            addCallId(relatedUuids, activeCall.getCallId());
-            addCallId(relatedUuids, activeCall.getAgentChannelId());
-            if (activeCall.getRelatedUuids() != null) {
-                activeCall.getRelatedUuids().forEach(uuid -> addCallId(relatedUuids, uuid));
-            }
-        }
-        addCallId(relatedUuids, consultCall.getOriginalCallId());
-        addCallId(relatedUuids, consultCall.getCustomerCallId());
-        addCallId(relatedUuids, consultCall.getSourceAgentCallId());
-        addCallId(relatedUuids, consultCall.getTargetAgentCallId());
-        addCallId(relatedUuids, consultCall.getCustomerLegUuid());
-        addCallId(relatedUuids, consultCall.getSourceAgentLegUuid());
-        addCallId(relatedUuids, consultCall.getConsultLegUuid());
-        relatedUuids.forEach(uuid -> RedisUtils.setCacheObject(
-            transferredSourceAgentKey(LoginHelper.getTenantId(), uuid, agent.getAgentId()),
-            Boolean.TRUE,
-            TRANSFERRED_SOURCE_TTL
-        ));
-        relatedUuids.forEach(uuid -> RedisUtils.setCacheObject(
-            transferredSourceExtensionKey(LoginHelper.getTenantId(), uuid, agent.getExtension()),
-            Boolean.TRUE,
-            TRANSFERRED_SOURCE_TTL
-        ));
         Set<String> sourceLegUuids = new LinkedHashSet<>();
         addCallId(sourceLegUuids, consultCall.getSourceAgentCallId());
         addCallId(sourceLegUuids, consultCall.getSourceAgentLegUuid());
+        if (activeCall != null) {
+            addCallId(sourceLegUuids, activeCall.getAgentChannelId());
+        }
+        markTransferredSource(agent, sourceLegUuids);
+    }
+
+    private void markBlindTransferSource(CurrentAgentResponse agent, AgentActiveCall activeCall) {
+        if (agent == null || agent.getAgentId() == null) {
+            return;
+        }
+        Set<String> sourceLegUuids = new LinkedHashSet<>();
+        if (activeCall != null) {
+            addCallId(sourceLegUuids, activeCall.getAgentChannelId());
+        }
+        markTransferredSource(agent, sourceLegUuids);
+    }
+
+    private void markTransferredSource(CurrentAgentResponse agent, Set<String> sourceLegUuids) {
+        sourceLegUuids.forEach(uuid -> RedisUtils.setCacheObject(
+                transferredSourceAgentKey(TenantHelper.getTenantId(), uuid, agent.getAgentId()),
+            Boolean.TRUE,
+            TRANSFERRED_SOURCE_TTL
+        ));
+        sourceLegUuids.forEach(uuid -> RedisUtils.setCacheObject(
+                transferredSourceExtensionKey(TenantHelper.getTenantId(), uuid, agent.getExtension()),
+            Boolean.TRUE,
+            TRANSFERRED_SOURCE_TTL
+        ));
         sourceLegUuids.forEach(uuid -> RedisUtils.setCacheObject(
             transferredSourceLegKey(uuid),
             Boolean.TRUE,
@@ -488,12 +601,12 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         ));
     }
 
-    private String transferredSourceAgentKey(String tenantId, String customerCallId, Long agentId) {
-        return TRANSFERRED_SOURCE_AGENT_KEY_PREFIX + tenantId + ":" + customerCallId + ":" + agentId;
+    private String transferredSourceAgentKey(String tenantId, String sourceLegUuid, Long agentId) {
+        return TRANSFERRED_SOURCE_AGENT_KEY_PREFIX + tenantId + ":" + sourceLegUuid + ":" + agentId;
     }
 
-    private String transferredSourceExtensionKey(String tenantId, String customerCallId, String extension) {
-        return TRANSFERRED_SOURCE_EXTENSION_KEY_PREFIX + tenantId + ":" + customerCallId + ":" + extension;
+    private String transferredSourceExtensionKey(String tenantId, String sourceLegUuid, String extension) {
+        return TRANSFERRED_SOURCE_EXTENSION_KEY_PREFIX + tenantId + ":" + sourceLegUuid + ":" + extension;
     }
 
     private String transferredSourceLegKey(String sourceAgentCallId) {
@@ -509,7 +622,13 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     }
 
     private CurrentAgentResponse requireSignedInAgent() {
-        CurrentAgentResponse agent = agentSessionService.current();
+        return requireSignedInAgent(null);
+    }
+
+    private CurrentAgentResponse requireSignedInAgent(Long agentId) {
+        CurrentAgentResponse agent = agentId == null
+            ? agentSessionService.current()
+            : explicitAgentSessionService.get(agentId);
         if (!agent.isConfigured()) {
             throw new ServiceException("当前用户尚未绑定坐席");
         }
@@ -520,6 +639,22 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             throw new ServiceException("坐席未绑定 SIP 分机或分机已停用");
         }
         return agent;
+    }
+
+    private void changeAgentStatus(CurrentAgentResponse agent, AgentPresenceStatus status) {
+        if (agent == null || agent.getAgentId() == null) {
+            throw new ServiceException("坐席信息不完整，无法更新状态");
+        }
+        explicitAgentSessionService.changeStatus(agent.getAgentId(), status);
+    }
+
+    private void restoreAgentStatusAfterOriginateFailure(CurrentAgentResponse agent) {
+        try {
+            explicitAgentSessionService.changeStatus(agent.getAgentId(), agent.getStatus());
+        } catch (RuntimeException restoreException) {
+            log.warn("外呼失败后恢复坐席状态失败，agentId={}，status={}，error={}",
+                agent.getAgentId(), agent.getStatus(), restoreException.getMessage());
+        }
     }
 
     private AgentActiveCall requireActiveCall(CurrentAgentResponse agent, String callId) {
@@ -588,14 +723,32 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         return null;
     }
 
+    private String resolveAuthoritativeBusinessCallId(AgentActiveCall activeCall) {
+        return firstNotBlank(resolveBusinessCallIdFromActiveCall(activeCall),
+            activeCall == null ? null : activeCall.getBusinessCallId(),
+            activeCall == null ? null : activeCall.getCallId());
+    }
+
     private String resolveCurrentCustomerLegId(EslEndpoint endpoint, String businessCallId, AgentActiveCall activeCall,
                                                CurrentAgentResponse agent) {
+        String cachedAgentChannelId = activeCall == null ? null : activeCall.getAgentChannelId();
         String legUuid = liveLegUuid(endpoint, activeLegByRole(businessCallId, "CUSTOMER"));
-        if (legUuid != null) {
+        if (legUuid != null && !legUuid.equals(cachedAgentChannelId)) {
             return legUuid;
+        }
+        if (isInternalBusinessCall(businessCallId)) {
+            legUuid = liveLegUuid(endpoint,
+                activeInternalCounterpartyLeg(businessCallId, agent, cachedAgentChannelId));
+            if (legUuid != null) {
+                log.info("已从内部通话活动腿解析当前对端，businessCallId={}，counterpartyLegUuid={}，agentId={}，extension={}",
+                    businessCallId, legUuid, agent == null ? null : agent.getAgentId(),
+                    agent == null ? null : agent.getExtension());
+                return legUuid;
+            }
         }
         legUuid = candidateCallIds(activeCall, activeCall == null ? null : activeCall.getCallId()).stream()
             .filter(this::isUuid)
+            .filter(uuid -> !uuid.equals(cachedAgentChannelId))
             .filter(uuid -> isCounterpartyLeg(uuid, agent))
             .filter(uuid -> telephonyCommandGateway.callExists(endpoint, uuid))
             .findFirst()
@@ -656,6 +809,12 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         if (legUuid != null && !legUuid.equals(customerCallId)) {
             return legUuid;
         }
+        String cachedAgentChannelId = activeCall == null ? null : activeCall.getAgentChannelId();
+        if (isUuid(cachedAgentChannelId)
+            && !cachedAgentChannelId.equals(customerCallId)
+            && telephonyCommandGateway.callExists(endpoint, cachedAgentChannelId)) {
+            return cachedAgentChannelId;
+        }
         legUuid = resolveAgentChannelId(endpoint, activeCall, customerCallId);
         if (legUuid != null && legUuid.equals(customerCallId)) {
             throw new ServiceException("当前咨询转接源坐席腿识别异常，拒绝发起咨询");
@@ -684,6 +843,34 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             .eq(CallLeg::getActive, true)
             .in(CallLeg::getLegRole, List.of("AGENT", "CONSULT_AGENT", "PICKUP"))
             .last("order by create_time desc limit 1"));
+    }
+
+    private CallLeg activeInternalCounterpartyLeg(String businessCallId, CurrentAgentResponse agent,
+                                                  String currentAgentLegUuid) {
+        if (businessCallId == null || businessCallId.isBlank() || agent == null) {
+            return null;
+        }
+        return callLegMapper.selectList(new LambdaQueryWrapper<CallLeg>()
+                .eq(CallLeg::getBusinessCallId, businessCallId)
+                .eq(CallLeg::getActive, true)
+                .in(CallLeg::getLegRole, List.of("AGENT", "EXTENSION", "CONSULT_AGENT"))
+                .orderByAsc(CallLeg::getCreateTime))
+            .stream()
+            .filter(leg -> currentAgentLegUuid == null || !currentAgentLegUuid.equals(leg.getLegUuid()))
+            .filter(leg -> !isCurrentAgentLeg(leg, agent))
+            .findFirst()
+            .orElse(null);
+    }
+
+    private boolean isCurrentAgentLeg(CallLeg leg, CurrentAgentResponse agent) {
+        if (leg == null || agent == null) {
+            return false;
+        }
+        if (leg.getAgentId() != null && agent.getAgentId() != null) {
+            return leg.getAgentId().equals(agent.getAgentId());
+        }
+        String legExtension = firstNotBlank(leg.getAgentExtension(), leg.getEndpointExtension());
+        return legExtension != null && legExtension.equals(agent.getExtension());
     }
 
     private String liveLegUuid(EslEndpoint endpoint, CallLeg leg) {
@@ -766,7 +953,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             return true;
         }
         return isInternalBusinessCall(businessCallId)
-            && ("AGENT".equals(role) || "EXTENSION".equals(role));
+            && ("AGENT".equals(role) || "EXTENSION".equals(role) || "CONSULT_AGENT".equals(role));
     }
 
     private boolean isInternalBusinessCall(String businessCallId) {
@@ -804,7 +991,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     }
 
     private String activeCallKey(Long agentId) {
-        return ACTIVE_CALL_KEY_PREFIX + LoginHelper.getTenantId() + ":" + agentId;
+        return ACTIVE_CALL_KEY_PREFIX + TenantHelper.getTenantId() + ":" + agentId;
     }
 
     private String activeCallKey(String tenantId, Long agentId) {
@@ -812,7 +999,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     }
 
     private String consultCallKey(Long agentId) {
-        return CONSULT_CALL_KEY_PREFIX + LoginHelper.getTenantId() + ":" + agentId;
+        return CONSULT_CALL_KEY_PREFIX + TenantHelper.getTenantId() + ":" + agentId;
     }
 
     private String consultLegKey(String legUuid) {
@@ -992,7 +1179,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
     private CurrentCallLegs resolveCurrentCallLegsForAgentControl(EslEndpoint endpoint, CurrentAgentResponse agent,
                                                                   AgentActiveCall activeCall, String requestCallId) {
-        String businessCallId = firstNotBlank(activeCall.getBusinessCallId(), resolveBusinessCallIdFromActiveCall(activeCall), activeCall.getCallId());
+        String businessCallId = resolveAuthoritativeBusinessCallId(activeCall);
         String customerLegUuid = resolveCurrentCustomerLegId(endpoint, businessCallId, activeCall, agent);
         if (customerLegUuid == null || customerLegUuid.isBlank() || !telephonyCommandGateway.callExists(endpoint, customerLegUuid)) {
             throw new ServiceException("当前客户通话腿不存在，无法执行坐席控制动作");
@@ -1006,7 +1193,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             throw new ServiceException("当前坐席通话腿不存在，无法执行坐席控制动作");
         }
         String agentRole = legRole(businessCallId, agentLegUuid);
-        if ("CUSTOMER".equals(agentRole)) {
+        boolean resolvedFromActiveAgentChannel = agentLegUuid.equals(activeCall.getAgentChannelId());
+        if ("CUSTOMER".equals(agentRole) && !resolvedFromActiveAgentChannel) {
             throw new ServiceException("当前控制目标不是坐席腿，已拒绝执行");
         }
         if (!agentLegUuid.equals(requestCallId)) {
@@ -1060,27 +1248,17 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         notifyTransferredTargetAgent(sourceAgent, sourceCall, syntheticConsultCall);
     }
 
-    private void notifyBlindTransferTargetAgent(CurrentAgentResponse sourceAgent, AgentActiveCall sourceCall, String targetExtension,
-                                                String businessCallId, String customerCallId) {
-        AgentConsultCall syntheticConsultCall = new AgentConsultCall();
-        syntheticConsultCall.setTargetExtension(targetExtension);
-        syntheticConsultCall.setBusinessCallId(businessCallId);
-        syntheticConsultCall.setCustomerCallId(customerCallId);
-        syntheticConsultCall.setCustomerLegUuid(customerCallId);
-        notifyTransferredTargetAgent(sourceAgent, sourceCall, syntheticConsultCall);
-    }
-
     private void notifyConsultSourceTransferCompleted(CurrentAgentResponse sourceAgent, AgentActiveCall sourceCall, AgentConsultCall consultCall) {
         if (sourceAgent == null || sourceAgent.getUserId() == null || sourceCall == null) {
             return;
         }
         Set<String> finishedCallIds = new LinkedHashSet<>();
-        addCallId(finishedCallIds, sourceCall.getCallId());
-        addCallId(finishedCallIds, consultCall == null ? null : consultCall.getOriginalCallId());
-        addCallId(finishedCallIds, consultCall == null ? null : consultCall.getCustomerCallId());
         addCallId(finishedCallIds, consultCall == null ? null : consultCall.getSourceAgentCallId());
-        addCallId(finishedCallIds, consultCall == null ? null : consultCall.getCustomerLegUuid());
         addCallId(finishedCallIds, consultCall == null ? null : consultCall.getSourceAgentLegUuid());
+        addCallId(finishedCallIds, sourceCall.getAgentChannelId());
+        if (finishedCallIds.isEmpty()) {
+            addCallId(finishedCallIds, sourceCall.getCallId());
+        }
         finishedCallIds.forEach(callId -> publishConsultSourceTransferCompleted(sourceAgent, sourceCall, callId));
     }
 
@@ -1088,6 +1266,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         CallRealtimeMessage message = new CallRealtimeMessage();
         message.setType("CALL_HANGUP_COMPLETE");
         message.setCallId(callId);
+        message.setBusinessCallId(firstNotBlank(sourceCall.getBusinessCallId(), sourceCall.getCallId(), callId));
+        message.setLegUuid(callId);
         message.setCallerNumber(sourceCall.getDestination());
         message.setCalledNumber(sourceAgent.getExtension());
         message.setAgentExtension(sourceAgent.getExtension());
@@ -1123,6 +1303,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         CallRealtimeMessage message = new CallRealtimeMessage();
         message.setType("CALL_BRIDGE");
         message.setCallId(targetCall.getCallId());
+        message.setBusinessCallId(targetCall.getBusinessCallId());
+        message.setLegUuid(targetCall.getAgentChannelId());
         message.setCallerNumber(sourceCall.getDestination());
         message.setCalledNumber(target.getExtension());
         message.setAgentExtension(target.getExtension());
@@ -1147,13 +1329,13 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
     private OutboundAuthorizationResult authorizeOutbound(CurrentAgentResponse agent, String destination, CallOriginateContext context) {
         OutboundAuthorizationResult result = outboundAuthorizationService.authorize(new OutboundAuthorizationCommand(
-            LoginHelper.getTenantId(),
+            TenantHelper.getTenantId(),
             "AGENT_ORIGINATE",
             agent.getNodeId(),
             agent.getSipDomain(),
             null,
             agent.getAgentId(),
-            LoginHelper.getUserId(),
+            agent.getUserId(),
             context == null ? null : context.skillGroupId(),
             agent.getExtension(),
             destination,
@@ -1164,6 +1346,12 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         ));
         if (!result.allowed()) {
             throw new ServiceException(result.rejectMessage());
+        }
+        if (result.external() && context != null && context.allowedOutboundPolicyCodes() != null) {
+            String policyCode = result.outboundRoute() == null ? null : result.outboundRoute().getPolicyCode();
+            if (policyCode == null || !context.allowedOutboundPolicyCodes().contains(policyCode)) {
+                throw new ServiceException("开放应用未获授权使用本次外呼线路策略");
+            }
         }
         return result;
     }
@@ -1190,7 +1378,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
 
     private CallOriginateContext normalizeContext(CallOriginateContext context, String businessCallId) {
         if (context == null) {
-            return new CallOriginateContext(businessCallId, null, null, null, null, null);
+            return new CallOriginateContext(businessCallId, null, null, null, null, null, null);
         }
         return new CallOriginateContext(
             businessCallId,
@@ -1198,7 +1386,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             context.outboundTaskId(),
             context.outboundMemberId(),
             context.callerNumberId(),
-            context.skillGroupId()
+            context.skillGroupId(),
+            context.allowedOutboundPolicyCodes()
         );
     }
 

@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.ai.domain.*;
+import org.dromara.ai.domain.event.AiTranscriptLifecycleEvent;
 import org.dromara.ai.domain.request.*;
 import org.dromara.ai.domain.response.*;
 import org.dromara.ai.mapper.*;
@@ -19,12 +20,14 @@ import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.media.domain.MediaAssetCategory;
 import org.dromara.resource.media.service.MediaAssetApplicationService;
 import org.dromara.resource.media.service.MediaPublicationService;
 import org.dromara.resource.node.group.domain.FreeSwitchNodeGroup;
 import org.dromara.resource.node.group.mapper.FreeSwitchNodeGroupMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -79,6 +82,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     private final StreamingTtsProviderRegistry streamingTtsProviderRegistry;
     private final AiSpeechProviderSelector providerSelector;
     private final OssService ossService;
+    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     public List<AiSpeechProviderResponse> providers() {
@@ -256,7 +260,19 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    public AiCallTranscriptResponse callTranscriptByBusinessCallId(String businessCallId) {
+        if (StringUtils.isBlank(businessCallId)) {
+            throw new ServiceException("业务通话ID不能为空");
+        }
+        AiCallTranscript transcript = transcriptMapper.selectOne(new LambdaQueryWrapper<AiCallTranscript>()
+            .eq(AiCallTranscript::getBusinessCallId, businessCallId)
+            .orderByDesc(AiCallTranscript::getCreateTime)
+            .last("limit 1"));
+        return transcript == null ? null : transcriptResponse(transcript);
+    }
+
+    @Override
+    @Transactional(noRollbackFor = ServiceException.class)
     public AiCallTranscriptResponse transcribeCallRecording(Long callSessionId) {
         AiCallRecordingSource source = recordingSourceMapper.selectById(callSessionId);
         if (source == null) {
@@ -284,6 +300,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             taskMapper.updateById(task);
             log.info("通话录音转写完成，callSessionId={}，businessCallId={}，providerCode={}，segments={}",
                 source.getId(), source.getBusinessCallId(), provider.getProviderCode(), result.segments().size());
+            publishTranscriptEvent("transcript.ready", source.getNodeId(), transcript, null);
             return transcriptResponse(transcriptMapper.selectById(transcript.getId()));
         } catch (Exception exception) {
             String message = StringUtils.blankToDefault(exception.getMessage(), "未知错误");
@@ -297,8 +314,22 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             taskMapper.updateById(task);
             log.warn("通话录音转写失败，callSessionId={}，businessCallId={}，providerCode={}，error={}",
                 source.getId(), source.getBusinessCallId(), provider.getProviderCode(), message);
+            publishTranscriptEvent("transcript.failed", source.getNodeId(), transcript, message);
             throw exception instanceof ServiceException ? (ServiceException) exception : new ServiceException("通话录音转写失败：" + message);
         }
+    }
+
+    private void publishTranscriptEvent(String eventType, Long nodeId, AiCallTranscript transcript, String failureReason) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("transcript_id", transcript.getId());
+        payload.put("transcript_status", transcript.getStatus());
+        payload.put("call_session_id", transcript.getCallSessionId());
+        payload.put("input_media_id", transcript.getInputMediaId());
+        if (StringUtils.isNotBlank(failureReason)) {
+            payload.put("failure_reason", failureReason);
+        }
+        eventPublisher.publishEvent(new AiTranscriptLifecycleEvent(TenantHelper.getTenantId(), eventType,
+            transcript.getBusinessCallId(), nodeId, LocalDateTime.now(), payload));
     }
 
     private TtsGenerateResult generateAudio(AiSpeechProvider provider, String text, String voice, String businessType, Map<String, Object> metadata) {

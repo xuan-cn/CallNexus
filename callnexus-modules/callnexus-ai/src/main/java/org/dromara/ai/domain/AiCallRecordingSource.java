@@ -12,6 +12,7 @@ public class AiCallRecordingSource {
     @TableId
     private Long id;
     private String businessCallId;
+    private Long nodeId;
     private LocalDateTime startedAt;
     private LocalDateTime answeredAt;
     private Long recordingOssId;

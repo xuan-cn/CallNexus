@@ -40,6 +40,7 @@ public interface TelephonyCommandGateway {
                                       String conferenceName, String extension, String callerIdNumber,
                                       String purpose, Long dispatchTaskId, Long dispatchTargetId);
     void promoteBridgeToConference(EslEndpoint endpoint, String anchorLegUuid, String conferenceName);
+    void joinCallToConference(EslEndpoint endpoint, String callId, String conferenceName);
     void originateConferenceParticipant(EslEndpoint endpoint, String businessCallId, String participantLegUuid,
                                         String conferenceName, String extension, String callerIdNumber);
     String conferenceMemberList(EslEndpoint endpoint, String conferenceName);

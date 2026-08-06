@@ -123,6 +123,8 @@ security:
     - /error
     - /api/internal/freeswitch/**
     - /api/internal/ai/realtime/**
+    - /openapi/oauth/**
+    - /openapi/v1/**
     - /*/api-docs
     - /*/api-docs/**
     - /warm-flow-ui/config
@@ -290,7 +292,7 @@ ai:
   realtime-transport: ${CALLNEXUS_AI_REALTIME_TRANSPORT:UNIMRCP}
   unimrcp:
     speak-command-template: "${CALLNEXUS_AI_UNIMRCP_SPEAK_COMMAND_TEMPLATE:api uuid_broadcast {uuid} speak::{profile}:callnexus-mrcp-v2:{uuid}|{voice}|{text} both}"
-    recognize-command-template: "${CALLNEXUS_AI_UNIMRCP_RECOGNIZE_COMMAND_TEMPLATE:api uuid_broadcast {uuid} lua::{detectScript} aleg}"
+    recognize-command-template: "${CALLNEXUS_AI_UNIMRCP_RECOGNIZE_COMMAND_TEMPLATE:api luarun {detectScript} {uuid}}"
     profile: ${CALLNEXUS_AI_UNIMRCP_PROFILE:unimrcp}
     voice: ${CALLNEXUS_AI_UNIMRCP_VOICE:default}
     grammar: "${CALLNEXUS_AI_UNIMRCP_GRAMMAR:{start-input-timers=true,no-input-timeout=15000}builtin:speech/transcribe transcribe}"

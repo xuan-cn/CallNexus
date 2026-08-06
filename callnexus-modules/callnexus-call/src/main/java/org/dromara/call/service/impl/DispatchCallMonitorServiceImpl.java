@@ -176,6 +176,32 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
         return response;
     }
 
+    @Override
+    public DispatchCallTopologyResponse getActiveCallByAgentId(Long agentId) {
+        if (agentId == null || agentMapper.selectById(agentId) == null) {
+            throw new ServiceException("坐席不存在");
+        }
+        AgentCallSession agentSession = agentCallSessionMapper.selectOne(new LambdaQueryWrapper<AgentCallSession>()
+            .eq(AgentCallSession::getAgentId, agentId)
+            .eq(AgentCallSession::getVisible, true)
+            .ne(AgentCallSession::getSessionState, "ENDED")
+            .isNull(AgentCallSession::getLeftAt)
+            .orderByDesc(AgentCallSession::getJoinedAt)
+            .last("limit 1"));
+        if (agentSession == null) {
+            return null;
+        }
+        CallSession session = sessionMapper.selectOne(new LambdaQueryWrapper<CallSession>()
+            .eq(CallSession::getId, agentSession.getSessionId())
+            .isNull(CallSession::getEndedAt)
+            .ne(CallSession::getCallStatus, "ENDED")
+            .last("limit 1"));
+        if (session == null || !hasText(session.getBusinessCallId())) {
+            return null;
+        }
+        return getTopology(session.getBusinessCallId());
+    }
+
     private DispatchActiveCallResponse toSummary(CallSession session, List<CallLeg> legs,
                                                  List<CallBridge> bridges, List<AgentCallSession> agents) {
         List<CallLeg> activeLegs = legs.stream()
@@ -208,7 +234,11 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
         response.setOwnerAgentExtension(session.getOwnerAgentExtension());
         response.setStartedAt(session.getStartedAt());
         response.setAnsweredAt(session.getAnsweredAt());
-        response.setElapsedSeconds(secondsSince(session.getStartedAt()));
+        response.setEndedAt(session.getEndedAt());
+        response.setElapsedSeconds(elapsedSeconds(session));
+        response.setDurationSeconds(session.getDurationSeconds());
+        response.setBillableSeconds(session.getBillableSeconds());
+        response.setHangupCause(session.getHangupCause());
         response.setActiveLegCount(activeLegs.size());
         response.setActiveBridgeCount((int) activeBridgeCount);
         response.setVisibleAgentCount(visibleAgents.size());
@@ -218,6 +248,11 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
     }
 
     private void applyTopologyStatus(DispatchActiveCallResponse response, CallSession session, List<CallLeg> activeLegs) {
+        if (session.getEndedAt() != null || "ENDED".equals(session.getCallStatus())) {
+            response.setTopologyStatus("ENDED");
+            response.setTopologyMessage("业务通话已结束");
+            return;
+        }
         if (!activeLegs.isEmpty()) {
             response.setTopologyStatus("NORMAL");
             response.setTopologyMessage("实时电话腿正常");
@@ -295,6 +330,17 @@ public class DispatchCallMonitorServiceImpl implements DispatchCallMonitorServic
             return 0;
         }
         return (int) Math.max(0, Duration.between(startedAt, LocalDateTime.now()).getSeconds());
+    }
+
+    private int elapsedSeconds(CallSession session) {
+        if (session.getDurationSeconds() != null) {
+            return Math.max(0, session.getDurationSeconds());
+        }
+        if (session.getStartedAt() == null) {
+            return 0;
+        }
+        LocalDateTime end = session.getEndedAt() == null ? LocalDateTime.now() : session.getEndedAt();
+        return (int) Math.max(0, Duration.between(session.getStartedAt(), end).getSeconds());
     }
 
     private boolean hasText(String value) {

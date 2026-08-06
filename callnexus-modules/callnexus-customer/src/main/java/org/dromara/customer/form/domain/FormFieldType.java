@@ -9,5 +9,6 @@ public enum FormFieldType {
     MULTI_SELECT,
     NUMBER,
     DATE,
-    DATETIME
+    DATETIME,
+    FILE
 }

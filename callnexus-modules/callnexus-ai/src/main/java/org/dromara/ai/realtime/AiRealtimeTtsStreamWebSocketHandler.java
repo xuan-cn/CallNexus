@@ -159,7 +159,7 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
             sendError(session, "start 缺少 tenantId");
             return;
         }
-        connectionRegistry.register(state.callId, session.getId(),
+        connectionRegistry.register(state.callId, state.turnId, session.getId(),
             () -> cancelSession(session, state, "call ended", false));
         startConsumeLoop(session, state);
         scheduleIdleTimer(session, state);

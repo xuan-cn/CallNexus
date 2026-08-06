@@ -29,6 +29,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     private static final int READ_TIMEOUT_MILLIS = 5000;
     private static final int OUTBOUND_RING_TIMEOUT_SECONDS = 60;
     private static final String OUTBOUND_GATEWAY_CODEC = "PCMA";
+    private static final String INTERNAL_ENDPOINT_CODEC = "PCMA";
     private static final Pattern REGISTERED_USER_PATTERN = Pattern.compile("(?m)^User:\\s*([^@\\s]+)@.+$");
     private static final Pattern REGISTERED_AUTH_USER_PATTERN = Pattern.compile("(?m)^Auth-User:\\s*([^\\s]+)\\s*$");
 
@@ -45,6 +46,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         String variables = "{origination_uuid=" + callId
             + ",callnexus_business_call_id=" + businessCallId
             + ",callnexus_direction=" + (outboundRoute != null && outboundRoute.isExternal() ? "OUTBOUND" : "INTERNAL")
+            + (outboundRoute == null || !outboundRoute.isExternal() ? ",media_mix_inbound_outbound_codecs=true" : "")
             + ",callnexus_original_caller=" + agentExtension
             + ",callnexus_original_called=" + destination
             + optionalVariable("callnexus_customer_id", safeContext.customerId())
@@ -56,7 +58,8 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + ",api_hangup_hook='bg_system /opt/callnexus/bin/upload-recording.sh " + businessCallId
             + " /var/lib/freeswitch/recordings/" + callId + ".wav'"
             + ",hangup_after_bridge=true}";
-        String destinationDialString = destinationDialString(destination, endpoint.sipDomain(), outboundRoute);
+        String destinationDialString = destinationDialString(destination, endpoint.sipDomain(), outboundRoute,
+            businessCallId, agentExtension);
         String command = "bgapi originate " + variables + userDialString(agentExtension, endpoint.sipDomain())
             + " &bridge(" + destinationDialString + ")";
         sendCommand(endpoint, command);
@@ -220,7 +223,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + ",origination_caller_id_name=" + agentExtension
             + ",hangup_after_bridge=false"
             + ",park_after_bridge=true}";
-        String command = "bgapi originate " + variables + userDialString(targetExtension, endpoint.sipDomain())
+        String command = "bgapi originate " + variables + internalEndpointDialString(targetExtension, endpoint.sipDomain())
             + " &park()";
         sendCommand(endpoint, command);
         log.info("FreeSWITCH 咨询呼叫命令已提交，businessCallId={}，consultCallId={}，agentExtension={}，targetExtension={}",
@@ -406,6 +409,15 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + conferenceName + "@default' inline");
         log.info("FreeSWITCH 双人通话升级会议命令已提交，anchorLegUuid={}，conferenceName={}",
             anchorLegUuid, conferenceName);
+    }
+
+    @Override
+    public void joinCallToConference(EslEndpoint endpoint, String callId, String conferenceName) {
+        requireCallId(callId);
+        requireConferenceName(conferenceName);
+        sendCommand(endpoint, "api uuid_transfer " + callId + " 'conference:"
+            + conferenceName + "@default' inline");
+        log.info("FreeSWITCH 单电话腿加入会议命令已提交，callId={}，conferenceName={}", callId, conferenceName);
     }
 
     @Override
@@ -639,9 +651,19 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         return "user/" + extension + "@" + domain;
     }
 
-    private String destinationDialString(String destination, String domain, OutboundRoute outboundRoute) {
+    private String internalEndpointDialString(String extension, String domain) {
+        return "[absolute_codec_string=" + INTERNAL_ENDPOINT_CODEC + "]" + userDialString(extension, domain);
+    }
+
+    private String destinationDialString(String destination, String domain, OutboundRoute outboundRoute,
+                                         String businessCallId, String originalCaller) {
         if (outboundRoute == null || !outboundRoute.isExternal()) {
-            return userDialString(destination, domain);
+            return "[absolute_codec_string=" + INTERNAL_ENDPOINT_CODEC
+                + ",callnexus_business_call_id=" + businessCallId
+                + ",callnexus_direction=INTERNAL"
+                + ",callnexus_original_caller=" + originalCaller
+                + ",callnexus_original_called=" + destination + "]"
+                + userDialString(destination, domain);
         }
         requireDialValue(outboundRoute.getGatewayCode());
         requireDialValue(outboundRoute.getCallerIdNumber());

@@ -10,5 +10,8 @@ public interface DispatchCallMonitorService {
     List<DispatchActiveCallResponse> listActiveCalls();
 
     DispatchCallTopologyResponse getTopology(String businessCallId);
+
+    DispatchCallTopologyResponse getActiveCallByAgentId(Long agentId);
+
     List<DispatchExtensionStatusResponse> listExtensionStatuses();
 }

@@ -26,7 +26,8 @@ public class AiAgentNodeCompiler implements IvrNodeCompiler {
         context.renderSupport().appendNodeStart(context.xml(), context.flow().getId(), context.node());
         if (realtimeDialplanService.isUniMrcpTransport()) {
             AiRealtimeDialplanService.UniMrcpOpeningPrompt opening = realtimeDialplanService.buildUniMrcpOpeningPrompt(agentId);
-            context.xml().append("      <action application=\"export\" data=\"callnexus_ai_transport=UNIMRCP\"/>\n")
+            context.xml().append("      <action application=\"export\" data=\"callnexus_ai_active=true\"/>\n")
+                .append("      <action application=\"export\" data=\"callnexus_ai_transport=UNIMRCP\"/>\n")
                 .append("      <action application=\"export\" data=\"callnexus_ai_agent_id=")
                 .append(agentId)
                 .append("\"/>\n")

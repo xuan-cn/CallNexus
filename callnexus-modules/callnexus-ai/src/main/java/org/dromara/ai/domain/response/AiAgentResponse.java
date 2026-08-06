@@ -16,6 +16,10 @@ public class AiAgentResponse {
     private String welcomeMessage;
     private String voiceTransport;
     private String voiceTransportWsUrl;
+    private Boolean bargeInEnabled;
+    private Boolean openingBargeInEnabled;
+    private String bargeInMode;
+    private Integer bargeInGraceMs;
     private String retrievalMode;
     private String retrievalFailurePolicy;
     private Integer topK;

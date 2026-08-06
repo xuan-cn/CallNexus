@@ -20,6 +20,7 @@ import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.service.CallStateRuntimeService;
 import org.dromara.call.service.SipBusinessIdentityResolver;
+import org.dromara.call.service.TelephonyEndpointIdentityResolver;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
@@ -43,6 +44,7 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     private final AgentRealtimeQueryService agentQueryService;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final SipBusinessIdentityResolver sipBusinessIdentityResolver;
+    private final TelephonyEndpointIdentityResolver endpointIdentityResolver;
 
     @Override
     public void handleEvent(TelephonyEvent event) {
@@ -81,8 +83,16 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         );
     }
 
+    @Override
+    public String resolveCanonicalBusinessCallId(TelephonyEvent event) {
+        if (event == null) {
+            return null;
+        }
+        return resolvePersistenceBusinessCallId(event, findLeg(event.uuid()));
+    }
+
     private void persistEvent(TelephonyEvent event, String tenantId) {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = TelephonyEventTimeResolver.resolve(event);
         CallLeg existingLeg = findLeg(event.uuid());
         String businessCallId = resolvePersistenceBusinessCallId(event, existingLeg);
         CallSession session = resolveSession(event, tenantId, businessCallId, existingLeg, now);
@@ -454,11 +464,17 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     }
 
     private String resolveTenantId(TelephonyEvent event) {
-        AgentRealtimeTargetResponse callingAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber());
+        String callerIdentity = firstNotBlank(
+            endpointIdentityResolver.resolveKnownExtension(event.nodeId(), originalCaller(event)),
+            event.callerNumber());
+        AgentRealtimeTargetResponse callingAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), callerIdentity);
         if (callingAgent != null) {
             return callingAgent.getTenantId();
         }
-        AgentRealtimeTargetResponse calledAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber());
+        String calledIdentity = firstNotBlank(
+            endpointIdentityResolver.resolveKnownExtension(event.nodeId(), originalCalled(event)),
+            event.destinationNumber());
+        AgentRealtimeTargetResponse calledAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), calledIdentity);
         if (calledAgent != null) {
             return calledAgent.getTenantId();
         }
@@ -491,26 +507,7 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     }
 
     private String resolveEndpointExtension(TelephonyEvent event) {
-        String channelExtension = extensionFromChannelName(event.headers().get(EslHeaders.CHANNEL_NAME));
-        String enabledChannelExtension = enabledSipExtension(event.nodeId(), channelExtension);
-        if (enabledChannelExtension != null) {
-            return enabledChannelExtension;
-        }
-        String callDirection = event.headers().get(EslHeaders.CALL_DIRECTION);
-        if ("inbound".equalsIgnoreCase(callDirection)) {
-            return enabledSipExtension(event.nodeId(), event.callerNumber());
-        }
-        if ("outbound".equalsIgnoreCase(callDirection)) {
-            return firstNotBlank(
-                enabledSipExtension(event.nodeId(), event.destinationNumber()),
-                enabledSipExtension(event.nodeId(), event.headers().get(EslHeaders.CC_AGENT))
-            );
-        }
-        return firstNotBlank(
-            enabledSipExtension(event.nodeId(), event.destinationNumber()),
-            enabledSipExtension(event.nodeId(), event.callerNumber()),
-            enabledSipExtension(event.nodeId(), event.headers().get(EslHeaders.CC_AGENT))
-        );
+        return endpointIdentityResolver.resolveChannelExtension(event);
     }
 
     private String extensionFromChannelName(String channelName) {
@@ -538,7 +535,9 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     }
 
     private AgentRealtimeTargetResponse findAgentByExtension(TelephonyEvent event, String value) {
-        String identity = stripDomainIdentity(value);
+        String identity = firstNotBlank(
+            endpointIdentityResolver.resolveKnownExtension(event.nodeId(), value),
+            stripDomainIdentity(value));
         return identity == null ? null : agentQueryService.findByNodeAndExtension(event.nodeId(), identity);
     }
 
@@ -696,8 +695,14 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
         if (StringUtils.isNotBlank(explicitDirection)) {
             return explicitDirection;
         }
-        boolean callerIsAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber()) != null;
-        boolean calledIsAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber()) != null;
+        String caller = firstNotBlank(
+            endpointIdentityResolver.resolveKnownExtension(event.nodeId(), originalCaller(event)),
+            event.callerNumber());
+        String called = firstNotBlank(
+            endpointIdentityResolver.resolveKnownExtension(event.nodeId(), originalCalled(event)),
+            event.destinationNumber());
+        boolean callerIsAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), caller) != null;
+        boolean calledIsAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), called) != null;
         if (callerIsAgent && calledIsAgent) {
             return "INTERNAL";
         }

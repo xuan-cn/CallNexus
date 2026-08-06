@@ -111,10 +111,10 @@ public class FreeSwitchCallQueueRuntimeSyncServiceImpl implements CallQueueRunti
         execute(endpoint, "api callcenter_config agent set contact " + agent + " " + contactDialString(config));
         executeIgnoringError(endpoint, "api callcenter_config tier del " + queue + " " + agent);
         execute(endpoint, "api callcenter_config tier add " + queue + " " + agent + " " + config.level() + " " + config.position());
-        log.info("已同步 FreeSWITCH 队列坐席配置，agent={}，ringTimeoutSeconds={}，maxNoAnswer={}，wrapUpSeconds={}，status={}，effectiveStatus={}，registered={}，"
+        log.info("已同步 FreeSWITCH 队列坐席配置，agent={}，ringTimeoutSeconds={}，maxNoAnswer={}，wrapUpSeconds={}，status={}，effectiveStatus={}，registered={}，answerActionMediaPath={}，"
                 + "其中最大未接次数和话后整理由 CallNexus 业务状态控制",
             agent, config.ringTimeoutSeconds(), config.maxNoAnswer(), config.wrapUpSeconds(), config.presenceStatus(),
-            effectiveStatus, isRegistered(config.extension(), config.authUsername(), registeredUsers));
+            effectiveStatus, isRegistered(config.extension(), config.authUsername(), registeredUsers), config.answerActionMediaPath());
     }
 
     private EslEndpoint endpoint(Long nodeId) {

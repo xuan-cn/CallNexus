@@ -25,5 +25,6 @@ public interface AiSpeechApplicationService {
     AiGeneratedMediaResponse generateAgentNumberPrompt(Long agentId, String extension, List<Long> nodeGroupIds, Long templateId);
     AiGeneratedMediaResponse agentNumberPrompt(Long agentId, Long nodeId);
     AiCallTranscriptResponse callTranscript(Long callSessionId);
+    AiCallTranscriptResponse callTranscriptByBusinessCallId(String businessCallId);
     AiCallTranscriptResponse transcribeCallRecording(Long callSessionId);
 }

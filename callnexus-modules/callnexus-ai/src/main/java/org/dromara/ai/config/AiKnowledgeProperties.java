@@ -27,7 +27,7 @@ public class AiKnowledgeProperties {
     @Data
     public static class UniMrcp {
         private String speakCommandTemplate = "api uuid_broadcast {uuid} speak::{profile}|{voice}|{text} both";
-        private String recognizeCommandTemplate = "api uuid_broadcast {uuid} lua::{detectScript} aleg";
+        private String recognizeCommandTemplate = "api luarun {detectScript} {uuid}";
         private String profile = "unimrcp";
         private String voice = "default";
         private String grammar = "{start-input-timers=true,no-input-timeout=15000}builtin:speech/transcribe transcribe";

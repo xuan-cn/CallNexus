@@ -43,6 +43,7 @@ import org.dromara.call.service.BusinessAssociationQueryService;
 import org.dromara.call.service.QueueEventApplicationService;
 import org.dromara.call.service.CallBusinessAssociationService;
 import org.dromara.call.service.SipBusinessIdentityResolver;
+import org.dromara.call.service.TelephonyEndpointIdentityResolver;
 import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
@@ -57,11 +58,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -88,6 +85,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private final BusinessAssociationQueryService businessAssociationQueryService;
     private final PhoneNumberNormalizationService phoneNumberNormalizationService;
     private final SipBusinessIdentityResolver sipBusinessIdentityResolver;
+    private final TelephonyEndpointIdentityResolver endpointIdentityResolver;
     private final List<CallSessionCompletedListener> sessionCompletedListeners;
 
     /**
@@ -96,7 +94,6 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
      * 因此在通话详情查询时按对象 key 实时签发临时直链。
      */
     private static final Duration RECORDING_PRESIGNED_TTL = Duration.ofHours(2);
-    private static final DateTimeFormatter FS_LOCAL_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     @Override
     public void handleEvent(TelephonyEvent event) {
@@ -125,6 +122,11 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             .eq(StringUtils.isNotBlank(query.getHangupCause()), CallSession::getHangupCause, query.getHangupCause())
             .orderByDesc(CallSession::getStartedAt);
         Page<CallSession> page = sessionMapper.selectPage(pageQuery.build(), wrapper);
+        CallSession newest = page.getRecords().isEmpty() ? null : page.getRecords().get(0);
+        log.info("Call record page queried, tenantId={}, pageNum={}, pageSize={}, direction={}, callStatus={}, total={}, returned={}, newestBusinessCallId={}, newestStartedAt={}",
+            TenantHelper.getTenantId(), pageQuery.getPageNum(), pageQuery.getPageSize(), query.getDirection(),
+            query.getCallStatus(), page.getTotal(), page.getRecords().size(),
+            newest == null ? null : newest.getBusinessCallId(), newest == null ? null : newest.getStartedAt());
         return new TableDataInfo<>(page.getRecords().stream().map(session -> toResponse(session, false)).toList(), page.getTotal());
     }
 
@@ -154,7 +156,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     }
 
     private void persistEvent(TelephonyEvent event, String tenantId) {
-        LocalDateTime occurredAt = eventOccurredAt(event);
+        LocalDateTime occurredAt = TelephonyEventTimeResolver.resolve(event);
         CallSession session = resolveSession(event, tenantId, occurredAt);
         applySessionMetadata(session, event);
         CallRecord record = upsertLeg(event, tenantId, session.getId(), occurredAt);
@@ -356,27 +358,6 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         eventMapper.insert(timelineEvent);
     }
 
-    private LocalDateTime eventOccurredAt(TelephonyEvent event) {
-        String timestamp = event.headers().get("Event-Date-Timestamp");
-        if (StringUtils.isNotBlank(timestamp) && timestamp.matches("^\\d+$")) {
-            try {
-                long micros = Long.parseLong(timestamp);
-                return LocalDateTime.ofInstant(Instant.ofEpochMilli(micros / 1000), ZoneId.systemDefault());
-            } catch (NumberFormatException ignored) {
-                // Fall through to Event-Date-Local / now.
-            }
-        }
-        String local = event.headers().get("Event-Date-Local");
-        if (StringUtils.isNotBlank(local)) {
-            try {
-                return LocalDateTime.parse(local, FS_LOCAL_TIME_FORMATTER);
-            } catch (DateTimeParseException ignored) {
-                // Fall through to now.
-            }
-        }
-        return LocalDateTime.now();
-    }
-
     private boolean bridgePairExists(Long sessionId, String channelUuid, String relatedChannelUuid) {
         if (StringUtils.isBlank(relatedChannelUuid)) return false;
         return eventMapper.exists(new LambdaQueryWrapper<CallEvent>()
@@ -520,9 +501,15 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     }
 
     private String resolveTenantId(TelephonyEvent event) {
-        AgentRealtimeTargetResponse callingAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber());
+        String callerIdentity = firstNotBlank(
+            endpointIdentityResolver.resolveKnownExtension(event.nodeId(), originalCaller(event)),
+            event.callerNumber());
+        AgentRealtimeTargetResponse callingAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), callerIdentity);
         if (callingAgent != null) return callingAgent.getTenantId();
-        AgentRealtimeTargetResponse calledAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber());
+        String calledIdentity = firstNotBlank(
+            endpointIdentityResolver.resolveKnownExtension(event.nodeId(), originalCalled(event)),
+            event.destinationNumber());
+        AgentRealtimeTargetResponse calledAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), calledIdentity);
         if (calledAgent != null) return calledAgent.getTenantId();
         return nodeQueryService.findTenantId(event.nodeId());
     }
@@ -530,8 +517,14 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private String resolveDirection(TelephonyEvent event) {
         String explicitDirection = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_DIRECTION);
         if (StringUtils.isNotBlank(explicitDirection)) return explicitDirection;
-        boolean callerIsAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber()) != null;
-        boolean calledIsAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber()) != null;
+        String caller = firstNotBlank(
+            endpointIdentityResolver.resolveKnownExtension(event.nodeId(), originalCaller(event)),
+            event.callerNumber());
+        String called = firstNotBlank(
+            endpointIdentityResolver.resolveKnownExtension(event.nodeId(), originalCalled(event)),
+            event.destinationNumber());
+        boolean callerIsAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), caller) != null;
+        boolean calledIsAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), called) != null;
         if (callerIsAgent && calledIsAgent) return "INTERNAL";
         if (callerIsAgent) return "OUTBOUND";
         if (calledIsAgent) return "INBOUND";
@@ -689,6 +682,13 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     }
 
     private AgentRealtimeTargetResponse findAgent(TelephonyEvent event) {
+        String channelExtension = endpointIdentityResolver.resolveChannelExtension(event);
+        if (channelExtension != null) {
+            AgentRealtimeTargetResponse channelAgent = agentQueryService.findByNodeAndExtension(event.nodeId(), channelExtension);
+            if (channelAgent != null) {
+                return channelAgent;
+            }
+        }
         AgentRealtimeTargetResponse agent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber());
         return agent == null ? agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber()) : agent;
     }
@@ -1128,6 +1128,15 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
 
     private String buildRecordingPlaybackUrl(Long ossId) {
         return ossService.selectUrlById(ossId, RECORDING_PRESIGNED_TTL);
+    }
+
+    private String firstNotBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.isNotBlank(value)) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private CallEventResponse toEventResponse(CallEvent event) {

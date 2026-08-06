@@ -84,6 +84,9 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
         if (Boolean.TRUE.equals(field.getRequiredFlag()) && isEmpty(value)) {
             throw new ServiceException("错误，请检查必填字段是否填写:" + field.getFieldName());
         }
+        if (!isEmpty(value) && field.getFieldType() == FormFieldType.FILE) {
+            validateFileValue(field, value);
+        }
         if (isEmpty(value) || !OPTION_TYPES.contains(field.getFieldType())) return;
         Set<String> allowedValues = optionMapper.selectList(new LambdaQueryWrapper<FormFieldOption>()
                 .eq(FormFieldOption::getFieldId, field.getId()).eq(FormFieldOption::getEnabled, true))
@@ -98,6 +101,15 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
     private Collection<?> requireCollection(Object value, String fieldCode) {
         if (value instanceof Collection<?> collection) return collection;
         throw new ServiceException("表单字段必须是数组：" + fieldCode);
+    }
+
+    private void validateFileValue(FormField field, Object value) {
+        if (!(value instanceof String ossIds) || !ossIds.matches("\\d+(,\\d+)*")) {
+            throw new ServiceException("附件字段值不合法：" + field.getFieldName());
+        }
+        if (ossIds.split(",").length > 5) {
+            throw new ServiceException("附件数量不能超过5个：" + field.getFieldName());
+        }
     }
 
     private boolean isEmpty(Object value) {

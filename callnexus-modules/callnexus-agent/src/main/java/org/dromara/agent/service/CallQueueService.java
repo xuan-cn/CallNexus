@@ -512,11 +512,15 @@ public class CallQueueService implements CallQueueQueryService {
             return mediaPath(queue.getAnswerMediaId(), nodeId, "queue answer prompt");
         }
         if ("PLAY_AGENT_NUMBER".equals(action) && agentId != null) {
-            return generatedMediaQueryService.findSyncedPath(
+            String path = generatedMediaQueryService.findSyncedPath(
                 AiSpeechApplicationServiceImpl.BUSINESS_AGENT_NUMBER_PROMPT,
                 agentId,
                 nodeId
             );
+            if (path == null || path.isBlank()) {
+                throw new ServiceException("坐席 " + agentId + " 的工号提示音尚未生成，或尚未同步到 FreeSWITCH 节点 " + nodeId);
+            }
+            return path;
         }
         return null;
     }

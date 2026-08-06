@@ -8,11 +8,9 @@ import org.dromara.ai.service.AiGeneratedMediaQueryService;
 import org.dromara.ai.service.impl.AiSpeechApplicationServiceImpl;
 import org.dromara.call.domain.CallEvent;
 import org.dromara.call.domain.CallLeg;
-import org.dromara.call.domain.CallRecord;
 import org.dromara.call.domain.CallSession;
 import org.dromara.call.domain.EslEndpoint;
 import org.dromara.call.mapper.CallEventMapper;
-import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.service.TelephonyCommandGateway;
 import org.dromara.common.core.utils.StringUtils;
@@ -41,14 +39,14 @@ public class QueueAnswerActionExecutor {
 
     private final CallCenterResourceQueryService resourceQueryService;
     private final CallSessionMapper sessionMapper;
-    private final CallLegMapper callLegMapper;
     private final CallEventMapper eventMapper;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final TelephonyCommandGateway telephonyCommandGateway;
     private final AiGeneratedMediaQueryService generatedMediaQueryService;
 
-    public void executeAfterAgentAnswer(Long sessionId, CallRecord bridgeLeg, Long queueId, String queueName) {
-        if (sessionId == null || bridgeLeg == null || queueId == null) {
+    public void executeAfterAgentAnswer(Long sessionId, CallLeg customerLeg, CallLeg agentLeg,
+                                        Long queueId, String queueName) {
+        if (sessionId == null || customerLeg == null || agentLeg == null || queueId == null) {
             return;
         }
         CallSession session = sessionMapper.selectById(sessionId);
@@ -61,31 +59,43 @@ public class QueueAnswerActionExecutor {
         if (ACTION_NONE.equals(action)) {
             return;
         }
-        CallLeg customerLeg = currentCustomerLeg(sessionId);
-        if (customerLeg == null || StringUtils.isBlank(customerLeg.getLegUuid())) {
-            log.warn("队列接通动作跳过，未找到客户通话腿，sessionId={}，businessCallId={}，queueId={}",
-                sessionId, session.getBusinessCallId(), queueId);
+        if (!"CUSTOMER".equals(customerLeg.getLegRole()) || StringUtils.isBlank(customerLeg.getLegUuid())) {
+            log.warn("队列接通动作拒绝执行，桥接客户腿角色或UUID无效，sessionId={}，businessCallId={}，queueId={}，legRole={}，legUuid={}",
+                sessionId, session.getBusinessCallId(), queueId, customerLeg.getLegRole(), customerLeg.getLegUuid());
             return;
         }
-        CallLeg answeredAgentLeg = currentAnsweredAgentLeg(sessionId);
-        if (answeredAgentLeg == null || StringUtils.isBlank(answeredAgentLeg.getLegUuid())) {
-            log.warn("队列接通动作跳过，未找到已接通坐席通话腿，sessionId={}，businessCallId={}，queueId={}，bridgeLegUuid={}",
-                sessionId, session.getBusinessCallId(), queueId, bridgeLeg.getChannelUuid());
+        if (!"AGENT".equals(agentLeg.getLegRole()) || StringUtils.isBlank(agentLeg.getLegUuid())) {
+            log.warn("队列接通动作拒绝执行，桥接坐席腿角色或UUID无效，sessionId={}，businessCallId={}，queueId={}，legRole={}，legUuid={}",
+                sessionId, session.getBusinessCallId(), queueId, agentLeg.getLegRole(), agentLeg.getLegUuid());
+            return;
+        }
+        if (!sessionId.equals(customerLeg.getSessionId()) || !sessionId.equals(agentLeg.getSessionId())) {
+            log.warn("队列接通动作拒绝执行，桥接两腿不属于当前业务通话，sessionId={}，customerSessionId={}，agentSessionId={}，customerLegUuid={}，agentLegUuid={}",
+                sessionId, customerLeg.getSessionId(), agentLeg.getSessionId(), customerLeg.getLegUuid(), agentLeg.getLegUuid());
+            return;
+        }
+        boolean alreadyExecutedForAgentLeg = eventMapper.exists(new LambdaQueryWrapper<CallEvent>()
+            .eq(CallEvent::getSessionId, sessionId)
+            .eq(CallEvent::getEventType, "QUEUE_ANSWER_ACTION")
+            .eq(CallEvent::getRelatedChannelUuid, agentLeg.getLegUuid()));
+        if (alreadyExecutedForAgentLeg) {
+            log.debug("队列接通动作跳过，本次坐席腿已执行，sessionId={}，businessCallId={}，queueId={}，customerLegUuid={}，agentLegUuid={}",
+                sessionId, session.getBusinessCallId(), queueId, customerLeg.getLegUuid(), agentLeg.getLegUuid());
             return;
         }
 
         EslEndpoint endpoint = endpoint(session.getNodeId());
         try {
-            executeAction(endpoint, session.getNodeId(), customerLeg.getLegUuid(), answeredAgentLeg, queue, action);
-            appendActionEvent(session, customerLeg, answeredAgentLeg, queue, queueName, action, "SUCCESS", null);
+            executeAction(endpoint, session.getNodeId(), customerLeg.getLegUuid(), agentLeg, queue, action);
+            appendActionEvent(session, customerLeg, agentLeg, queue, queueName, action, "SUCCESS", null);
             log.info("队列接通动作已在桥接后执行，sessionId={}，businessCallId={}，queueId={}，action={}，customerLegUuid={}，agentLegUuid={}，agentExtension={}",
                 sessionId, session.getBusinessCallId(), queueId, action, customerLeg.getLegUuid(),
-                answeredAgentLeg.getLegUuid(), answeredAgentLeg.getAgentExtension());
+                agentLeg.getLegUuid(), agentLeg.getAgentExtension());
         } catch (Exception exception) {
-            appendActionEvent(session, customerLeg, answeredAgentLeg, queue, queueName, action, "FAILED", exception.getMessage());
+            appendActionEvent(session, customerLeg, agentLeg, queue, queueName, action, "FAILED", exception.getMessage());
             log.warn("队列接通动作执行失败，不影响当前通话，sessionId={}，businessCallId={}，queueId={}，action={}，customerLegUuid={}，agentLegUuid={}，error={}",
                 sessionId, session.getBusinessCallId(), queueId, action, customerLeg.getLegUuid(),
-                answeredAgentLeg.getLegUuid(), exception.getMessage());
+                agentLeg.getLegUuid(), exception.getMessage());
         }
     }
 
@@ -95,7 +105,7 @@ public class QueueAnswerActionExecutor {
             if (queue == null || StringUtils.isBlank(queue.answerMediaPath())) {
                 throw new IllegalStateException("队列接通提示音尚未同步到当前 FreeSWITCH 节点");
             }
-            telephonyCommandGateway.broadcastPlayback(endpoint, agentLeg.getLegUuid(), queue.answerMediaPath(), "both");
+            telephonyCommandGateway.broadcastPlayback(endpoint, customerLegUuid, queue.answerMediaPath(), "aleg");
             return;
         }
         if (ACTION_PLAY_AGENT_NUMBER.equals(action)) {
@@ -114,30 +124,8 @@ public class QueueAnswerActionExecutor {
             if (StringUtils.isBlank(promptPath)) {
                 throw new IllegalStateException("坐席工号提示音尚未生成或未同步到当前 FreeSWITCH 节点");
             }
-            telephonyCommandGateway.broadcastPlayback(endpoint, agentLeg.getLegUuid(), promptPath, "both");
+            telephonyCommandGateway.broadcastPlayback(endpoint, customerLegUuid, promptPath, "aleg");
         }
-    }
-
-    private CallLeg currentCustomerLeg(Long sessionId) {
-        return callLegMapper.selectOne(new LambdaQueryWrapper<CallLeg>()
-            .eq(CallLeg::getSessionId, sessionId)
-            .eq(CallLeg::getLegRole, "CUSTOMER")
-            .orderByDesc(CallLeg::getActive)
-            .orderByDesc(CallLeg::getAnsweredAt)
-            .orderByDesc(CallLeg::getCreateTime)
-            .last("limit 1"));
-    }
-
-    private CallLeg currentAnsweredAgentLeg(Long sessionId) {
-        return callLegMapper.selectOne(new LambdaQueryWrapper<CallLeg>()
-            .eq(CallLeg::getSessionId, sessionId)
-            .eq(CallLeg::getLegRole, "AGENT")
-            .isNotNull(CallLeg::getAgentExtension)
-            .orderByDesc(CallLeg::getActive)
-            .orderByDesc(CallLeg::getAnsweredAt)
-            .orderByDesc(CallLeg::getBridgedAt)
-            .orderByDesc(CallLeg::getCreateTime)
-            .last("limit 1"));
     }
 
     private String normalizeAction(String action) {

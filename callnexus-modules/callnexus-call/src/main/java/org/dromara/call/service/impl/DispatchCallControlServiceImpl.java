@@ -7,6 +7,7 @@ import org.dromara.call.domain.CallLeg;
 import org.dromara.call.domain.CallBridge;
 import org.dromara.call.domain.CallSession;
 import org.dromara.call.domain.EslEndpoint;
+import org.dromara.call.domain.event.CallSupervisionLifecycleEvent;
 import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallBridgeMapper;
 import org.dromara.call.mapper.CallSessionMapper;
@@ -14,13 +15,21 @@ import org.dromara.call.domain.response.DispatchOperatorExtensionResponse;
 import org.dromara.call.service.DispatchCallControlService;
 import org.dromara.call.service.DispatchOperatorExtensionService;
 import org.dromara.call.service.TelephonyCommandGateway;
+import org.dromara.agent.domain.AgentPresenceStatus;
+import org.dromara.agent.domain.response.CurrentAgentResponse;
+import org.dromara.agent.service.AgentSessionApplicationService;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionResponse;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -35,9 +44,15 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final TelephonyCommandGateway commandGateway;
     private final DispatchOperatorExtensionService operatorExtensionService;
+    private final AgentSessionApplicationService agentSessionApplicationService;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
     @Override
     public void forceHangup(String businessCallId) {
+        forceHangupInternal(businessCallId, null);
+    }
+
+    private void forceHangupInternal(String businessCallId, DispatchOperatorExtensionResponse supervisor) {
         CallSession session = requireActiveSession(businessCallId);
         EslEndpoint endpoint = endpoint(session.getNodeId());
         List<CallLeg> activeLegs = activeLegs(session.getId());
@@ -69,6 +84,13 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
         }
         log.info("调度强制挂断整通电话完成，businessCallId={}，sessionId={}，nodeId={}，acceptedLegCount={}",
             businessCallId, session.getId(), session.getNodeId(), accepted);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("operation", "FORCE_HANGUP");
+        payload.put("status", "ACCEPTED");
+        payload.put("accepted_leg_count", accepted);
+        payload.put("supervisor_agent_id", supervisor == null ? null : supervisor.getUserId());
+        payload.put("supervisor_extension", supervisor == null ? null : supervisor.getExtension());
+        publishSupervisionEvent("call.force_hangup", session, payload);
     }
 
     @Override
@@ -111,8 +133,30 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
     }
 
     @Override
+    public String startMonitor(String businessCallId, String targetExtension, Long supervisorAgentId) {
+        return startSupervision(businessCallId, targetExtension, SupervisionMode.MONITOR,
+            requireAgentSupervisor(supervisorAgentId, true, true));
+    }
+
+    @Override
+    public void stopMonitor(String businessCallId, Long supervisorAgentId) {
+        stopSupervision(businessCallId, supervisorAgentId, SupervisionMode.MONITOR);
+    }
+
+    @Override
     public String startWhisper(String businessCallId, String targetExtension) {
         return startSupervision(businessCallId, targetExtension, SupervisionMode.WHISPER);
+    }
+
+    @Override
+    public String startWhisper(String businessCallId, String targetExtension, Long supervisorAgentId) {
+        return startSupervision(businessCallId, targetExtension, SupervisionMode.WHISPER,
+            requireAgentSupervisor(supervisorAgentId, true, true));
+    }
+
+    @Override
+    public void stopWhisper(String businessCallId, Long supervisorAgentId) {
+        stopSupervision(businessCallId, supervisorAgentId, SupervisionMode.WHISPER);
     }
 
     @Override
@@ -120,9 +164,29 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
         return startSupervision(businessCallId, targetExtension, SupervisionMode.BARGE);
     }
 
+    @Override
+    public String startBarge(String businessCallId, String targetExtension, Long supervisorAgentId) {
+        return startSupervision(businessCallId, targetExtension, SupervisionMode.BARGE,
+            requireAgentSupervisor(supervisorAgentId, true, true));
+    }
+
+    @Override
+    public void stopBarge(String businessCallId, Long supervisorAgentId) {
+        stopSupervision(businessCallId, supervisorAgentId, SupervisionMode.BARGE);
+    }
+
+    @Override
+    public void forceHangup(String businessCallId, Long supervisorAgentId) {
+        forceHangupInternal(businessCallId, requireAgentSupervisor(supervisorAgentId, true, false));
+    }
+
     private String startSupervision(String businessCallId, String targetExtension, SupervisionMode mode) {
+        return startSupervision(businessCallId, targetExtension, mode, operatorExtensionService.requireCurrent());
+    }
+
+    private String startSupervision(String businessCallId, String targetExtension, SupervisionMode mode,
+                                    DispatchOperatorExtensionResponse supervisor) {
         CallSession session = requireActiveSession(businessCallId);
-        DispatchOperatorExtensionResponse supervisor = operatorExtensionService.requireCurrent();
         if (isOperatorExtensionBusy(supervisor)) {
             throw new ServiceException("当前调度分机已有活动通话，不能执行调度通话控制");
         }
@@ -162,7 +226,73 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
         log.info("调度{}命令已提交，businessCallId={}，sessionId={}，nodeId={}，supervisionLegUuid={}，operatorUserId={}，supervisorExtension={}，targetEndpointLegUuid={}，targetExtension={}",
             mode.label, businessCallId, session.getId(), session.getNodeId(), supervisionLegUuid, supervisor.getUserId(),
             supervisor.getExtension(), targetLeg.getLegUuid(), targetExtension);
+        Map<String, Object> payload = supervisionPayload(mode, supervisor, targetExtension);
+        payload.put("status", "ACCEPTED");
+        publishSupervisionEvent(mode.startedEventType, session, payload);
         return supervisionLegUuid;
+    }
+
+    private void stopSupervision(String businessCallId, Long supervisorAgentId, SupervisionMode mode) {
+        DispatchOperatorExtensionResponse supervisor = requireAgentSupervisor(supervisorAgentId, false, false);
+        CallSession session = requireActiveSession(businessCallId);
+        if (!session.getNodeId().equals(supervisor.getNodeId())) {
+            throw new ServiceException("监督坐席分机与目标通话不在同一 FreeSWITCH 节点");
+        }
+        List<CallLeg> supervisionLegs = activeLegs(session.getId()).stream()
+            .filter(leg -> mode.name().equals(leg.getLegRole()))
+            .filter(leg -> supervisorAgentId.equals(leg.getAgentId())
+                || supervisor.getExtension().equals(leg.getEndpointExtension()))
+            .toList();
+        if (supervisionLegs.isEmpty()) {
+            throw new ServiceException("当前坐席没有正在进行的" + mode.label + "通话");
+        }
+        EslEndpoint endpoint = endpoint(session.getNodeId());
+        int accepted = 0;
+        for (CallLeg leg : supervisionLegs) {
+            if (!commandGateway.callExists(endpoint, leg.getLegUuid())) {
+                continue;
+            }
+            commandGateway.hangup(endpoint, leg.getLegUuid());
+            accepted++;
+        }
+        if (accepted == 0) {
+            throw new ServiceException("FreeSWITCH 中已找不到活动的" + mode.label + "电话腿");
+        }
+        log.info("调度{}停止命令已提交，businessCallId={}，sessionId={}，nodeId={}，supervisorAgentId={}，supervisorExtension={}，acceptedLegCount={}",
+            mode.label, businessCallId, session.getId(), session.getNodeId(), supervisorAgentId,
+            supervisor.getExtension(), accepted);
+        Map<String, Object> payload = supervisionPayload(mode, supervisor, null);
+        payload.put("status", "STOPPED");
+        payload.put("accepted_leg_count", accepted);
+        publishSupervisionEvent(mode.stoppedEventType, session, payload);
+    }
+
+    private DispatchOperatorExtensionResponse requireAgentSupervisor(Long supervisorAgentId, boolean requireSignedIn,
+                                                                     boolean requireIdle) {
+        if (supervisorAgentId == null) {
+            throw new ServiceException("监督坐席 ID 不能为空");
+        }
+        CurrentAgentResponse agent = agentSessionApplicationService.get(supervisorAgentId);
+        if (!agent.isConfigured() || agent.getNodeId() == null || agent.getExtension() == null
+            || agent.getExtension().isBlank()) {
+            throw new ServiceException("监督坐席未绑定可用的 SIP 分机");
+        }
+        if (requireSignedIn && (agent.getStatus() == null || agent.getStatus() == AgentPresenceStatus.OFFLINE)) {
+            throw new ServiceException("监督坐席未签入，请先签入");
+        }
+        if (requireIdle && agent.getStatus() != AgentPresenceStatus.IDLE) {
+            throw new ServiceException("监督坐席当前不是示闲状态，无法发起通话监督");
+        }
+        DispatchOperatorExtensionResponse response = new DispatchOperatorExtensionResponse();
+        response.setConfigured(true);
+        response.setUserId(agent.getUserId());
+        response.setSipAccountId(agent.getSipAccountId());
+        response.setNodeId(agent.getNodeId());
+        response.setExtension(agent.getExtension());
+        response.setAuthUsername(agent.getAuthUsername());
+        response.setDisplayName(agent.getSipDisplayName());
+        response.setDomain(agent.getSipDomain());
+        return response;
     }
 
     @Override
@@ -212,15 +342,36 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
     }
 
     private enum SupervisionMode {
-        MONITOR("监听"),
-        WHISPER("耳语"),
-        BARGE("强插");
+        MONITOR("监听", "call.monitor.started", "call.monitor.stopped"),
+        WHISPER("耳语", "call.whisper.started", "call.whisper.stopped"),
+        BARGE("强插", "call.barge.started", "call.barge.stopped");
 
         private final String label;
+        private final String startedEventType;
+        private final String stoppedEventType;
 
-        SupervisionMode(String label) {
+        SupervisionMode(String label, String startedEventType, String stoppedEventType) {
             this.label = label;
+            this.startedEventType = startedEventType;
+            this.stoppedEventType = stoppedEventType;
         }
+    }
+
+    private Map<String, Object> supervisionPayload(SupervisionMode mode,
+                                                   DispatchOperatorExtensionResponse supervisor,
+                                                   String targetExtension) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("operation", mode.name());
+        payload.put("supervisor_agent_id", supervisor.getUserId());
+        payload.put("supervisor_extension", supervisor.getExtension());
+        payload.put("target_extension", targetExtension);
+        return payload;
+    }
+
+    private void publishSupervisionEvent(String eventType, CallSession session, Map<String, Object> payload) {
+        applicationEventPublisher.publishEvent(new CallSupervisionLifecycleEvent(
+            TenantHelper.getTenantId(), eventType, session.getBusinessCallId(), session.getNodeId(),
+            LocalDateTime.now(), payload));
     }
 
     private CallSession requireActiveSession(String businessCallId) {

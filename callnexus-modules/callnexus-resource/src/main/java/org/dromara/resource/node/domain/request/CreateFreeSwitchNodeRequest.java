@@ -19,7 +19,7 @@ public class CreateFreeSwitchNodeRequest {
     @Size(max = 128)
     private String sipDomain;
     @NotBlank
-    @Pattern(regexp = "^wss://.+$")
+    @Pattern(regexp = "^wss?://.+$", message = "WebSocket 地址必须以 ws:// 或 wss:// 开头")
     @Size(max = 255)
     private String wssUrl;
     @NotBlank

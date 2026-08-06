@@ -12,6 +12,7 @@ public class CallConferenceResponse {
     private String businessCallId;
     private Long nodeId;
     private String conferenceName;
+    private String displayName;
     private Long ownerAgentId;
     private String ownerExtension;
     private String conferenceState;

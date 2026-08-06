@@ -21,7 +21,11 @@ public class DispatchActiveCallResponse {
     private String ownerAgentExtension;
     private LocalDateTime startedAt;
     private LocalDateTime answeredAt;
+    private LocalDateTime endedAt;
     private Integer elapsedSeconds;
+    private Integer durationSeconds;
+    private Integer billableSeconds;
+    private String hangupCause;
     private Integer activeLegCount;
     private Integer activeBridgeCount;
     private Integer visibleAgentCount;

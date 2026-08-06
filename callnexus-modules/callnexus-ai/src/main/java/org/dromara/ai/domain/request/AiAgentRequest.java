@@ -15,6 +15,10 @@ public class AiAgentRequest {
     @Size(max = 2000) private String welcomeMessage;
     @Size(max = 16) private String voiceTransport;
     @Size(max = 256) private String voiceTransportWsUrl;
+    private Boolean bargeInEnabled;
+    private Boolean openingBargeInEnabled;
+    @Pattern(regexp = "SENSITIVE|STANDARD|NOISY") private String bargeInMode;
+    @Min(0) @Max(5000) private Integer bargeInGraceMs;
     private String retrievalMode;
     private String retrievalFailurePolicy;
     @Min(1) @Max(20) private Integer topK;

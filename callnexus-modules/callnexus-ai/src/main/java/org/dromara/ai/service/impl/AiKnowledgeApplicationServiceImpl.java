@@ -17,6 +17,7 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.mybatis.utils.IdGeneratorUtil;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.system.domain.vo.SysOssVo;
 import org.dromara.system.service.ISysOssService;
@@ -447,13 +448,14 @@ public class AiKnowledgeApplicationServiceImpl implements AiKnowledgeApplication
         faqVersionMapper.insert(version);
         for (int i = 1; i < normalized.size(); i++) {
             AiKnowledgeFaqAlias alias = new AiKnowledgeFaqAlias();
+            alias.setId(IdGeneratorUtil.nextLongId());
             alias.setKnowledgeBaseId(faq.getKnowledgeBaseId());
             alias.setFaqId(faq.getId());
             alias.setFaqVersionId(version.getId());
             alias.setAliasQuestion(request.getAliases().get(i - 1).trim());
             alias.setNormalizedQuestion(normalized.get(i));
             alias.setQuestionHash(KnowledgeTextUtils.sha256(normalized.get(i)));
-            alias.setQdrantPointId(pointId("faq-alias", alias.getQuestionHash()));
+            alias.setQdrantPointId(pointId("faq-alias", alias.getId().toString()));
             alias.setIndexState("STAGING");
             faqAliasMapper.insert(alias);
         }

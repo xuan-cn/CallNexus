@@ -116,7 +116,9 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
     private void persistQueueEntry(QueueEntrySignalEvent event) {
         Long sessionId = resolveSessionIdByChannelUuid(event.channelUuid());
         if (sessionId == null) {
-            // dialplan 请求早于 CHANNEL_CREATE 落库时可能查不到，第一版仅记录。
+            sessionId = resolveSessionIdByBusinessCallId(event.businessCallId());
+        }
+        if (sessionId == null) {
             log.warn("进入队列信号未找到对应业务通话腿，已跳过，businessCallId={}，channelUuid={}，queueCode={}",
                 event.businessCallId(), event.channelUuid(), event.queueCode());
             return;
@@ -209,17 +211,47 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
      *
      * <p>由 {@link TelephonyEventHandlerImpl} 在 BRIDGE 时调用。
      *
-     * @param channelUuid 桥接坐席腿的 channel uuid
+     * @param channelUuid CHANNEL_BRIDGE 事件自身的通话腿 UUID
+     * @param peerUuid    CHANNEL_BRIDGE 的 Other-Leg-Unique-ID
      * @return 实际接听队列 ID（用于后续话后整理），无队列来电返回 null
      */
     @Override
-    public Long recordAgentAnswerOnBridge(String channelUuid) {
-        if (StringUtils.isBlank(channelUuid)) return null;
-        CallRecord leg = recordMapper.selectOne(new LambdaQueryWrapper<CallRecord>()
-            .and(wrapper -> wrapper.eq(CallRecord::getChannelUuid, channelUuid).or().eq(CallRecord::getCallUuid, channelUuid))
-            .last("limit 1"));
-        if (leg == null || leg.getSessionId() == null) return null;
-        Long sessionId = leg.getSessionId();
+    public Long recordAgentAnswerOnBridge(String channelUuid, String peerUuid) {
+        if (StringUtils.isBlank(channelUuid) || StringUtils.isBlank(peerUuid) || channelUuid.equals(peerUuid)) {
+            return null;
+        }
+        CallLeg eventLeg = TenantHelper.ignore(() -> legByUuid(channelUuid));
+        CallLeg peerLeg = TenantHelper.ignore(() -> legByUuid(peerUuid));
+        if (eventLeg == null || peerLeg == null) {
+            log.warn("队列坐席接听处理跳过，桥接对尚未完整落库，channelUuid={}，peerUuid={}，eventLegExists={}，peerLegExists={}",
+                channelUuid, peerUuid, eventLeg != null, peerLeg != null);
+            return null;
+        }
+        if (eventLeg.getSessionId() == null || !eventLeg.getSessionId().equals(peerLeg.getSessionId())) {
+            log.warn("队列坐席接听处理拒绝执行，桥接两腿不属于同一业务通话，channelUuid={}，channelSessionId={}，peerUuid={}，peerSessionId={}",
+                channelUuid, eventLeg.getSessionId(), peerUuid, peerLeg.getSessionId());
+            return null;
+        }
+        CallLeg customerLeg = exactLegByRole(eventLeg, peerLeg, "CUSTOMER");
+        CallLeg stableAgentLeg = exactLegByRole(eventLeg, peerLeg, "AGENT");
+        if (customerLeg == null || stableAgentLeg == null || stableAgentLeg.getAgentId() == null
+            || StringUtils.isBlank(stableAgentLeg.getAgentExtension())) {
+            log.warn("队列坐席接听处理拒绝执行，明确桥接对不是 CUSTOMER/AGENT，channelUuid={}，channelRole={}，peerUuid={}，peerRole={}",
+                channelUuid, eventLeg.getLegRole(), peerUuid, peerLeg.getLegRole());
+            return null;
+        }
+        if (StringUtils.isBlank(eventLeg.getTenantId()) || !eventLeg.getTenantId().equals(peerLeg.getTenantId())) {
+            log.warn("队列坐席接听处理拒绝执行，桥接两腿租户不一致，channelUuid={}，channelTenantId={}，peerUuid={}，peerTenantId={}",
+                channelUuid, eventLeg.getTenantId(), peerUuid, peerLeg.getTenantId());
+            return null;
+        }
+        return TenantHelper.dynamic(eventLeg.getTenantId(),
+            () -> recordAgentAnswerOnBridgeInTenant(customerLeg, stableAgentLeg));
+    }
+
+    private Long recordAgentAnswerOnBridgeInTenant(CallLeg customerLeg, CallLeg stableAgentLeg) {
+        Long sessionId = customerLeg.getSessionId();
+        CallRecord agentLeg = toCallRecord(stableAgentLeg);
 
         // 只有队列来电才记录接听队列。判断依据：该 session 已有 QUEUE_IN 时间线节点。
         boolean hasQueueIn = eventMapper.exists(new LambdaQueryWrapper<CallEvent>()
@@ -232,25 +264,26 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         Long queueId = entry != null ? entry.queueId() : null;
         String queueName = entry != null ? entry.queueName() : null;
         String queueCode = entry != null ? entry.queueCode() : null;
+        if (queueId == null) {
+            CallSession session = sessionMapper.selectById(sessionId);
+            if (session != null) {
+                queueId = session.getHandlingQueueId();
+                queueName = StringUtils.defaultIfBlank(queueName, session.getHandlingQueueName());
+            }
+        }
 
         boolean hasAgentAnswer = eventMapper.exists(new LambdaQueryWrapper<CallEvent>()
             .eq(CallEvent::getSessionId, sessionId)
             .eq(CallEvent::getEventType, "AGENT_ANSWER"));
         if (hasAgentAnswer) {
-            return queueId;
-        }
-
-        CallRecord agentLeg = resolveQueueAnswerAgentLeg(sessionId, leg, channelUuid);
-        if (agentLeg == null || agentLeg.getAgentId() == null) {
-            log.warn("队列坐席接听事件未解析到坐席腿，已跳过接通动作和记忆坐席登记，sessionId={}，bridgeUuid={}，queueId={}",
-                sessionId, channelUuid, queueId);
+            queueAnswerActionExecutor.executeAfterAgentAnswer(sessionId, customerLeg, stableAgentLeg, queueId, queueName);
             return queueId;
         }
 
         appendQueueTimelineEvent(
             sessionId,
-            channelUuid,
-            agentLeg.getAgentExtension() != null ? agentLeg.getAgentExtension() + "@" + agentLeg.getTenantId() : null,
+            stableAgentLeg.getLegUuid(),
+            customerLeg.getLegUuid(),
             "AGENT_ANSWER",
             queueName != null ? queueName : queueCode,
             formatAgentLabel(agentLeg.getAgentExtension(), agentLeg.getAgentId()),
@@ -266,45 +299,21 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
                 sessionId, queueId, queueName);
         }
         recordStickyAgentIfEnabled(sessionId, agentLeg, queueId);
-        queueAnswerActionExecutor.executeAfterAgentAnswer(sessionId, agentLeg, queueId, queueName);
+        queueAnswerActionExecutor.executeAfterAgentAnswer(sessionId, customerLeg, stableAgentLeg, queueId, queueName);
         return queueId;
     }
 
-    /**
-     * CHANNEL_BRIDGE 的事件 UUID 不稳定：有时是客户腿，有时是坐席腿。
-     * 队列接听、记忆坐席和接通动作必须使用真正的坐席腿，避免 agentId 为空导致记忆失败。
-     */
-    private CallRecord resolveQueueAnswerAgentLeg(Long sessionId, CallRecord bridgedLeg, String bridgeUuid) {
-        if (bridgedLeg != null && bridgedLeg.getAgentId() != null) {
-            return bridgedLeg;
-        }
-        CallRecord recordLeg = recordMapper.selectOne(new LambdaQueryWrapper<CallRecord>()
-            .eq(CallRecord::getSessionId, sessionId)
-            .isNotNull(CallRecord::getAgentId)
-            .isNotNull(CallRecord::getAgentExtension)
-            .and(wrapper -> wrapper.ne(CallRecord::getCallStatus, "ENDED").or().isNull(CallRecord::getCallStatus))
-            .orderByDesc(CallRecord::getAnsweredAt)
-            .orderByDesc(CallRecord::getRingingAt)
-            .orderByDesc(CallRecord::getId)
+    private CallLeg legByUuid(String legUuid) {
+        return legMapper.selectOne(new LambdaQueryWrapper<CallLeg>()
+            .eq(CallLeg::getLegUuid, legUuid)
             .last("limit 1"));
-        if (recordLeg != null) {
-            return recordLeg;
+    }
+
+    private CallLeg exactLegByRole(CallLeg first, CallLeg second, String role) {
+        if (role.equals(first.getLegRole())) {
+            return first;
         }
-        CallLeg stableLeg = legMapper.selectOne(new LambdaQueryWrapper<CallLeg>()
-            .eq(CallLeg::getSessionId, sessionId)
-            .eq(CallLeg::getLegRole, "AGENT")
-            .isNotNull(CallLeg::getAgentId)
-            .isNotNull(CallLeg::getAgentExtension)
-            .orderByDesc(CallLeg::getActive)
-            .orderByDesc(CallLeg::getAnsweredAt)
-            .orderByDesc(CallLeg::getBridgedAt)
-            .orderByDesc(CallLeg::getRingingAt)
-            .orderByDesc(CallLeg::getId)
-            .last("limit 1"));
-        if (stableLeg != null) {
-            return toCallRecord(stableLeg);
-        }
-        return resolveAgentLegFromLatestRingEvent(sessionId, bridgeUuid);
+        return role.equals(second.getLegRole()) ? second : null;
     }
 
     private CallRecord toCallRecord(CallLeg leg) {
@@ -324,58 +333,6 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         record.setEndedAt(leg.getEndedAt());
         record.setHangupCause(leg.getHangupCause());
         return record;
-    }
-
-    private CallRecord resolveAgentLegFromLatestRingEvent(Long sessionId, String bridgeUuid) {
-        CallEvent ringEvent = eventMapper.selectOne(new LambdaQueryWrapper<CallEvent>()
-            .eq(CallEvent::getSessionId, sessionId)
-            .eq(CallEvent::getEventType, "AGENT_RING")
-            .orderByDesc(CallEvent::getOccurredAt)
-            .last("limit 1"));
-        if (ringEvent == null || StringUtils.isBlank(ringEvent.getMetadataJson())) {
-            return null;
-        }
-        try {
-            Map<String, Object> metadata = JsonUtils.parseMap(ringEvent.getMetadataJson());
-            Object agentIdValue = metadata.get("agentId");
-            Object ccAgentValue = metadata.get("ccAgent");
-            if (agentIdValue == null || ccAgentValue == null || StringUtils.isBlank(ccAgentValue.toString())) {
-                return null;
-            }
-            CallSession session = sessionMapper.selectById(sessionId);
-            String agentIdentity = ccAgentValue.toString();
-            String agentExtension = extensionFromIdentity(agentIdentity, session == null ? null : session.getNodeId());
-            CallRecord record = new CallRecord();
-            record.setTenantId(session == null ? null : session.getTenantId());
-            record.setSessionId(sessionId);
-            record.setNodeId(session == null ? null : session.getNodeId());
-            record.setChannelUuid(bridgeUuid);
-            record.setCallUuid(session == null ? null : session.getBusinessCallId());
-            record.setCallerNumber(session == null ? null : session.getCallerNumber());
-            record.setCalledNumber(agentExtension);
-            record.setAgentId(Long.valueOf(agentIdValue.toString()));
-            record.setAgentExtension(agentExtension);
-            record.setAnsweredAt(ringEvent.getOccurredAt());
-            log.info("通过最近坐席振铃事件兜底解析队列接听坐席，sessionId={}，bridgeUuid={}，agentIdentity={}，agentId={}",
-                sessionId, bridgeUuid, agentIdentity, record.getAgentId());
-            return record;
-        } catch (Exception exception) {
-            log.warn("通过坐席振铃事件兜底解析队列接听坐席失败，sessionId={}，bridgeUuid={}",
-                sessionId, bridgeUuid, exception);
-            return null;
-        }
-    }
-
-    private String extensionFromIdentity(String agentIdentity, Long nodeId) {
-        if (StringUtils.isBlank(agentIdentity)) {
-            return null;
-        }
-        String resolved = resourceQueryService.findAgentExtensionByIdentity(agentIdentity, nodeId);
-        if (StringUtils.isNotBlank(resolved)) {
-            return resolved;
-        }
-        int domainIndex = agentIdentity.indexOf('@');
-        return domainIndex > 0 ? agentIdentity.substring(0, domainIndex) : agentIdentity;
     }
 
     // ==================== 业务通话聚合结束：推断队列超时/放弃 ====================
@@ -502,9 +459,14 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         CallSession session = TenantHelper.ignore(() -> sessionMapper.selectOne(new LambdaQueryWrapper<CallSession>()
             .eq(CallSession::getBusinessCallId, businessCallId)
             .last("limit 1")));
-        if (session == null || !queueId.equals(session.getHandlingQueueId())) {
-            log.warn("忽略无法匹配业务通话的队列满意度事件，nodeId={}，businessCallId={}，queueId={}，sessionQueueId={}",
-                nodeId, businessCallId, queueId, session == null ? null : session.getHandlingQueueId());
+        if (session == null) {
+            log.warn("忽略无法匹配业务通话的队列满意度事件，nodeId={}，businessCallId={}，queueId={}",
+                nodeId, businessCallId, queueId);
+            return;
+        }
+        if (nodeId != null && session.getNodeId() != null && !nodeId.equals(session.getNodeId())) {
+            log.warn("忽略 FreeSWITCH 节点不匹配的队列满意度事件，businessCallId={}，eventNodeId={}，sessionNodeId={}",
+                businessCallId, nodeId, session.getNodeId());
             return;
         }
         boolean customerLegMatched = TenantHelper.ignore(() -> legMapper.exists(new LambdaQueryWrapper<CallLeg>()
@@ -517,7 +479,38 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
             return;
         }
 
+        if (!ensureSatisfactionQueueMatched(session, queueId)) {
+            log.warn("忽略队列不匹配的满意度事件，sessionId={}，businessCallId={}，queueId={}，sessionQueueId={}",
+                session.getId(), businessCallId, queueId, session.getHandlingQueueId());
+            return;
+        }
         TenantHelper.dynamic(session.getTenantId(), () -> persistQueueSatisfaction(session, queueId, customerLegUuid, digit));
+    }
+
+    private boolean ensureSatisfactionQueueMatched(CallSession session, Long queueId) {
+        if (session.getHandlingQueueId() != null) {
+            return queueId.equals(session.getHandlingQueueId());
+        }
+
+        QueueEntryInfo queueEntry = TenantHelper.ignore(() -> readQueueEntryFromTimeline(session.getId()));
+        if (queueEntry != null && queueEntry.queueId() != null && !queueId.equals(queueEntry.queueId())) {
+            return false;
+        }
+        CallCenterResourceQueryService.QueueInfo queue = resourceQueryService.findQueueById(queueId, session.getNodeId());
+        if (queue == null) {
+            return false;
+        }
+
+        TenantHelper.dynamic(session.getTenantId(), () -> sessionMapper.update(null, new LambdaUpdateWrapper<CallSession>()
+            .eq(CallSession::getId, session.getId())
+            .isNull(CallSession::getHandlingQueueId)
+            .set(CallSession::getHandlingQueueId, queueId)
+            .set(CallSession::getHandlingQueueName, queue.queueName())));
+        session.setHandlingQueueId(queueId);
+        session.setHandlingQueueName(queue.queueName());
+        log.info("队列满意度入库前已补齐通话接听队列，sessionId={}，businessCallId={}，queueId={}，queueName={}",
+            session.getId(), session.getBusinessCallId(), queueId, queue.queueName());
+        return true;
     }
 
     private void persistQueueSatisfaction(CallSession session, Long queueId, String customerLegUuid, String digit) {
@@ -626,6 +619,14 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
             .and(wrapper -> wrapper.eq(CallRecord::getChannelUuid, channelUuid).or().eq(CallRecord::getCallUuid, channelUuid))
             .last("limit 1"));
         return leg == null ? null : leg.getSessionId();
+    }
+
+    private Long resolveSessionIdByBusinessCallId(String businessCallId) {
+        if (StringUtils.isBlank(businessCallId)) return null;
+        CallSession session = sessionMapper.selectOne(new LambdaQueryWrapper<CallSession>()
+            .eq(CallSession::getBusinessCallId, businessCallId)
+            .last("limit 1"));
+        return session == null ? null : session.getId();
     }
 
     private CallCenterResourceQueryService.QueueInfo resolveQueueFromAgentRingEvent(AgentRingSignalEvent event) {

@@ -20,9 +20,11 @@ import org.dromara.agent.runtime.AgentQueueRuntimeStatus;
 import org.dromara.agent.service.CallQueueRuntimeSyncService;
 import org.dromara.agent.service.CurrentAgentSessionService;
 import org.dromara.agent.service.HandlingQueueResolver;
+import org.dromara.agent.service.AgentSessionApplicationService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.sip.domain.response.SipAccountResponse;
 import org.dromara.resource.sip.domain.response.SipRegistrationConfigResponse;
 import org.dromara.resource.sip.service.SipAccountQueryService;
@@ -36,7 +38,7 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 @Slf4j
-public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionService {
+public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionService, AgentSessionApplicationService {
     private static final String PRESENCE_KEY_PREFIX = "callnexus:agent:presence:";
     private static final String ACTIVE_CALL_KEY_PREFIX = "callnexus:agent:active-call:";
     private static final String ENDED_CALL_UUID_KEY_PREFIX = "callnexus:call:ended-uuid:";
@@ -86,7 +88,18 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
 
     @Override
     public CurrentAgentResponse signIn() {
-        Agent agent = requireCurrentAgent();
+        return signIn(requireCurrentAgent().getId());
+    }
+
+    @Override
+    public CurrentAgentResponse get(Long agentId) {
+        Agent agent = requireAgent(agentId);
+        return buildResponse(agent, normalizeAfterCallStatus(agent, getPresence(agent.getId())));
+    }
+
+    @Override
+    public CurrentAgentResponse signIn(Long agentId) {
+        Agent agent = requireAgent(agentId);
         if (!Boolean.TRUE.equals(agent.getEnabled())) {
             throw new ServiceException("坐席已停用");
         }
@@ -104,10 +117,18 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
 
     @Override
     public CurrentAgentResponse changeStatus(AgentPresenceStatus status) {
+        return changeStatus(requireCurrentAgent().getId(), status);
+    }
+
+    @Override
+    public CurrentAgentResponse changeStatus(Long agentId, AgentPresenceStatus status) {
+        if (status == null) {
+            throw new ServiceException("坐席状态不能为空");
+        }
         if (status == AgentPresenceStatus.OFFLINE) {
             throw new ServiceException("离线状态请使用签出操作");
         }
-        Agent agent = requireCurrentAgent();
+        Agent agent = requireAgent(agentId);
         AgentPresence presence = getPresence(agent.getId());
         if (presence == null) {
             throw new ServiceException("坐席未签入，请先签入");
@@ -121,7 +142,12 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
 
     @Override
     public void signOut() {
-        Agent agent = requireCurrentAgent();
+        signOut(requireCurrentAgent().getId());
+    }
+
+    @Override
+    public void signOut(Long agentId) {
+        Agent agent = requireAgent(agentId);
         syncQueueStatus(agent, AgentPresenceStatus.OFFLINE);
         RedisUtils.deleteObject(presenceKey(agent.getId()));
     }
@@ -135,6 +161,17 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
         Agent agent = findCurrentAgent();
         if (agent == null) {
             throw new ServiceException("当前用户尚未绑定坐席");
+        }
+        return agent;
+    }
+
+    private Agent requireAgent(Long agentId) {
+        if (agentId == null) {
+            throw new ServiceException("坐席 ID 不能为空");
+        }
+        Agent agent = agentMapper.selectById(agentId);
+        if (agent == null) {
+            throw new ServiceException("坐席不存在");
         }
         return agent;
     }
@@ -161,7 +198,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     }
 
     private String presenceKey(Long agentId) {
-        return PRESENCE_KEY_PREFIX + LoginHelper.getTenantId() + ":" + agentId;
+        return PRESENCE_KEY_PREFIX + TenantHelper.getTenantId() + ":" + agentId;
     }
 
     private CurrentAgentResponse buildResponse(Agent agent, AgentPresence presence) {
@@ -259,7 +296,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     }
 
     private String activeCallKey(Long agentId) {
-        return ACTIVE_CALL_KEY_PREFIX + LoginHelper.getTenantId() + ":" + agentId;
+        return ACTIVE_CALL_KEY_PREFIX + TenantHelper.getTenantId() + ":" + agentId;
     }
 
     private boolean isEndedActiveCall(AgentActiveCall activeCall) {

@@ -452,13 +452,20 @@ public class FreeSwitchDialplanXmlRenderer {
                 callerIdNumber, callerIdNumber, gatewayCode, destination);
     }
 
-    public String renderInternalExtensionRoute(SipDirectoryAccountResponse account, String context) {
+    public String renderInternalExtensionRoute(SipDirectoryAccountResponse account, String context,
+                                               String inheritedBusinessCallId, String originalCallerNumber) {
         String dialplanContext = FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "default" : context);
         String extension = FreeSwitchXmlRenderer.escape(account.getExtension());
         if (account.getAuthUsername() == null || account.getAuthUsername().isBlank()) {
             return FreeSwitchXmlRenderer.notFound();
         }
         String domain = FreeSwitchXmlRenderer.escape(account.getDomain());
+        String businessCallId = inheritedBusinessCallId == null || inheritedBusinessCallId.isBlank()
+            ? "${uuid}"
+            : FreeSwitchXmlRenderer.escape(inheritedBusinessCallId);
+        String originalCaller = originalCallerNumber == null || originalCallerNumber.isBlank()
+            ? "${caller_id_number}"
+            : FreeSwitchXmlRenderer.escape(originalCallerNumber);
         return """
             <document type="freeswitch/xml">
               <section name="dialplan" description="CallNexus Dynamic Dialplan">
@@ -466,9 +473,9 @@ public class FreeSwitchDialplanXmlRenderer {
                   <extension name="callnexus_internal_%s" continue="false">
                     <condition field="destination_number" expression="^%s$">
                       <action application="set" data="callnexus_route_type=INTERNAL_EXTENSION"/>
-                      <action application="export" data="callnexus_business_call_id=${uuid}"/>
+                      <action application="export" data="callnexus_business_call_id=%s"/>
                       <action application="export" data="callnexus_direction=INTERNAL"/>
-                      <action application="export" data="callnexus_original_caller=${caller_id_number}"/>
+                      <action application="export" data="callnexus_original_caller=%s"/>
                       <action application="export" data="callnexus_original_called=%s"/>
                       <action application="set" data="callnexus_recording_path=/var/lib/freeswitch/recordings/${callnexus_business_call_id}.wav"/>
                       <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
@@ -481,6 +488,7 @@ public class FreeSwitchDialplanXmlRenderer {
                 </context>
               </section>
             </document>
-            """.formatted(dialplanContext, extension, extension, extension, domain, extension, domain);
+            """.formatted(dialplanContext, extension, extension, businessCallId, originalCaller, extension,
+                domain, extension, domain);
     }
 }

@@ -31,6 +31,13 @@ public class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
                 }
                 break;
             } catch (ServiceException exception) {
+                if (attempt == 1 && isRetryableGatewayFailure(exception)) {
+                    OpenAiCompatibleSupport.invalidateClient(request.provider());
+                    log.warn("Embedding 上游网关暂时不可用，已淘汰连接并准备重试一次，providerCode={}，model={}，error={}",
+                        request.provider().getProviderCode(), request.model().getModelName(), exception.getMessage());
+                    pauseBeforeRetry();
+                    continue;
+                }
                 throw exception;
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
@@ -40,6 +47,20 @@ public class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
             }
         }
         throw new ServiceException("Embedding 模型调用异常：" + transportFailure.getMessage());
+    }
+
+    static boolean isRetryableGatewayFailure(ServiceException exception) {
+        String message = exception.getMessage();
+        return message != null && message.matches("(?s).*HTTP状态码=(502|503|504).*?");
+    }
+
+    private void pauseBeforeRetry() {
+        try {
+            Thread.sleep(200L);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new ServiceException("Embedding 模型调用被中断");
+        }
     }
 
     private EmbeddingResult execute(EmbeddingRequest request) throws Exception {

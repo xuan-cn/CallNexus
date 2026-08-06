@@ -51,19 +51,23 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
     }
 
     @Override
-    public void recognize(Long nodeId, String customerLegUuid) {
+    public void recognize(Long nodeId, String customerLegUuid, boolean bargeInEnabled, String bargeInMode) {
         requireCallId(customerLegUuid);
         long startNanos = System.nanoTime();
         EslEndpoint endpoint = endpoint(nodeId);
         eslCommandGateway.sendRawCommand(endpoint, "api uuid_setvar " + customerLegUuid + " fire_asr_events true");
         eslCommandGateway.sendRawCommand(endpoint, "api uuid_setvar " + customerLegUuid + " callnexus_unimrcp_profile "
             + safe(properties.getUnimrcp().getProfile()));
+        eslCommandGateway.sendRawCommand(endpoint, "api uuid_setvar " + customerLegUuid + " callnexus_ai_barge_in_enabled "
+            + bargeInEnabled);
+        eslCommandGateway.sendRawCommand(endpoint, "api uuid_setvar " + customerLegUuid + " callnexus_ai_barge_in_mode "
+            + safeBargeInMode(bargeInMode));
         eslCommandGateway.sendRawCommand(endpoint, "api uuid_setvar " + customerLegUuid + " callnexus_unimrcp_grammar "
-            + safeGrammar(properties.getUnimrcp().getGrammar()));
+            + safeGrammar(withSensitivity(properties.getUnimrcp().getGrammar(), bargeInEnabled, bargeInMode)));
         String command = render(properties.getUnimrcp().getRecognizeCommandTemplate(), customerLegUuid, null, null);
         eslCommandGateway.sendRawCommand(endpoint, command);
-        log.info("AI UniMRCP 识别命令已提交，nodeId={}，customerLegUuid={}，costMs={}，command={}",
-            nodeId, customerLegUuid, elapsedMillis(startNanos), command);
+        log.info("AI UniMRCP 识别命令已提交，nodeId={}，customerLegUuid={}，bargeInEnabled={}，bargeInMode={}，costMs={}，command={}",
+            nodeId, customerLegUuid, bargeInEnabled, safeBargeInMode(bargeInMode), elapsedMillis(startNanos), command);
     }
 
     @Override
@@ -195,6 +199,8 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
 
     private void prepareForTransfer(EslEndpoint endpoint, String customerLegUuid) {
         eslCommandGateway.sendRawCommand(endpoint,
+            "api uuid_setvar " + customerLegUuid + " callnexus_ai_active false");
+        eslCommandGateway.sendRawCommand(endpoint,
             "api uuid_setvar " + customerLegUuid + " callnexus_satisfaction_skip true");
         eslCommandGateway.sendRawCommand(endpoint,
             "api uuid_setvar " + customerLegUuid + " hangup_after_bridge true");
@@ -259,6 +265,28 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
             throw new ServiceException("AI UniMRCP 识别语法配置不合法");
         }
         return value;
+    }
+
+    private String safeBargeInMode(String value) {
+        String mode = StringUtils.blankToDefault(value, "STANDARD").trim().toUpperCase();
+        return switch (mode) {
+            case "SENSITIVE", "STANDARD", "NOISY" -> mode;
+            default -> "STANDARD";
+        };
+    }
+
+    private String withSensitivity(String grammar, boolean bargeInEnabled, String mode) {
+        if (!bargeInEnabled || StringUtils.isBlank(grammar) || grammar.contains("sensitivity-level=")) {
+            return grammar;
+        }
+        String sensitivity = switch (safeBargeInMode(mode)) {
+            case "SENSITIVE" -> "0.75";
+            case "NOISY" -> "0.35";
+            default -> "0.55";
+        };
+        return grammar.startsWith("{")
+            ? "{sensitivity-level=" + sensitivity + "," + grammar.substring(1)
+            : "{sensitivity-level=" + sensitivity + "}" + grammar;
     }
 
     private String safeScript(String value) {
