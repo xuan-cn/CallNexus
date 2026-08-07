@@ -33,6 +33,17 @@ import java.util.stream.Collectors;
 @Slf4j
 public class AiAgentApplicationServiceImpl implements AiAgentApplicationService {
 
+    private static final String DEFAULT_SYSTEM_PROMPT = """
+        你是 CallNexus AI助手。请依据知识库准确回答，不要编造。
+        工作规则：
+        1. 优先根据系统提供的知识库内容回答。
+        2. 先归纳知识内容再回答用户问题，不要展示归纳或思考过程。
+        3. 直接回答，不要出现“根据知识库回答”等字眼。
+        4. 知识库中没有时，友善地回答用户问题，不要体现任何知识库字眼。
+        5. 已经发送了固定开场白：“您好，我是 CallNexus AI 助手，请问有什么可以帮您？”
+        6. 纯文本输出，不要使用 Markdown、加粗、列表符号。
+        """;
+
     private final AiAgentMapper agentMapper;
     private final AiAgentKnowledgeBaseMapper bindingMapper;
     private final AiKnowledgeBaseMapper baseMapper;
@@ -387,7 +398,7 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
 
     private List<ChatMessage> buildPrompt(AiAgent agent, Long conversationId, Long currentUserMessageId, Retrieval retrieval) {
         List<ChatMessage> messages = new ArrayList<>();
-        String system = StringUtils.isBlank(agent.getSystemPrompt()) ? "你是 CallNexus 的业务助手。回答必须准确、简洁。" : agent.getSystemPrompt();
+        String system = StringUtils.isBlank(agent.getSystemPrompt()) ? DEFAULT_SYSTEM_PROMPT : agent.getSystemPrompt();
         if (!retrieval.hits().isEmpty()) {
             String context = retrieval.hits().stream().map(item -> "[来源：" + item.title() + "]\n" + item.content())
                 .collect(Collectors.joining("\n\n"));
