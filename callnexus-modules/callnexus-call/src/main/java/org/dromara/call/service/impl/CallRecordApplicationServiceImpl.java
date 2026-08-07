@@ -166,7 +166,9 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
 
     private CallSession resolveSession(TelephonyEvent event, String tenantId, LocalDateTime occurredAt) {
         Set<String> relatedUuids = relatedUuids(event);
-        String explicitBusinessCallId = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_BUSINESS_CALL_ID);
+        String explicitBusinessCallId = firstNotBlank(
+            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_BUSINESS_CALL_ID),
+            event.headers().get(EslHeaders.CALLNEXUS_BUSINESS_CALL_ID));
         List<CallSession> candidates = StringUtils.isNotBlank(explicitBusinessCallId)
             ? sessionMapper.selectList(new LambdaQueryWrapper<CallSession>()
                 .eq(CallSession::getBusinessCallId, explicitBusinessCallId))
@@ -489,6 +491,10 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         addUuid(uuids, event.headers().get(EslHeaders.CHANNEL_CALL_UUID));
         addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_ORIGINATION_UUID));
         addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_BRIDGE_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.CC_CALLER_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.CC_MEMBER_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_CC_MEMBER_UUID));
+        addUuid(uuids, event.headers().get(EslHeaders.VARIABLE_CC_MEMBER_SESSION_UUID));
         return uuids;
     }
 
@@ -688,6 +694,9 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             if (channelAgent != null) {
                 return channelAgent;
             }
+        }
+        if (endpointIdentityResolver.isExternalCounterpartyChannel(event)) {
+            return null;
         }
         AgentRealtimeTargetResponse agent = agentQueryService.findByNodeAndExtension(event.nodeId(), event.destinationNumber());
         return agent == null ? agentQueryService.findByNodeAndExtension(event.nodeId(), event.callerNumber()) : agent;

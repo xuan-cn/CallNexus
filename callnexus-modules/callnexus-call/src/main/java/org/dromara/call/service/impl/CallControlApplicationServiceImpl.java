@@ -733,7 +733,12 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
                                                CurrentAgentResponse agent) {
         String cachedAgentChannelId = activeCall == null ? null : activeCall.getAgentChannelId();
         String legUuid = liveLegUuid(endpoint, activeLegByRole(businessCallId, "CUSTOMER"));
-        if (legUuid != null && !legUuid.equals(cachedAgentChannelId)) {
+        if (legUuid != null) {
+            if (legUuid.equals(cachedAgentChannelId)) {
+                log.warn("活动通话缓存中的坐席腿与数据库客户腿冲突，按数据库客户腿处理，businessCallId={}，customerLegUuid={}，agentId={}，extension={}",
+                    businessCallId, legUuid, agent == null ? null : agent.getAgentId(),
+                    agent == null ? null : agent.getExtension());
+            }
             return legUuid;
         }
         if (isInternalBusinessCall(businessCallId)) {

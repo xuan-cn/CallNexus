@@ -17,8 +17,12 @@ public class TelephonyEndpointIdentityResolver {
         if (event == null) {
             return null;
         }
+        String channelName = event.headers().get(EslHeaders.CHANNEL_NAME);
+        String channelExtension = firstResolved(event.nodeId(), identityFromChannelName(channelName));
+        if (channelExtension != null || isExternalCounterpartyChannel(channelName)) {
+            return channelExtension;
+        }
         return firstResolved(event.nodeId(),
-            identityFromChannelName(event.headers().get(EslHeaders.CHANNEL_NAME)),
             event.headers().get(EslHeaders.VARIABLE_DIALED_USER),
             event.headers().get(EslHeaders.VARIABLE_DIALLED_USER));
     }
@@ -27,10 +31,16 @@ public class TelephonyEndpointIdentityResolver {
         if (event == null) {
             return null;
         }
+        if (isExternalCounterpartyChannel(event)) {
+            return null;
+        }
         String extension = resolveAuthoritativeExtension(event);
         if (extension != null) {
             return extension;
         }
+        // External and gateway channels represent the PSTN counterparty. Their callee and
+        // destination fields may contain the transferred extension, but that does not make
+        // the external channel an agent leg.
         extension = firstResolved(event.nodeId(),
             event.headers().get(EslHeaders.CALLER_CALLEE_ID_NUMBER),
             event.headers().get(EslHeaders.VARIABLE_SIP_REQ_USER),
@@ -47,6 +57,18 @@ public class TelephonyEndpointIdentityResolver {
             return firstResolved(event.nodeId(), event.destinationNumber(), event.callerNumber());
         }
         return firstResolved(event.nodeId(), event.destinationNumber(), event.callerNumber());
+    }
+
+    public boolean isExternalCounterpartyChannel(TelephonyEvent event) {
+        return event != null && isExternalCounterpartyChannel(event.headers().get(EslHeaders.CHANNEL_NAME));
+    }
+
+    private boolean isExternalCounterpartyChannel(String channelName) {
+        if (channelName == null || channelName.isBlank()) {
+            return false;
+        }
+        return channelName.regionMatches(true, 0, "sofia/external/", 0, "sofia/external/".length())
+            || channelName.regionMatches(true, 0, "sofia/gateway/", 0, "sofia/gateway/".length());
     }
 
     public String resolveKnownExtension(Long nodeId, String identity) {

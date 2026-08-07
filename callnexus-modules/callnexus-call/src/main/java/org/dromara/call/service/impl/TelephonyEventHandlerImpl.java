@@ -1135,6 +1135,9 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         if (event.uuid() == null || event.uuid().isBlank()) {
             return null;
         }
+        if (endpointIdentityResolver.isExternalCounterpartyChannel(event)) {
+            return null;
+        }
         String extension = normalizeExtension(target.getExtension());
         if (extension == null) {
             return null;

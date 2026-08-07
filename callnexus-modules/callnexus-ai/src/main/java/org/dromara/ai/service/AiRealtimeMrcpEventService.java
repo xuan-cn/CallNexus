@@ -96,6 +96,7 @@ public class AiRealtimeMrcpEventService {
     private final AiCallRecordingSourceMapper recordingSourceMapper;
     private final AiCallTranscriptMapper transcriptMapper;
     private final AiCallTranscriptSegmentMapper transcriptSegmentMapper;
+    private final AiCallTranscriptStreamService transcriptStreamService;
     private final AiRealtimeTtsInternalService realtimeTtsService;
     private final AiRealtimeTtsConnectionRegistry ttsConnectionRegistry;
     private final ObjectProvider<AiRealtimeTelephonyGateway> telephonyGatewayProvider;
@@ -117,6 +118,7 @@ public class AiRealtimeMrcpEventService {
                                       AiCallRecordingSourceMapper recordingSourceMapper,
                                        AiCallTranscriptMapper transcriptMapper,
                                        AiCallTranscriptSegmentMapper transcriptSegmentMapper,
+                                       AiCallTranscriptStreamService transcriptStreamService,
                                        AiRealtimeTtsInternalService realtimeTtsService,
                                        AiRealtimeTtsConnectionRegistry ttsConnectionRegistry,
                                        ObjectProvider<AiRealtimeTelephonyGateway> telephonyGatewayProvider,
@@ -133,6 +135,7 @@ public class AiRealtimeMrcpEventService {
         this.recordingSourceMapper = recordingSourceMapper;
         this.transcriptMapper = transcriptMapper;
         this.transcriptSegmentMapper = transcriptSegmentMapper;
+        this.transcriptStreamService = transcriptStreamService;
         this.realtimeTtsService = realtimeTtsService;
         this.ttsConnectionRegistry = ttsConnectionRegistry;
         this.telephonyGatewayProvider = telephonyGatewayProvider;
@@ -287,6 +290,7 @@ public class AiRealtimeMrcpEventService {
         }
         if (StringUtils.isNotBlank(result) && runtime.acceptRecognition(result)) {
             long recognitionAcceptedNanos = System.nanoTime();
+            runtime.consecutiveEmptyRecognitions.set(0);
             runtime.recognizing.set(false);
             log.info("AI UniMRCP 识别到用户语音，sessionId={}，businessCallId={}，text={}",
                 runtime.entity.getId(), runtime.businessCallId, result.trim());
@@ -302,7 +306,11 @@ public class AiRealtimeMrcpEventService {
         if (runtime.closed.get()) {
             return;
         }
-        runtime.recognizing.set(false);
+        if (!runtime.recognizing.compareAndSet(true, false)) {
+            log.debug("忽略同一识别轮次的重复空结果，sessionId={}，businessCallId={}，customerLegUuid={}",
+                runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid);
+            return;
+        }
         boolean exists;
         try {
             exists = gateway().callExists(runtime.nodeId, runtime.customerLegUuid);
@@ -316,6 +324,23 @@ public class AiRealtimeMrcpEventService {
             log.info("AI UniMRCP 空识别后发现通道已不存在，结束会话，sessionId={}，businessCallId={}，customerLegUuid={}",
                 runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid);
             end(runtime, "CHANNEL_GONE_AFTER_EMPTY_RECOGNITION");
+            return;
+        }
+        int emptyCount = runtime.consecutiveEmptyRecognitions.incrementAndGet();
+        Integer configuredMaxEmptyCount = properties.getUnimrcp().getMaxConsecutiveEmptyRecognitions();
+        int maxEmptyCount = Math.max(1, configuredMaxEmptyCount == null ? 3 : configuredMaxEmptyCount);
+        if (emptyCount >= maxEmptyCount) {
+            log.warn("AI UniMRCP 连续空识别达到上限，关闭残留客户通道，sessionId={}，businessCallId={}，customerLegUuid={}，emptyCount={}",
+                runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, emptyCount);
+            if (Boolean.TRUE.equals(properties.getUnimrcp().getHangupOnRecognitionIdle())) {
+                try {
+                    gateway().hangup(runtime.nodeId, runtime.customerLegUuid);
+                } catch (Exception exception) {
+                    log.warn("AI UniMRCP 空识别超时关闭客户通道失败，仍结束 AI 会话，sessionId={}，businessCallId={}，customerLegUuid={}，error={}",
+                        runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, exception.getMessage());
+                }
+            }
+            end(runtime, "CONSECUTIVE_EMPTY_RECOGNITION");
             return;
         }
         scheduleRecognizeRetry(runtime);
@@ -1430,6 +1455,7 @@ public class AiRealtimeMrcpEventService {
 
                 transcript.setFullText(appendTranscriptLine(transcript.getFullText(), speaker, text.trim()));
                 transcriptMapper.updateById(transcript);
+                transcriptStreamService.publishSegment(runtime.tenantId, source.getId(), transcript.getId(), segment);
                 log.info("AI 实时通话转写已入库，sessionId={}，businessCallId={}，speaker={}，sourceType={}，sentenceIndex={}",
                     runtime.entity.getId(), runtime.businessCallId, speaker, sourceType, segment.getSentenceIndex());
             }
@@ -1827,6 +1853,7 @@ public class AiRealtimeMrcpEventService {
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicLong turnGeneration = new AtomicLong();
         private final AtomicInteger transcriptSentenceIndex = new AtomicInteger();
+        private final AtomicInteger consecutiveEmptyRecognitions = new AtomicInteger();
         private final Object transcriptPersistenceLock = new Object();
         final Deque<String> pendingSpeakSegments = new ArrayDeque<>();
         final AtomicReference<AiRealtimeCallTurn> currentTurn = new AtomicReference<>();

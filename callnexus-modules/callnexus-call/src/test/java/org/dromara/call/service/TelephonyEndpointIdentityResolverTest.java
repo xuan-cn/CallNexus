@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -40,6 +41,23 @@ class TelephonyEndpointIdentityResolverTest {
         ));
 
         assertEquals("1002", resolver.resolveAuthoritativeExtension(event));
+    }
+
+    @Test
+    void shouldNotTreatTransferredExtensionOnExternalChannelAsEndpoint() {
+        Long nodeId = 1L;
+        when(sipIdentityResolver.resolveExtension(nodeId, "1001")).thenReturn("1001");
+
+        TelephonyEvent event = new TelephonyEvent(nodeId, "CHANNEL_ANSWER", "customer-uuid",
+            "19029157428", "1001", null, Map.of(
+                EslHeaders.CHANNEL_NAME, "sofia/external/19029157428@carrier.example.com",
+                EslHeaders.CALLER_CALLEE_ID_NUMBER, "1001",
+                EslHeaders.VARIABLE_SIP_TO_USER, "1001",
+                EslHeaders.VARIABLE_DIALED_USER, "1001"
+            ));
+
+        assertNull(resolver.resolveChannelExtension(event));
+        assertNull(resolver.resolveAuthoritativeExtension(event));
     }
 
     private TelephonyEvent event(Long nodeId, Map<String, String> headers) {
