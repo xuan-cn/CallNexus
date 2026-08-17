@@ -93,6 +93,7 @@ public class FormTemplateApplicationServiceImpl implements FormTemplateApplicati
             field.setDefaultValue(request.getDefaultValue());
             field.setPlaceholderText(request.getPlaceholder());
             field.setValidationRules(request.getValidationRules());
+            field.setListVisible(Boolean.TRUE.equals(request.getListVisible()));
             field.setEnabled(true);
             fieldMapper.insert(field);
             for (int optionIndex = 0; optionIndex < request.getOptions().size(); optionIndex++) {
@@ -185,6 +186,7 @@ public class FormTemplateApplicationServiceImpl implements FormTemplateApplicati
         response.setDefaultValue(field.getDefaultValue());
         response.setPlaceholder(field.getPlaceholderText());
         response.setValidationRules(field.getValidationRules());
+        response.setListVisible(Boolean.TRUE.equals(field.getListVisible()));
         response.setOptions(options.stream().map(this::toOptionResponse).toList());
         return response;
     }

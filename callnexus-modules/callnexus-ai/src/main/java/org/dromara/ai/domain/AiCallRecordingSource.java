@@ -13,6 +13,12 @@ public class AiCallRecordingSource {
     private Long id;
     private String businessCallId;
     private Long nodeId;
+    private String direction;
+    private Long agentId;
+    private String agentExtension;
+    private Long ownerAgentId;
+    private String ownerAgentExtension;
+    private String ownerAgentLegUuid;
     private LocalDateTime startedAt;
     private LocalDateTime answeredAt;
     private Long recordingOssId;

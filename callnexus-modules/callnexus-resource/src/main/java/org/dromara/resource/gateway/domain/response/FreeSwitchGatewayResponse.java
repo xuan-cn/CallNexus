@@ -12,9 +12,12 @@ public class FreeSwitchGatewayResponse {
     private String gatewayCode;
     private String gatewayName;
     private String direction;
+    private String accessMode;
     private String proxy;
     private String realm;
     private String username;
+    private String registeredIdentity;
+    private String sipProfile;
     private Boolean registerEnabled;
     private String transport;
     private String callerIdNumber;

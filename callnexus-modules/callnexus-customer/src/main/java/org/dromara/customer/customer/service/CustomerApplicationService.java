@@ -1,6 +1,7 @@
 package org.dromara.customer.customer.service;
 
 import org.dromara.customer.customer.domain.request.CreateCustomerRequest;
+import org.dromara.customer.customer.domain.request.CustomerAssignmentRequest;
 import org.dromara.customer.customer.domain.request.CustomerImportData;
 import org.dromara.customer.customer.domain.request.CustomerPageQuery;
 import org.dromara.customer.customer.domain.request.UpdateCustomerRequest;
@@ -17,6 +18,7 @@ public interface CustomerApplicationService {
     CustomerResponse get(Long id);
     CustomerResponse getByPhone(String primaryPhone);
     Long create(CreateCustomerRequest request);
+    void assign(CustomerAssignmentRequest request);
     Long importCustomer(CustomerImportData data);
     void update(Long id, UpdateCustomerRequest request);
     List<CustomerPhoneResponse> listPhones(Long customerId);

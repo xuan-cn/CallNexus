@@ -78,6 +78,8 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private final DispatchCallTaskService dispatchCallTaskService;
     private final QueueEventApplicationService queueEventApplicationService;
     private final AiRealtimeMrcpEventService aiRealtimeMrcpEventService;
+    private final CallRealtimeTranscriptEventService callRealtimeTranscriptEventService;
+    private final CallRealtimeAsrControlService callRealtimeAsrControlService;
     private final PhoneNumberNormalizationService phoneNumberNormalizationService;
     private final TelephonyEndpointIdentityResolver endpointIdentityResolver;
     private final CallConferenceApplicationService callConferenceApplicationService;
@@ -134,6 +136,18 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         } catch (Exception exception) {
             log.error("AI UniMRCP 实时语音事件处理失败，不影响通话主流程，nodeId={}，eventName={}，uuid={}，error={}",
                 event.nodeId(), event.eventName(), event.uuid(), exception.getMessage(), exception);
+        }
+        try {
+            callRealtimeTranscriptEventService.handle(event);
+        } catch (Exception exception) {
+            log.error("Realtime call transcript event failed, nodeId={}, eventName={}, uuid={}",
+                event.nodeId(), event.eventName(), event.uuid(), exception);
+        }
+        try {
+            callRealtimeAsrControlService.handle(event);
+        } catch (Exception exception) {
+            log.error("Realtime call ASR control failed, nodeId={}, eventName={}, uuid={}",
+                event.nodeId(), event.eventName(), event.uuid(), exception);
         }
         // Dialplan application events are high-volume process signals. They are consumed above by
         // the UniMRCP integration when needed, but must not block lifecycle events behind database,
@@ -319,9 +333,13 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
                 return false;
             }
             if (activeCall != null && isOwnAgentLegStillActive(event, activeCall)) {
-                log.info("关联电话腿挂机但坐席自身电话腿仍存活，保留活动通话状态且不推送挂机事件，uuid={}，agentId={}，extension={}，agentLegUuid={}",
-                    event.uuid(), target.getAgentId(), target.getExtension(), activeCall.getAgentChannelId());
-                return false;
+                if (isCanonicalCustomerLegHangup(event, activeCall)) {
+                    hangupSurvivingAgentLeg(event, activeCall, target);
+                } else {
+                    log.info("关联电话腿挂机但坐席自身电话腿仍存活，保留活动通话状态且不推送挂机事件，uuid={}，agentId={}，extension={}，agentLegUuid={}",
+                        event.uuid(), target.getAgentId(), target.getExtension(), activeCall.getAgentChannelId());
+                    return false;
+                }
             }
             deleteUuidActiveCallIndexes(event, activeCall);
             RedisUtils.deleteObject(activeCallKey);
@@ -375,6 +393,24 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             log.warn("检查坐席存活电话腿失败，按挂机事件继续收口，nodeId={}，uuid={}，agentLegUuid={}，error={}",
                 event.nodeId(), event.uuid(), agentLegUuid, exception.getMessage());
             return false;
+        }
+    }
+
+    private boolean isCanonicalCustomerLegHangup(TelephonyEvent event, AgentActiveCall activeCall) {
+        return event.uuid() != null
+            && !event.uuid().isBlank()
+            && event.uuid().equals(activeCall.getBusinessCallId());
+    }
+
+    private void hangupSurvivingAgentLeg(TelephonyEvent event, AgentActiveCall activeCall,
+                                         AgentRealtimeTargetResponse target) {
+        try {
+            telephonyCommandGateway.hangup(endpoint(event.nodeId()), activeCall.getAgentChannelId());
+            log.info("客户主腿已挂机，主动结束仍存活的坐席腿，customerLegUuid={}，agentLegUuid={}，agentId={}，extension={}",
+                event.uuid(), activeCall.getAgentChannelId(), target.getAgentId(), target.getExtension());
+        } catch (RuntimeException exception) {
+            log.warn("客户主腿挂机后结束坐席腿失败，继续清理平台通话状态，customerLegUuid={}，agentLegUuid={}，error={}",
+                event.uuid(), activeCall.getAgentChannelId(), exception.getMessage());
         }
     }
 
@@ -708,6 +744,11 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         if (agentIdentity == null) return;
         AgentRealtimeTargetResponse target = agentQueryService.findByNodeAndExtension(event.nodeId(), agentIdentity);
         if (target == null) return;
+        if (EslEventNames.SUBCLASS_CC_RING_AGENT.equals(event.eventSubclass()) && hasLiveActiveAgentLeg(event, target)) {
+            log.info("忽略已接通坐席的迟到队列振铃事件，nodeId={}，uuid={}，agentId={}，extension={}",
+                event.nodeId(), event.uuid(), target.getAgentId(), target.getExtension());
+            return;
+        }
         CallRealtimeMessage message = new CallRealtimeMessage();
         message.setType(EslEventNames.SUBCLASS_CC_AGENT_ANSWER.equals(event.eventSubclass()) ? "CALL_ANSWER" : "CALL_PROGRESS");
         applyRealtimeCallIdentity(message, event, target);
@@ -723,6 +764,20 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
                 saveActiveCallIfAbsent(event, target);
                 updatePresence(target, AgentPresenceStatus.BUSY, null);
             });
+        }
+    }
+
+    private boolean hasLiveActiveAgentLeg(TelephonyEvent event, AgentRealtimeTargetResponse target) {
+        AgentActiveCall activeCall = RedisUtils.getCacheObject(activeCallKey(target));
+        if (activeCall == null || activeCall.getAgentChannelId() == null || activeCall.getAgentChannelId().isBlank()) {
+            return false;
+        }
+        try {
+            return telephonyCommandGateway.callExists(endpoint(event.nodeId()), activeCall.getAgentChannelId());
+        } catch (RuntimeException exception) {
+            log.warn("检查队列振铃事件是否过期失败，按正常振铃事件继续处理，nodeId={}，agentId={}，agentLegUuid={}，error={}",
+                event.nodeId(), target.getAgentId(), activeCall.getAgentChannelId(), exception.getMessage());
+            return false;
         }
     }
 
@@ -1071,14 +1126,18 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         String key = activeCallKey(target);
         AgentActiveCall existing = RedisUtils.getCacheObject(key);
         if (existing != null) {
+            String previousAgentChannelId = existing.getAgentChannelId();
+            String agentChannelId = resolveAgentChannelId(event, target);
+            boolean agentLegChanged = agentChannelId != null
+                && previousAgentChannelId != null
+                && !agentChannelId.equals(previousAgentChannelId);
             existing.setCallId(resolvePrimaryCallId(event, existing));
             existing.setBusinessCallId(callStateRuntimeService.resolveBusinessCallId(event, existing));
-            String agentChannelId = resolveAgentChannelId(event, target);
             if (agentChannelId != null) {
                 existing.setAgentChannelId(agentChannelId);
             }
             existing.setDestination(resolvePeerNumber(event, target, existing.getDestination()));
-            existing.setRelatedUuids(mergeRelatedUuids(event, existing));
+            existing.setRelatedUuids(mergeRelatedUuids(event, existing, agentLegChanged));
             RedisUtils.setCacheObject(key, existing, ACTIVE_CALL_TTL);
             saveUuidActiveCallIndexes(event, key);
             return;
@@ -1192,8 +1251,12 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         }
     }
 
-    private Set<String> mergeRelatedUuids(TelephonyEvent event, AgentActiveCall activeCall) {
+    private Set<String> mergeRelatedUuids(TelephonyEvent event, AgentActiveCall activeCall, boolean agentLegChanged) {
         Set<String> uuids = new LinkedHashSet<>(relatedUuids(event));
+        if (agentLegChanged) {
+            addUuid(uuids, activeCall.getBusinessCallId());
+            return uuids;
+        }
         if (activeCall != null && activeCall.getRelatedUuids() != null) {
             uuids.addAll(activeCall.getRelatedUuids());
         }

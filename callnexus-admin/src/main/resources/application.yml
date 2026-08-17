@@ -30,7 +30,7 @@ captcha:
   # 数字验证码位数
   numberLength: 1
   # 字符验证码长度
-  charLength: 4
+  charLength: 1
 
 # 日志配置
 logging:
@@ -290,6 +290,8 @@ ai:
   realtime-token-ttl-seconds: ${CALLNEXUS_AI_REALTIME_TOKEN_TTL_SECONDS:300}
   realtime-worker-threads: ${CALLNEXUS_AI_REALTIME_WORKER_THREADS:8}
   realtime-transport: ${CALLNEXUS_AI_REALTIME_TRANSPORT:UNIMRCP}
+  call-realtime-asr-enabled: ${CALLNEXUS_AI_CALL_REALTIME_ASR_ENABLED:true}
+  call-realtime-asr-legs: ${CALLNEXUS_AI_CALL_REALTIME_ASR_LEGS:BOTH}
   unimrcp:
     speak-command-template: "${CALLNEXUS_AI_UNIMRCP_SPEAK_COMMAND_TEMPLATE:api uuid_broadcast {uuid} speak::{profile}:callnexus-mrcp-v2:{uuid}|{voice}|{text} both}"
     recognize-command-template: "${CALLNEXUS_AI_UNIMRCP_RECOGNIZE_COMMAND_TEMPLATE:api luarun {detectScript} {uuid}}"

@@ -3,6 +3,7 @@ package org.dromara.resource.freeswitch.xml.dialplan;
 import org.dromara.resource.freeswitch.xml.FreeSwitchXmlRenderer;
 import org.dromara.resource.phone.domain.response.PhoneNumberDialplanRouteResponse;
 import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
+import org.dromara.resource.gateway.support.OutboundGatewayDialString;
 import org.dromara.resource.queue.domain.response.CallQueueDialplanResponse;
 import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
 import org.dromara.resource.voicemail.domain.response.VoiceMailDialplanResponse;
@@ -29,6 +30,8 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="export" data="callnexus_direction=INBOUND"/>
                       <action application="export" data="callnexus_original_caller=${caller_id_number}"/>
                       <action application="export" data="callnexus_original_called=%s"/>
+                      <action application="set" data="RECORD_STEREO=true"/>
+                      <action application="set" data="record_sample_rate=8000"/>
                       <action application="set" data="callnexus_recording_path=/var/lib/freeswitch/recordings/${callnexus_business_call_id}.wav"/>
                       <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
@@ -68,6 +71,8 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="export" data="callnexus_direction=INBOUND"/>
                       <action application="export" data="callnexus_original_caller=${caller_id_number}"/>
                       <action application="export" data="callnexus_original_called=%s"/>
+                      <action application="set" data="RECORD_STEREO=true"/>
+                      <action application="set" data="record_sample_rate=8000"/>
                       <action application="set" data="callnexus_recording_path=/var/lib/freeswitch/recordings/${callnexus_business_call_id}.wav"/>
                       <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
@@ -289,24 +294,25 @@ public class FreeSwitchDialplanXmlRenderer {
             // 没有可用外呼网关：保留配置但忽略动作，避免渲染出错误的 dialplan。
             return "";
         }
-        String gateway = FreeSwitchXmlRenderer.escape(queue.getOutboundGatewayCode());
         StringBuilder builder = new StringBuilder();
         if (busy) {
-            builder.append(mobileBranch("max-wait", gateway, queue.getBusyTransferNumber()));
+            builder.append(mobileBranch("max-wait", queue, queue.getBusyTransferNumber()));
         }
         if (timeoutMobile) {
-            builder.append(mobileBranch("max-no-answer", gateway, queue.getAgentTimeoutTransferNumber()));
+            builder.append(mobileBranch("max-no-answer", queue, queue.getAgentTimeoutTransferNumber()));
         }
         return builder.toString();
     }
 
-    private String mobileBranch(String ccCause, String gatewayCode, String mobile) {
-        String mobileEscaped = FreeSwitchXmlRenderer.escape(mobile);
+    private String mobileBranch(String ccCause, CallQueueDialplanResponse queue, String mobile) {
+        String endpoint = FreeSwitchXmlRenderer.escape(OutboundGatewayDialString.build(
+            queue.getOutboundGatewayAccessMode(), queue.getOutboundGatewayCode(), queue.getOutboundRegisteredIdentity(),
+            queue.getOutboundGatewaySipProfile(), queue.getOutboundSipDomain(), mobile));
         // 使用 cond() 内联条件：仅当 ${cc_cause} 等于目标值时返回真实桥接串，
         // 否则返回当前 channel 自身的 originate string（user/${destination_number}）让 bridge 立即失败但不阻塞下一动作。
         // 这里通过 ${cond(... ? real : '')} + execute_string 模式实现"满足条件才执行 bridge"。
         return "                      <action application=\"execute_string\" data=\"${cond(${cc_cause} == '"
-            + ccCause + "' ? 'bridge sofia/gateway/" + gatewayCode + "/" + mobileEscaped + "' : 'log NOTICE [CallNexus] skip mobile branch ccCause=${cc_cause}')}\"/>\n";
+            + ccCause + "' ? 'bridge " + endpoint + "' : 'log NOTICE [CallNexus] skip mobile branch ccCause=${cc_cause}')}\"/>\n";
     }
 
     /**
@@ -336,6 +342,8 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="export" data="callnexus_direction=INBOUND"/>
                       <action application="export" data="callnexus_original_caller=${caller_id_number}"/>
                       <action application="export" data="callnexus_original_called=%s"/>
+                      <action application="set" data="RECORD_STEREO=true"/>
+                      <action application="set" data="record_sample_rate=8000"/>
                       <action application="set" data="callnexus_recording_path=/var/lib/freeswitch/recordings/${callnexus_business_call_id}.wav"/>
                       <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
@@ -422,8 +430,11 @@ public class FreeSwitchDialplanXmlRenderer {
     public String renderOutboundRoute(PhoneNumberOutboundRouteResponse route, String context, String destinationNumber) {
         String dialplanContext = FreeSwitchXmlRenderer.escape(context == null || context.isBlank() ? "default" : context);
         String destination = FreeSwitchXmlRenderer.escape(destinationNumber);
-        String gatewayCode = FreeSwitchXmlRenderer.escape(route.getGatewayCode());
         String callerIdNumber = FreeSwitchXmlRenderer.escape(route.getNumber());
+        String outboundEndpoint = FreeSwitchXmlRenderer.escape(OutboundGatewayDialString.build(
+            route.getGatewayAccessMode(), route.getGatewayCode(), route.getRegisteredIdentity(),
+            route.getGatewaySipProfile(), route.getSipDomain(), destinationNumber,
+            "absolute_codec_string=PCMA", "codec_string=PCMA"));
         return """
             <document type="freeswitch/xml">
               <section name="dialplan" description="CallNexus Dynamic Dialplan">
@@ -438,18 +449,20 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="export" data="callnexus_original_called=%s"/>
                       <action application="set" data="effective_caller_id_number=%s"/>
                       <action application="set" data="effective_caller_id_name=%s"/>
+                      <action application="set" data="RECORD_STEREO=true"/>
+                      <action application="set" data="record_sample_rate=8000"/>
                       <action application="set" data="callnexus_recording_path=/var/lib/freeswitch/recordings/${callnexus_business_call_id}.wav"/>
                       <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>
                       <action application="record_session" data="${callnexus_recording_path}"/>
-                      <action application="bridge" data="[absolute_codec_string=PCMA,codec_string=PCMA]sofia/gateway/%s/%s"/>
+                      <action application="bridge" data="%s"/>
                     </condition>
                   </extension>
                 </context>
               </section>
             </document>
-            """.formatted(dialplanContext, destination, destination, gatewayCode, destination,
-                callerIdNumber, callerIdNumber, gatewayCode, destination);
+            """.formatted(dialplanContext, destination, destination, route.getGatewayCode(), destination,
+                callerIdNumber, callerIdNumber, outboundEndpoint);
     }
 
     public String renderInternalExtensionRoute(SipDirectoryAccountResponse account, String context,
@@ -480,6 +493,8 @@ public class FreeSwitchDialplanXmlRenderer {
                       <action application="export" data="callnexus_direction=%s"/>
                       <action application="export" data="callnexus_original_caller=%s"/>
                       <action application="export" data="callnexus_original_called=%s"/>
+                      <action application="set" data="RECORD_STEREO=true"/>
+                      <action application="set" data="record_sample_rate=8000"/>
                       <action application="set" data="callnexus_recording_path=/var/lib/freeswitch/recordings/${callnexus_business_call_id}.wav"/>
                       <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>

@@ -1,6 +1,8 @@
 package org.dromara.resource.gateway.service;
 
 public interface FreeSwitchGatewayRuntimeSyncService {
+    void refreshDirectory(Long nodeId);
+
     void addGateway(Long nodeId, String gatewayCode);
 
     void updateGateway(Long nodeId, String gatewayCode);

@@ -1365,7 +1365,9 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         if (!authorization.external()) {
             return OutboundRoute.internal();
         }
-        return OutboundRoute.external(authorization.outboundRoute().getGatewayCode(), authorization.outboundRoute().getNumber());
+        return OutboundRoute.external(authorization.outboundRoute().getGatewayCode(), authorization.outboundRoute().getNumber(),
+            authorization.outboundRoute().getGatewayAccessMode(), authorization.outboundRoute().getRegisteredIdentity(),
+            authorization.outboundRoute().getGatewaySipProfile(), authorization.outboundRoute().getSipDomain());
     }
 
     private CallControlResponse toResponse(AgentActiveCall call) {

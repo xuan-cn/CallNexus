@@ -22,6 +22,8 @@ public class AiKnowledgeProperties {
     private Integer realtimeTokenTtlSeconds = 300;
     private Integer realtimeWorkerThreads = 8;
     private String realtimeTransport = "UNIMRCP";
+    private Boolean callRealtimeAsrEnabled = false;
+    private String callRealtimeAsrLegs = "BOTH";
     private UniMrcp unimrcp = new UniMrcp();
 
     @Data

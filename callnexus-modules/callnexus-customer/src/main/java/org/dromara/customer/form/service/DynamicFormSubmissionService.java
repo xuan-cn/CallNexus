@@ -8,4 +8,6 @@ public interface DynamicFormSubmissionService {
     void validateAndSave(Long templateId, FormBusinessType businessType, Long businessId, Map<String, Object> formData);
 
     Map<String, Object> getFormData(FormBusinessType businessType, Long businessId);
+
+    Long getLatestTemplateId(FormBusinessType businessType, Long businessId);
 }

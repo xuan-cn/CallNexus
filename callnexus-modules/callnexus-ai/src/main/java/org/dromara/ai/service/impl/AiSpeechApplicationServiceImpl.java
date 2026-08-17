@@ -31,6 +31,12 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.sound.sampled.AudioFileFormat;
+import javax.sound.sampled.AudioFormat;
+import javax.sound.sampled.AudioInputStream;
+import javax.sound.sampled.AudioSystem;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.net.URI;
@@ -42,7 +48,9 @@ import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -60,6 +68,8 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     private static final String STATUS_SUCCESS = "SUCCESS";
     private static final String STATUS_FAILED = "FAILED";
     private static final String SPEAKER_UNKNOWN = "UNKNOWN";
+    private static final String SPEAKER_AGENT = "AGENT";
+    private static final String SPEAKER_CUSTOMER = "CUSTOMER";
     private static final String SOURCE_RECORDING_ASR = "RECORDING_ASR";
     private static final String DEFAULT_AGENT_TEMPLATE = "工号{extension}为您服务";
     private static final Duration RECORDING_DOWNLOAD_TTL = Duration.ofHours(2);
@@ -285,15 +295,38 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         AiSpeechTask task = createAsrTask(source, provider);
         AiCallTranscript transcript = prepareTranscript(source, provider);
         try {
-            AudioClip audioClip = asrAudioClip(source, downloadRecording(source.getRecordingOssId()));
-            AsrTranscribeResult result = asrProviderRegistry.get(provider.getProviderType()).transcribe(provider,
-                new AsrTranscribeRequest(audioClip.audioBytes(), recordingFormat(source), provider.getAsrSampleRate(),
-                    BUSINESS_CALL_TRANSCRIPT, Map.of(
-                    "callSessionId", callSessionId,
-                    "businessCallId", source.getBusinessCallId(),
-                    "trimStartMs", audioClip.offsetMs()
-                )));
-            saveTranscriptSuccess(transcript, result, audioClip.offsetMs(), SPEAKER_UNKNOWN, SOURCE_RECORDING_ASR, null, null);
+            byte[] recordingBytes = downloadRecording(source.getRecordingOssId());
+            AsrProvider asrProvider = asrProviderRegistry.get(provider.getProviderType());
+            AsrTranscribeResult result;
+            List<TranscriptChannelClip> channelClips = stereoChannelClips(source, recordingBytes);
+            if (!channelClips.isEmpty()) {
+                List<TranscriptSegmentDraft> drafts = new ArrayList<>();
+                for (TranscriptChannelClip channelClip : channelClips) {
+                    AsrTranscribeResult channelResult = asrProvider.transcribe(provider,
+                        new AsrTranscribeRequest(channelClip.audioBytes(), "wav", channelClip.sampleRate(),
+                            BUSINESS_CALL_TRANSCRIPT, Map.of(
+                            "callSessionId", callSessionId,
+                            "businessCallId", source.getBusinessCallId(),
+                            "trimStartMs", channelClip.offsetMs(),
+                            "channel", channelClip.channelName(),
+                            "speaker", channelClip.speaker()
+                        )));
+                    drafts.addAll(segmentDrafts(channelResult, channelClip));
+                }
+                result = saveStereoTranscriptSuccess(transcript, drafts);
+                log.info("通话录音双声道转写完成，callSessionId={}，businessCallId={}，providerCode={}，segments={}，channels={}",
+                    source.getId(), source.getBusinessCallId(), provider.getProviderCode(), drafts.size(), channelClips.size());
+            } else {
+                AudioClip audioClip = asrAudioClip(source, recordingBytes);
+                result = asrProvider.transcribe(provider,
+                    new AsrTranscribeRequest(audioClip.audioBytes(), recordingFormat(source), provider.getAsrSampleRate(),
+                        BUSINESS_CALL_TRANSCRIPT, Map.of(
+                        "callSessionId", callSessionId,
+                        "businessCallId", source.getBusinessCallId(),
+                        "trimStartMs", audioClip.offsetMs()
+                    )));
+                saveTranscriptSuccess(transcript, result, audioClip.offsetMs(), SPEAKER_UNKNOWN, SOURCE_RECORDING_ASR, null, null);
+            }
             task.setTextContent(result.fullText());
             task.setStatus(STATUS_SUCCESS);
             task.setFinishedAt(LocalDateTime.now());
@@ -394,6 +427,93 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         appendTranscriptSegments(transcript, result, offsetMs, speaker, sourceType, legUuid, agentId);
     }
 
+    private AsrTranscribeResult saveStereoTranscriptSuccess(AiCallTranscript transcript, List<TranscriptSegmentDraft> drafts) {
+        List<TranscriptSegmentDraft> ordered = drafts.stream()
+            .filter(draft -> StringUtils.isNotBlank(draft.text()))
+            .sorted(Comparator
+                .comparing(TranscriptSegmentDraft::startMs, Comparator.nullsLast(Integer::compareTo))
+                .thenComparing(TranscriptSegmentDraft::channelOrder)
+                .thenComparing(TranscriptSegmentDraft::sentenceIndex, Comparator.nullsLast(Integer::compareTo)))
+            .toList();
+        String fullText = stereoFullText(ordered);
+        transcript.setStatus(STATUS_SUCCESS);
+        transcript.setFullText(fullText);
+        transcript.setFailureReason(null);
+        transcript.setFinishedAt(LocalDateTime.now());
+        transcriptMapper.updateById(transcript);
+        int index = 0;
+        for (TranscriptSegmentDraft draft : ordered) {
+            AiCallTranscriptSegment entity = new AiCallTranscriptSegment();
+            entity.setTranscriptId(transcript.getId());
+            entity.setCallSessionId(transcript.getCallSessionId());
+            entity.setBusinessCallId(transcript.getBusinessCallId());
+            entity.setSpeaker(StringUtils.blankToDefault(draft.speaker(), SPEAKER_UNKNOWN));
+            entity.setSourceType(SOURCE_RECORDING_ASR);
+            entity.setLegUuid(draft.legUuid());
+            entity.setAgentId(draft.agentId());
+            entity.setSentenceIndex(index++);
+            entity.setStartMs(draft.startMs());
+            entity.setEndMs(draft.endMs());
+            entity.setMessageTime(resolveMessageTime(transcript.getStartedAt(), entity.getStartMs()));
+            entity.setTextContent(draft.text());
+            entity.setFinalResult(draft.finalResult());
+            entity.setConfidence(draft.confidence());
+            transcriptSegmentMapper.insert(entity);
+        }
+        return new AsrTranscribeResult(fullText, ordered.stream()
+            .map(draft -> new AsrSegment(draft.sentenceIndex(), draft.startMs(), draft.endMs(), draft.text(),
+                draft.confidence(), draft.finalResult()))
+            .toList());
+    }
+
+    private String stereoFullText(List<TranscriptSegmentDraft> drafts) {
+        StringBuilder builder = new StringBuilder();
+        for (TranscriptSegmentDraft draft : drafts) {
+            if (!builder.isEmpty()) {
+                builder.append('\n');
+            }
+            builder.append(speakerLabel(draft.speaker())).append("：").append(draft.text().trim());
+        }
+        return builder.toString();
+    }
+
+    private String speakerLabel(String speaker) {
+        return switch (StringUtils.blankToDefault(speaker, SPEAKER_UNKNOWN)) {
+            case SPEAKER_AGENT -> "坐席";
+            case SPEAKER_CUSTOMER -> "客户";
+            default -> "未知";
+        };
+    }
+
+    private List<TranscriptSegmentDraft> segmentDrafts(AsrTranscribeResult result, TranscriptChannelClip channelClip) {
+        List<AsrSegment> segments = result == null ? null : result.segments();
+        if ((segments == null || segments.isEmpty()) && result != null && StringUtils.isNotBlank(result.fullText())) {
+            segments = List.of(new AsrSegment(0, null, null, result.fullText(), null, true));
+        }
+        if (segments == null || segments.isEmpty()) {
+            return List.of();
+        }
+        List<TranscriptSegmentDraft> drafts = new ArrayList<>();
+        for (AsrSegment segment : segments) {
+            if (StringUtils.isBlank(segment.text())) {
+                continue;
+            }
+            drafts.add(new TranscriptSegmentDraft(
+                channelClip.channelOrder(),
+                segment.sentenceIndex(),
+                offsetTime(segment.startMs(), channelClip.offsetMs()),
+                offsetTime(segment.endMs(), channelClip.offsetMs()),
+                segment.text(),
+                segment.confidence(),
+                segment.finalResult(),
+                channelClip.speaker(),
+                channelClip.legUuid(),
+                channelClip.agentId()
+            ));
+        }
+        return drafts;
+    }
+
     private void appendTranscriptSegments(AiCallTranscript transcript, AsrTranscribeResult result, int offsetMs,
                                           String speaker, String sourceType, String legUuid, Long agentId) {
         if (result.segments() != null) {
@@ -455,6 +575,77 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         } catch (Exception exception) {
             throw new ServiceException("下载录音文件失败：" + exception.getMessage());
         }
+    }
+
+    private List<TranscriptChannelClip> stereoChannelClips(AiCallRecordingSource source, byte[] audioBytes) {
+        if (!"wav".equalsIgnoreCase(recordingFormat(source))) {
+            return List.of();
+        }
+        int trimStartMs = resolveTrimStartMs(source);
+        try (AudioInputStream input = AudioSystem.getAudioInputStream(new ByteArrayInputStream(audioBytes))) {
+            AudioFormat format = input.getFormat();
+            if (format.getChannels() != 2 || format.getSampleSizeInBits() != 16
+                || format.getEncoding() != AudioFormat.Encoding.PCM_SIGNED) {
+                return List.of();
+            }
+            int frameSize = format.getFrameSize();
+            if (frameSize != 4) {
+                return List.of();
+            }
+            byte[] stereoPcm = input.readAllBytes();
+            int totalFrames = stereoPcm.length / frameSize;
+            int trimFrames = Math.min(totalFrames, Math.max(0, Math.round(format.getSampleRate() * trimStartMs / 1000F)));
+            int remainingFrames = totalFrames - trimFrames;
+            if (remainingFrames <= 0) {
+                return List.of();
+            }
+            byte[] left = new byte[remainingFrames * 2];
+            byte[] right = new byte[remainingFrames * 2];
+            int sourceOffset = trimFrames * frameSize;
+            for (int frame = 0; frame < remainingFrames; frame++) {
+                int src = sourceOffset + frame * frameSize;
+                int dst = frame * 2;
+                left[dst] = stereoPcm[src];
+                left[dst + 1] = stereoPcm[src + 1];
+                right[dst] = stereoPcm[src + 2];
+                right[dst + 1] = stereoPcm[src + 3];
+            }
+            AudioFormat monoFormat = new AudioFormat(format.getEncoding(), format.getSampleRate(), 16, 1, 2,
+                format.getFrameRate(), format.isBigEndian());
+            StereoSpeakerMapping mapping = stereoSpeakerMapping(source);
+            int sampleRate = Math.round(format.getSampleRate());
+            List<TranscriptChannelClip> clips = List.of(
+                new TranscriptChannelClip(toWav(left, monoFormat, remainingFrames), trimStartMs, sampleRate,
+                    mapping.leftSpeaker(), mapping.leftLegUuid(), mapping.leftAgentId(), "left", 0),
+                new TranscriptChannelClip(toWav(right, monoFormat, remainingFrames), trimStartMs, sampleRate,
+                    mapping.rightSpeaker(), mapping.rightLegUuid(), mapping.rightAgentId(), "right", 1)
+            );
+            log.info("通话录音识别为双声道 WAV，callSessionId={}，businessCallId={}，trimStartMs={}，sampleRate={}，frames={}",
+                source.getId(), source.getBusinessCallId(), trimStartMs, sampleRate, remainingFrames);
+            return clips;
+        } catch (Exception exception) {
+            log.warn("通话录音双声道拆分失败，降级整段识别，callSessionId={}，businessCallId={}，error={}",
+                source.getId(), source.getBusinessCallId(), exception.getMessage());
+            return List.of();
+        }
+    }
+
+    private byte[] toWav(byte[] pcm, AudioFormat format, int frames) throws Exception {
+        try (ByteArrayInputStream input = new ByteArrayInputStream(pcm);
+             AudioInputStream audioInputStream = new AudioInputStream(input, format, frames);
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            AudioSystem.write(audioInputStream, AudioFileFormat.Type.WAVE, output);
+            return output.toByteArray();
+        }
+    }
+
+    private StereoSpeakerMapping stereoSpeakerMapping(AiCallRecordingSource source) {
+        Long agentId = source.getOwnerAgentId() == null ? source.getAgentId() : source.getOwnerAgentId();
+        String agentLegUuid = source.getOwnerAgentLegUuid();
+        if ("INBOUND".equalsIgnoreCase(source.getDirection()) && agentId != null) {
+            return new StereoSpeakerMapping(SPEAKER_CUSTOMER, null, null, SPEAKER_AGENT, agentLegUuid, agentId);
+        }
+        return new StereoSpeakerMapping(SPEAKER_UNKNOWN, null, null, SPEAKER_UNKNOWN, null, null);
     }
 
     private AudioClip asrAudioClip(AiCallRecordingSource source, byte[] audioBytes) {
@@ -544,6 +735,19 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     }
 
     private record AudioClip(byte[] audioBytes, int offsetMs) {
+    }
+
+    private record TranscriptChannelClip(byte[] audioBytes, int offsetMs, int sampleRate, String speaker,
+                                         String legUuid, Long agentId, String channelName, int channelOrder) {
+    }
+
+    private record StereoSpeakerMapping(String leftSpeaker, String leftLegUuid, Long leftAgentId,
+                                        String rightSpeaker, String rightLegUuid, Long rightAgentId) {
+    }
+
+    private record TranscriptSegmentDraft(int channelOrder, Integer sentenceIndex, Integer startMs, Integer endMs,
+                                          String text, java.math.BigDecimal confidence, boolean finalResult,
+                                          String speaker, String legUuid, Long agentId) {
     }
 
     private Long storeGeneratedMedia(String assetName, MediaAssetCategory category, String text, AiSpeechProvider provider,

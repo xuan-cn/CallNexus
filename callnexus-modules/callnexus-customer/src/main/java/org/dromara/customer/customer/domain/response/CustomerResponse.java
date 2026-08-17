@@ -16,4 +16,13 @@ public class CustomerResponse {
     private LocalDateTime createTime;
     private List<CustomerPhoneResponse> phones;
     private Map<String, Object> formData;
+    private Long assignmentId;
+    private String customerType;
+    private String sourceChannel;
+    private String tags;
+    private Long skillGroupId;
+    private Long agentId;
+    private String assignmentSource;
+    private Long importBatchId;
+    private String assignmentRemark;
 }

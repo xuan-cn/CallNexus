@@ -6,6 +6,7 @@ import org.dromara.call.domain.OutboundRoute;
 import org.dromara.call.domain.CallOriginateContext;
 import org.dromara.call.service.TelephonyCommandGateway;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.resource.gateway.support.OutboundGatewayDialString;
 import org.springframework.stereotype.Component;
 
 import java.io.BufferedInputStream;
@@ -58,7 +59,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + ",api_hangup_hook='bg_system /opt/callnexus/bin/upload-recording.sh " + businessCallId
             + " /var/lib/freeswitch/recordings/" + callId + ".wav'"
             + ",hangup_after_bridge=true}";
-        String destinationDialString = destinationDialString(destination, endpoint.sipDomain(), outboundRoute,
+        String destinationDialString = destinationDialString(endpoint, destination, endpoint.sipDomain(), outboundRoute,
             businessCallId, agentExtension);
         String command = "bgapi originate " + variables + userDialString(agentExtension, endpoint.sipDomain())
             + " &bridge(" + destinationDialString + ")";
@@ -177,6 +178,26 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         requireDialValue(value);
         sendCommand(endpoint, "api uuid_setvar " + callId + " " + name + " " + value);
         log.info("FreeSWITCH 通话变量已设置，callId={}，name={}，value={}", callId, name, value);
+    }
+
+    @Override
+    public void startSpeechRecognition(EslEndpoint endpoint, String callId, String profile, String grammar, String detectScript) {
+        requireCallId(callId);
+        requireSafeSpeechValue(profile, "profile");
+        requireSafeSpeechValue(grammar, "grammar");
+        requireSafeSpeechValue(detectScript, "detectScript");
+        sendCommand(endpoint, "api uuid_setvar " + callId + " fire_asr_events true");
+        sendCommand(endpoint, "api uuid_setvar " + callId + " callnexus_unimrcp_profile " + profile);
+        sendCommand(endpoint, "api uuid_setvar " + callId + " callnexus_unimrcp_grammar " + grammar);
+        sendCommand(endpoint, "api luarun " + detectScript + " " + callId);
+        log.info("FreeSWITCH speech recognition command accepted, callId={}, profile={}", callId, profile);
+    }
+
+    @Override
+    public void stopSpeechRecognition(EslEndpoint endpoint, String callId) {
+        requireCallId(callId);
+        sendCommand(endpoint, "api uuid_detect_speech " + callId + " stop");
+        log.info("FreeSWITCH speech recognition stop command accepted, callId={}", callId);
     }
 
     @Override
@@ -641,6 +662,13 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         }
     }
 
+    private void requireSafeSpeechValue(String value, String field) {
+        if (value == null || value.isBlank() || value.contains("\r") || value.contains("\n")
+            || value.contains(";") || value.contains("&") || value.contains("|")) {
+            throw new ServiceException("FreeSWITCH speech parameter invalid: " + field);
+        }
+    }
+
     private void requireDtmfDigits(String digits) {
         if (digits == null || !digits.matches("^[0-9A-Da-d*#]{1,32}$")) {
             throw new ServiceException("DTMF 按键不合法");
@@ -655,7 +683,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         return "[absolute_codec_string=" + INTERNAL_ENDPOINT_CODEC + "]" + userDialString(extension, domain);
     }
 
-    private String destinationDialString(String destination, String domain, OutboundRoute outboundRoute,
+    private String destinationDialString(EslEndpoint endpoint, String destination, String domain, OutboundRoute outboundRoute,
                                          String businessCallId, String originalCaller) {
         if (outboundRoute == null || !outboundRoute.isExternal()) {
             return "[absolute_codec_string=" + INTERNAL_ENDPOINT_CODEC
@@ -676,7 +704,23 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + ",effective_caller_id_name=" + callerIdNumber
             + ",absolute_codec_string=" + OUTBOUND_GATEWAY_CODEC
             + ",codec_string=" + OUTBOUND_GATEWAY_CODEC + "}";
-        return originateVariables + "sofia/gateway/" + outboundRoute.getGatewayCode() + "/" + destination;
+        if (OutboundGatewayDialString.DEVICE_REGISTER.equals(outboundRoute.getGatewayAccessMode())) {
+            String identity = outboundRoute.getRegisteredIdentity();
+            String sipProfile = outboundRoute.getGatewaySipProfile();
+            String sipDomain = outboundRoute.getSipDomain();
+            requireDialValue(identity);
+            requireDialValue(sipProfile);
+            requireDialValue(sipDomain);
+            String contact = executeApiCommandForResult(endpoint,
+                "api eval ${sofia_contact(" + sipProfile + "/" + identity + "@" + sipDomain + ")}");
+            String deviceDialString = OutboundGatewayDialString.buildFromRegisteredContact(contact, destination);
+            log.info("设备注册线路实时路由已解析，gatewayCode={}，registeredIdentity={}，destination={}，contact={}，dialString={}",
+                outboundRoute.getGatewayCode(), identity, destination, contact, deviceDialString);
+            return originateVariables + deviceDialString;
+        }
+        return originateVariables + OutboundGatewayDialString.build(outboundRoute.getGatewayAccessMode(),
+            outboundRoute.getGatewayCode(), outboundRoute.getRegisteredIdentity(), outboundRoute.getGatewaySipProfile(),
+            outboundRoute.getSipDomain(), destination);
     }
 
     private String optionalVariable(String name, Long value) {

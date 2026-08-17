@@ -19,11 +19,14 @@ public class FreeSwitchGateway extends TenantEntity {
     private String gatewayCode;
     private String gatewayName;
     private String direction;
+    private String accessMode;
     private String proxy;
     private String realm;
     private String username;
     @EncryptField
     private String password;
+    private String registeredIdentity;
+    private String sipProfile;
     private Boolean registerEnabled;
     private String transport;
     private String callerIdNumber;
@@ -42,6 +45,6 @@ public class FreeSwitchGateway extends TenantEntity {
     private Boolean enabled;
     @Version
     private Integer version;
-    @TableLogic
-    private Boolean deleted;
+    @TableLogic(value = "0", delval = "id")
+    private Long deleted;
 }

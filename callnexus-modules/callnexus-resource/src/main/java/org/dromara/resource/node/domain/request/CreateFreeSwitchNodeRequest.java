@@ -31,4 +31,15 @@ public class CreateFreeSwitchNodeRequest {
     @NotBlank
     @Size(max = 128)
     private String eslPassword;
+    @Pattern(regexp = "^[A-Za-z0-9_-]{1,32}$")
+    private String sipProfileName;
+    @Size(max = 128)
+    private String sipIp;
+    @Size(max = 128)
+    private String rtpIp;
+    private Boolean autoNatEnabled;
+    @Size(max = 128)
+    private String extSipIp;
+    @Size(max = 128)
+    private String extRtpIp;
 }

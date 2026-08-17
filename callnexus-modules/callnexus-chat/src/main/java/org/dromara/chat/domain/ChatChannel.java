@@ -17,6 +17,8 @@ public class ChatChannel extends TenantEntity {
     private String channelKey;
     private String channelName;
     private Long skillGroupId;
+    private Boolean aiEnabled;
+    private Long aiAgentId;
     private String welcomeMessage;
     private String offlineMessage;
     private String allowedOrigins;

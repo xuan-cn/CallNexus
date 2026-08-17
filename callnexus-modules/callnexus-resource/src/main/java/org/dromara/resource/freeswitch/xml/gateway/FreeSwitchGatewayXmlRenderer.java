@@ -33,6 +33,41 @@ public class FreeSwitchGatewayXmlRenderer {
             """.formatted(users);
     }
 
+    public String renderRegisteredDevice(FreeSwitchGatewayDirectoryResponse gateway) {
+        String domain = FreeSwitchXmlRenderer.escape(gateway.getDomain());
+        String identity = FreeSwitchXmlRenderer.escape(gateway.getRegisteredIdentity());
+        String authUsername = FreeSwitchXmlRenderer.escape(gateway.getUsername());
+        String password = FreeSwitchXmlRenderer.escape(gateway.getPassword());
+        return """
+            <document type="freeswitch/xml">
+              <section name="directory">
+                <domain name="%s">
+                  <params>
+                    <param name="dial-string" value="{sip_invite_domain=${dialed_domain},presence_id=%s@${dialed_domain}}${sofia_contact(%s@${dialed_domain})}"/>
+                  </params>
+                  <groups>
+                    <group name="callnexus-lines">
+                      <users>
+                        <user id="%s" number-alias="%s">
+                          <params>
+                            <param name="password" value="%s"/>
+                          </params>
+                          <variables>
+                            <variable name="user_context" value="public"/>
+                            <variable name="callnexus_gateway_code" value="%s"/>
+                            <variable name="callnexus_endpoint_type" value="REGISTERED_DEVICE"/>
+                          </variables>
+                        </user>
+                      </users>
+                    </group>
+                  </groups>
+                </domain>
+              </section>
+            </document>
+            """.formatted(domain, identity, identity, authUsername, identity, password,
+                FreeSwitchXmlRenderer.escape(gateway.getGatewayCode()));
+    }
+
     private void appendGatewayUser(StringBuilder xml, FreeSwitchGatewayDirectoryResponse gateway) {
         String gatewayCode = FreeSwitchXmlRenderer.escape(gateway.getGatewayCode());
         xml.append("            <user id=\"").append(gatewayCode).append("\">\n");
@@ -59,9 +94,6 @@ public class FreeSwitchGatewayXmlRenderer {
         appendParam(xml, "context", gateway.getDialplanContext());
         xml.append("                </gateway>\n");
         xml.append("              </gateways>\n");
-        xml.append("              <params>\n");
-        appendParam(xml, "password", "any");
-        xml.append("              </params>\n");
         xml.append("            </user>\n");
     }
 

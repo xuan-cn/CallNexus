@@ -2,13 +2,23 @@ package org.dromara.customer.customer.service.impl;
 
 import lombok.RequiredArgsConstructor;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.dromara.agent.domain.Agent;
+import org.dromara.agent.domain.SkillGroupMember;
+import org.dromara.agent.domain.SkillGroup;
+import org.dromara.agent.mapper.AgentMapper;
+import org.dromara.agent.mapper.SkillGroupMemberMapper;
+import org.dromara.agent.mapper.SkillGroupMapper;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.customer.customer.domain.Customer;
+import org.dromara.customer.customer.domain.CustomerAssignment;
 import org.dromara.customer.customer.domain.CustomerFollowUp;
 import org.dromara.customer.customer.domain.CustomerPhone;
+import org.dromara.customer.customer.domain.CustomerImportRow;
+import org.dromara.customer.customer.domain.request.CustomerAssignmentRequest;
 import org.dromara.customer.customer.domain.request.CreateCustomerRequest;
 import org.dromara.customer.customer.domain.request.CustomerImportData;
 import org.dromara.customer.customer.domain.request.CustomerPhoneRequest;
@@ -18,8 +28,10 @@ import org.dromara.customer.customer.domain.response.CustomerFollowUpResponse;
 import org.dromara.customer.customer.domain.response.CustomerPhoneResponse;
 import org.dromara.customer.customer.domain.response.CustomerResponse;
 import org.dromara.customer.customer.mapper.CustomerFollowUpMapper;
+import org.dromara.customer.customer.mapper.CustomerAssignmentMapper;
 import org.dromara.customer.customer.mapper.CustomerMapper;
 import org.dromara.customer.customer.mapper.CustomerPhoneMapper;
+import org.dromara.customer.customer.mapper.CustomerImportRowMapper;
 import org.dromara.customer.customer.service.CustomerApplicationService;
 import org.dromara.customer.customer.service.CustomerPhoneNormalizer;
 import org.dromara.customer.form.domain.FormBusinessType;
@@ -34,6 +46,11 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Objects;
+import java.util.Collections;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -41,18 +58,46 @@ import java.util.stream.Collectors;
 public class CustomerApplicationServiceImpl implements CustomerApplicationService {
     private final CustomerMapper customerMapper;
     private final CustomerPhoneMapper customerPhoneMapper;
+    private final CustomerImportRowMapper customerImportRowMapper;
+    private final CustomerAssignmentMapper customerAssignmentMapper;
     private final CustomerFollowUpMapper followUpMapper;
+    private final AgentMapper agentMapper;
+    private final SkillGroupMapper skillGroupMapper;
+    private final SkillGroupMemberMapper skillGroupMemberMapper;
     private final CustomerPhoneNormalizer phoneNormalizer;
     private final DynamicFormSubmissionService formSubmissionService;
     private final CallBusinessAssociationService callBusinessAssociationService;
 
     @Override
     public TableDataInfo<CustomerResponse> page(CustomerPageQuery query, PageQuery pageQuery) {
+        CustomerPageQuery safeQuery = query == null ? new CustomerPageQuery() : query;
+        boolean unassignedOnly = isAssignmentState(safeQuery, "UNASSIGNED");
+        if (unassignedOnly && (!isAssignmentAdmin() || hasOwnerFilter(safeQuery))) {
+            return new TableDataInfo<>(List.of(), 0L);
+        }
+        Set<Long> importCustomerIds = resolveImportCustomerIds(safeQuery);
+        if (importCustomerIds != null && importCustomerIds.isEmpty()) {
+            return new TableDataInfo<>(List.of(), 0L);
+        }
+        Set<Long> assignmentCustomerIds = unassignedOnly ? loadAllActiveAssignedCustomerIds() : resolveAssignmentCustomerIds(safeQuery);
+        if (!unassignedOnly && assignmentCustomerIds != null && assignmentCustomerIds.isEmpty()) {
+            return new TableDataInfo<>(List.of(), 0L);
+        }
         LambdaQueryWrapper<Customer> wrapper = new LambdaQueryWrapper<Customer>()
-            .like(query.getCustomerName() != null && !query.getCustomerName().isBlank(), Customer::getCustomerName, query.getCustomerName())
+            .like(safeQuery.getCustomerName() != null && !safeQuery.getCustomerName().isBlank(), Customer::getCustomerName, safeQuery.getCustomerName())
             .orderByDesc(Customer::getCreateTime);
-        if (query.getPrimaryPhone() != null && !query.getPrimaryPhone().isBlank()) {
-            String keyword = phoneNormalizer.clean(query.getPrimaryPhone());
+        if (importCustomerIds != null) {
+            wrapper.in(Customer::getId, importCustomerIds);
+        }
+        if (unassignedOnly) {
+            if (!assignmentCustomerIds.isEmpty()) {
+                wrapper.notIn(Customer::getId, assignmentCustomerIds);
+            }
+        } else if (assignmentCustomerIds != null) {
+            wrapper.in(Customer::getId, assignmentCustomerIds);
+        }
+        if (safeQuery.getPrimaryPhone() != null && !safeQuery.getPrimaryPhone().isBlank()) {
+            String keyword = phoneNormalizer.clean(safeQuery.getPrimaryPhone());
             Set<Long> customerIds = customerPhoneMapper.selectList(new LambdaQueryWrapper<CustomerPhone>()
                     .like(CustomerPhone::getNormalizedPhone, keyword))
                 .stream().map(CustomerPhone::getCustomerId).collect(Collectors.toSet());
@@ -64,9 +109,11 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
             }
         }
         Page<Customer> page = customerMapper.selectPage(pageQuery.build(), wrapper);
-        Map<Long, List<CustomerPhoneResponse>> phonesByCustomer = loadPhones(page.getRecords().stream().map(Customer::getId).toList());
+        List<Long> customerIds = page.getRecords().stream().map(Customer::getId).toList();
+        Map<Long, List<CustomerPhoneResponse>> phonesByCustomer = loadPhones(customerIds);
+        Map<Long, CustomerAssignment> assignmentsByCustomer = loadActiveAssignments(customerIds);
         return new TableDataInfo<>(page.getRecords().stream()
-            .map(customer -> toResponse(customer, phonesByCustomer.get(customer.getId())))
+            .map(customer -> toResponse(customer, phonesByCustomer.get(customer.getId()), assignmentsByCustomer.get(customer.getId())))
             .toList(), page.getTotal());
     }
 
@@ -112,6 +159,75 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         formSubmissionService.validateAndSave(request.getTemplateId(), FormBusinessType.CUSTOMER, customer.getId(), request.getFormData());
         callBusinessAssociationService.associateCustomer(request.getSourceCallId(), customer.getId());
         return customer.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void assign(CustomerAssignmentRequest request) {
+        List<Long> customerIds = request.getCustomerIds() == null ? List.of() : request.getCustomerIds().stream()
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        if (customerIds.isEmpty()) {
+            throw new ServiceException("请选择需要分配的客户");
+        }
+        validateAssignmentTarget(request);
+        customerIds.forEach(this::requireCustomer);
+        Map<Long, CustomerAssignment> previousAssignments = new HashMap<>();
+        for (int start = 0; start < customerIds.size(); start += 500) {
+            List<Long> part = customerIds.subList(start, Math.min(start + 500, customerIds.size()));
+            customerAssignmentMapper.selectList(new LambdaQueryWrapper<CustomerAssignment>()
+                    .in(CustomerAssignment::getCustomerId, part)
+                    .eq(CustomerAssignment::getEnabled, true)
+                    .orderByDesc(CustomerAssignment::getCreateTime))
+                .forEach(item -> previousAssignments.putIfAbsent(item.getCustomerId(), item));
+            customerAssignmentMapper.update(null, new LambdaUpdateWrapper<CustomerAssignment>()
+                .set(CustomerAssignment::getEnabled, false)
+                .in(CustomerAssignment::getCustomerId, part)
+                .eq(CustomerAssignment::getEnabled, true));
+        }
+        for (Long customerId : customerIds) {
+            CustomerAssignment previous = previousAssignments.get(customerId);
+            CustomerAssignment assignment = new CustomerAssignment();
+            assignment.setCustomerId(customerId);
+            assignment.setCustomerType(preferRequestValue(request.getCustomerType(), previous == null ? null : previous.getCustomerType()));
+            assignment.setSourceChannel(preferRequestValue(request.getSourceChannel(), previous == null ? null : previous.getSourceChannel()));
+            assignment.setTags(preferRequestValue(request.getTags(), previous == null ? null : previous.getTags()));
+            assignment.setSkillGroupId(request.getSkillGroupId());
+            assignment.setAgentId(request.getAgentId());
+            assignment.setAssignmentSource("MANUAL");
+            assignment.setRemark(preferRequestValue(request.getRemark(), previous == null ? null : previous.getRemark()));
+            assignment.setEnabled(true);
+            customerAssignmentMapper.insert(assignment);
+        }
+    }
+
+    private String preferRequestValue(String requested, String current) {
+        String cleaned = cleanText(requested);
+        return cleaned == null ? cleanText(current) : cleaned;
+    }
+
+    private void validateAssignmentTarget(CustomerAssignmentRequest request) {
+        if (request.getSkillGroupId() == null) {
+            throw new ServiceException("请选择归属技能组");
+        }
+        SkillGroup group = skillGroupMapper.selectById(request.getSkillGroupId());
+        if (group == null || !Boolean.TRUE.equals(group.getEnabled())) {
+            throw new ServiceException("归属技能组不存在或已停用");
+        }
+        if (request.getAgentId() == null) {
+            return;
+        }
+        Agent agent = agentMapper.selectById(request.getAgentId());
+        if (agent == null || !Boolean.TRUE.equals(agent.getEnabled())) {
+            throw new ServiceException("归属坐席不存在或已停用");
+        }
+        Long memberCount = skillGroupMemberMapper.selectCount(new LambdaQueryWrapper<SkillGroupMember>()
+            .eq(SkillGroupMember::getSkillGroupId, request.getSkillGroupId())
+            .eq(SkillGroupMember::getAgentId, request.getAgentId()));
+        if (memberCount == null || memberCount == 0) {
+            throw new ServiceException("所选坐席不属于当前技能组");
+        }
     }
 
     @Override
@@ -337,17 +453,22 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
 
     private CustomerResponse toDetailResponse(Customer customer) {
         CustomerResponse response = toResponse(customer);
-        response.setFormData(customer.getTemplateId() == null
+        Long templateId = customer.getTemplateId();
+        if (templateId == null) {
+            templateId = formSubmissionService.getLatestTemplateId(FormBusinessType.CUSTOMER, customer.getId());
+            response.setTemplateId(templateId);
+        }
+        response.setFormData(templateId == null
             ? Map.of()
             : formSubmissionService.getFormData(FormBusinessType.CUSTOMER, customer.getId()));
         return response;
     }
 
     private CustomerResponse toResponse(Customer customer) {
-        return toResponse(customer, listPhoneResponses(customer.getId()));
+        return toResponse(customer, listPhoneResponses(customer.getId()), loadActiveAssignment(customer.getId()));
     }
 
-    private CustomerResponse toResponse(Customer customer, List<CustomerPhoneResponse> phones) {
+    private CustomerResponse toResponse(Customer customer, List<CustomerPhoneResponse> phones, CustomerAssignment assignment) {
         CustomerResponse response = new CustomerResponse();
         response.setId(customer.getId());
         response.setPrimaryPhone(customer.getPrimaryPhone());
@@ -358,7 +479,174 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
             .atZone(ZoneId.systemDefault())
             .toLocalDateTime());
         response.setPhones(phones == null || phones.isEmpty() ? legacyPhone(customer) : phones);
+        Long templateId = customer.getTemplateId();
+        if (templateId != null) {
+            response.setFormData(formSubmissionService.getFormData(FormBusinessType.CUSTOMER, customer.getId()));
+        }
+        applyAssignment(response, assignment);
         return response;
+    }
+
+    private void applyAssignment(CustomerResponse response, CustomerAssignment assignment) {
+        if (assignment == null) {
+            return;
+        }
+        response.setAssignmentId(assignment.getId());
+        response.setCustomerType(assignment.getCustomerType());
+        response.setSourceChannel(assignment.getSourceChannel());
+        response.setTags(assignment.getTags());
+        response.setSkillGroupId(assignment.getSkillGroupId());
+        response.setAgentId(assignment.getAgentId());
+        response.setAssignmentSource(assignment.getAssignmentSource());
+        response.setImportBatchId(assignment.getImportBatchId());
+        response.setAssignmentRemark(assignment.getRemark());
+    }
+
+    private CustomerAssignment loadActiveAssignment(Long customerId) {
+        return customerAssignmentMapper.selectOne(new LambdaQueryWrapper<CustomerAssignment>()
+            .eq(CustomerAssignment::getCustomerId, customerId)
+            .eq(CustomerAssignment::getEnabled, true)
+            .orderByDesc(CustomerAssignment::getCreateTime)
+            .last("LIMIT 1"));
+    }
+
+    private Map<Long, CustomerAssignment> loadActiveAssignments(List<Long> customerIds) {
+        if (customerIds.isEmpty()) {
+            return Map.of();
+        }
+        return customerAssignmentMapper.selectList(new LambdaQueryWrapper<CustomerAssignment>()
+                .in(CustomerAssignment::getCustomerId, customerIds)
+                .eq(CustomerAssignment::getEnabled, true)
+                .orderByDesc(CustomerAssignment::getCreateTime))
+            .stream()
+            .collect(Collectors.toMap(CustomerAssignment::getCustomerId, Function.identity(), (first, ignored) -> first));
+    }
+
+    private Set<Long> resolveAssignmentCustomerIds(CustomerPageQuery query) {
+        LambdaQueryWrapper<CustomerAssignment> wrapper = activeAssignmentQuery();
+        boolean restricted = applyVisibleScope(wrapper);
+        boolean filtered = applyAssignmentFilters(wrapper, query);
+        if (isAssignmentState(query, "ASSIGNED")) {
+            applyOwnerAssignedScope(wrapper);
+            filtered = true;
+        }
+        if (!restricted && !filtered) {
+            return null;
+        }
+        return customerAssignmentMapper.selectList(wrapper).stream()
+            .map(CustomerAssignment::getCustomerId)
+            .collect(Collectors.toSet());
+    }
+
+    private LambdaQueryWrapper<CustomerAssignment> activeAssignmentQuery() {
+        return new LambdaQueryWrapper<CustomerAssignment>()
+            .eq(CustomerAssignment::getEnabled, true);
+    }
+
+    private boolean applyVisibleScope(LambdaQueryWrapper<CustomerAssignment> wrapper) {
+        if (isAssignmentAdmin()) {
+            return false;
+        }
+        Long userId = LoginHelper.getUserId();
+        if (userId == null) {
+            wrapper.eq(CustomerAssignment::getCustomerId, -1L);
+            return true;
+        }
+        List<Agent> agents = agentMapper.selectList(new LambdaQueryWrapper<Agent>()
+            .eq(Agent::getUserId, userId)
+            .eq(Agent::getEnabled, true));
+        Set<Long> agentIds = agents.stream().map(Agent::getId).collect(Collectors.toSet());
+        if (agentIds.isEmpty()) {
+            wrapper.eq(CustomerAssignment::getCustomerId, -1L);
+            return true;
+        }
+        Set<Long> skillGroupIds = skillGroupMemberMapper.selectList(new LambdaQueryWrapper<SkillGroupMember>()
+                .in(SkillGroupMember::getAgentId, agentIds))
+            .stream()
+            .map(SkillGroupMember::getSkillGroupId)
+            .collect(Collectors.toSet());
+        wrapper.and(scope -> {
+            scope.in(CustomerAssignment::getAgentId, agentIds);
+            if (!skillGroupIds.isEmpty()) {
+                scope.or().in(CustomerAssignment::getSkillGroupId, skillGroupIds);
+            }
+        });
+        return true;
+    }
+
+    private boolean isAssignmentAdmin() {
+        return LoginHelper.isSuperAdmin() || LoginHelper.isTenantAdmin();
+    }
+
+    private boolean isAssignmentState(CustomerPageQuery query, String state) {
+        return query != null && hasText(query.getAssignmentState()) && state.equalsIgnoreCase(query.getAssignmentState().trim());
+    }
+
+    private boolean hasOwnerFilter(CustomerPageQuery query) {
+        return query != null && (query.getSkillGroupId() != null || query.getAgentId() != null);
+    }
+
+    private Set<Long> resolveImportCustomerIds(CustomerPageQuery query) {
+        if (query.getImportTaskId() == null && query.getImportBatchId() == null) {
+            return null;
+        }
+        return customerImportRowMapper.selectList(new LambdaQueryWrapper<CustomerImportRow>()
+                .eq(query.getImportTaskId() != null, CustomerImportRow::getTaskId, query.getImportTaskId())
+                .eq(query.getImportBatchId() != null, CustomerImportRow::getBatchId, query.getImportBatchId())
+                .eq(CustomerImportRow::getStatus, "IMPORTED")
+                .isNotNull(CustomerImportRow::getCustomerId))
+            .stream()
+            .map(CustomerImportRow::getCustomerId)
+            .collect(Collectors.toSet());
+    }
+
+    private Set<Long> loadAllActiveAssignedCustomerIds() {
+        return customerAssignmentMapper.selectList(ownerAssignedQuery()).stream()
+            .map(CustomerAssignment::getCustomerId)
+            .collect(Collectors.toSet());
+    }
+
+    private LambdaQueryWrapper<CustomerAssignment> ownerAssignedQuery() {
+        return applyOwnerAssignedScope(activeAssignmentQuery());
+    }
+
+    private LambdaQueryWrapper<CustomerAssignment> applyOwnerAssignedScope(LambdaQueryWrapper<CustomerAssignment> wrapper) {
+        return wrapper.and(scope -> scope.isNotNull(CustomerAssignment::getSkillGroupId)
+            .or()
+            .isNotNull(CustomerAssignment::getAgentId));
+    }
+
+    private boolean applyAssignmentFilters(LambdaQueryWrapper<CustomerAssignment> wrapper, CustomerPageQuery query) {
+        boolean filtered = false;
+        if (query.getSkillGroupId() != null) {
+            wrapper.eq(CustomerAssignment::getSkillGroupId, query.getSkillGroupId());
+            filtered = true;
+        }
+        if (query.getAgentId() != null) {
+            wrapper.eq(CustomerAssignment::getAgentId, query.getAgentId());
+            filtered = true;
+        }
+        if (hasText(query.getCustomerType())) {
+            wrapper.like(CustomerAssignment::getCustomerType, query.getCustomerType().trim());
+            filtered = true;
+        }
+        if (hasText(query.getSourceChannel())) {
+            wrapper.like(CustomerAssignment::getSourceChannel, query.getSourceChannel().trim());
+            filtered = true;
+        }
+        if (hasText(query.getTags())) {
+            wrapper.like(CustomerAssignment::getTags, query.getTags().trim());
+            filtered = true;
+        }
+        return filtered;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private String cleanText(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     private LambdaQueryWrapper<CustomerPhone> phoneQuery(Long customerId) {

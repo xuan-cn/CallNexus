@@ -19,6 +19,12 @@ public class FreeSwitchNodeResponse {
     private LocalDateTime agentLastHeartbeat;
     private String agentVersion;
     private String mediaRootPath;
+    private String sipProfileName;
+    private String sipIp;
+    private String rtpIp;
+    private Boolean autoNatEnabled;
+    private String extSipIp;
+    private String extRtpIp;
     private Integer version;
     private Date createTime;
 }

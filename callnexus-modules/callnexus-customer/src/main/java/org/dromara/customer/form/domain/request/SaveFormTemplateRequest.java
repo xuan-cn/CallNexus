@@ -53,6 +53,7 @@ public class SaveFormTemplateRequest {
         private String placeholder;
         @Size(max = 1000)
         private String validationRules;
+        private Boolean listVisible;
         @Valid
         private List<OptionRequest> options = new ArrayList<>();
     }

@@ -20,6 +20,12 @@ public class FreeSwitchGatewayRuntimeSyncServiceImpl implements FreeSwitchGatewa
     private final FreeSwitchEslCommandGateway commandGateway;
 
     @Override
+    public void refreshDirectory(Long nodeId) {
+        execute(endpoint(nodeId), "api reloadxml");
+        log.info("FreeSWITCH 动态目录已刷新，nodeId={}", nodeId);
+    }
+
+    @Override
     public void addGateway(Long nodeId, String gatewayCode) {
         EslEndpoint endpoint = endpoint(nodeId);
         log.info("开始同步 FreeSWITCH 网关运行态，操作=新增，nodeId={}，profile={}，gatewayCode={}", nodeId, PROFILE, gatewayCode);

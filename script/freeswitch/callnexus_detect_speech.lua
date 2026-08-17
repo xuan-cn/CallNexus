@@ -13,7 +13,8 @@ local profile = currentSession:getVariable("callnexus_unimrcp_profile")
 local grammar = currentSession:getVariable("callnexus_unimrcp_grammar")
 
 if profile == nil or profile == "" then
-    profile = "callnexus-mrcp-v2"
+    -- This is the FreeSWITCH ASR module name. The MRCP profile is selected by mod_unimrcp default-asr-profile.
+    profile = "unimrcp"
 end
 
 if grammar == nil or grammar == "" then

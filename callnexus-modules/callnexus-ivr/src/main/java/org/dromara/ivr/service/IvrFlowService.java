@@ -13,12 +13,12 @@ import org.dromara.ivr.graph.IvrGraphParser;
 import org.dromara.ivr.graph.IvrGraphValidator;
 import org.dromara.ivr.mapper.IvrFlowMapper;
 import org.dromara.ivr.mapper.IvrFlowVersionMapper;
+import org.dromara.resource.inbound.domain.InboundDidEntry;
+import org.dromara.resource.inbound.mapper.InboundDidEntryMapper;
 import org.dromara.resource.node.group.domain.FreeSwitchNodeGroup;
 import org.dromara.resource.node.group.domain.FreeSwitchNodeGroupMember;
 import org.dromara.resource.node.group.mapper.FreeSwitchNodeGroupMapper;
 import org.dromara.resource.node.group.mapper.FreeSwitchNodeGroupMemberMapper;
-import org.dromara.resource.phone.domain.PhoneNumber;
-import org.dromara.resource.phone.mapper.PhoneNumberMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,7 +38,7 @@ public class IvrFlowService {
     private final FreeSwitchNodeGroupMemberMapper memberMapper;
     private final IvrGraphParser graphParser;
     private final IvrGraphValidator graphValidator;
-    private final PhoneNumberMapper phoneNumberMapper;
+    private final InboundDidEntryMapper inboundDidEntryMapper;
 
     public List<IvrFlowResponse> list() {
         return flowMapper.selectList(new LambdaQueryWrapper<IvrFlow>().orderByAsc(IvrFlow::getFlowCode))
@@ -199,9 +199,9 @@ public class IvrFlowService {
     }
 
     private void ensureNotReferenced(Long flowId, String message) {
-        if (phoneNumberMapper.exists(new LambdaQueryWrapper<PhoneNumber>()
-            .eq(PhoneNumber::getRouteType, "IVR")
-            .eq(PhoneNumber::getRouteTarget, String.valueOf(flowId)))) {
+        if (inboundDidEntryMapper.exists(new LambdaQueryWrapper<InboundDidEntry>()
+            .eq(InboundDidEntry::getRouteTargetType, "IVR")
+            .eq(InboundDidEntry::getRouteTargetId, String.valueOf(flowId)))) {
             throw new ServiceException(message);
         }
     }

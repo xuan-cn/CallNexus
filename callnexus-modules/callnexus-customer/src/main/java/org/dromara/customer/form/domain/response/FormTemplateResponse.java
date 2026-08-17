@@ -30,6 +30,7 @@ public class FormTemplateResponse {
         private String defaultValue;
         private String placeholder;
         private String validationRules;
+        private Boolean listVisible;
         private List<OptionResponse> options = new ArrayList<>();
     }
 

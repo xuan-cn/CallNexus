@@ -70,14 +70,24 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
     @Override
     @SuppressWarnings("unchecked")
     public Map<String, Object> getFormData(FormBusinessType businessType, Long businessId) {
-        FormSubmission submission = submissionMapper.selectOne(new LambdaQueryWrapper<FormSubmission>()
+        FormSubmission submission = selectLatestSubmission(businessType, businessId);
+        if (submission == null) return Map.of();
+        Map<String, Object> data = JsonUtils.parseObject(submission.getFormData(), Map.class);
+        return data == null ? Map.of() : data;
+    }
+
+    @Override
+    public Long getLatestTemplateId(FormBusinessType businessType, Long businessId) {
+        FormSubmission submission = selectLatestSubmission(businessType, businessId);
+        return submission == null ? null : submission.getTemplateId();
+    }
+
+    private FormSubmission selectLatestSubmission(FormBusinessType businessType, Long businessId) {
+        return submissionMapper.selectOne(new LambdaQueryWrapper<FormSubmission>()
             .eq(FormSubmission::getBusinessType, businessType)
             .eq(FormSubmission::getBusinessId, businessId)
             .orderByDesc(FormSubmission::getCreateTime)
             .last("LIMIT 1"));
-        if (submission == null) return Map.of();
-        Map<String, Object> data = JsonUtils.parseObject(submission.getFormData(), Map.class);
-        return data == null ? Map.of() : data;
     }
 
     private void validateField(FormField field, Object value) {

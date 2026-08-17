@@ -5,7 +5,6 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
-import org.dromara.resource.businesshours.domain.request.PhoneBusinessHoursRouteRequest;
 
 @Data
 public class CreatePhoneNumberRequest {
@@ -22,12 +21,6 @@ public class CreatePhoneNumberRequest {
     @NotNull
     private Long nodeId;
     private Long gatewayId;
-    @NotBlank
-    @Pattern(regexp = "^(EXTENSION|IVR|QUEUE|VOICEMAIL|BUSINESS_HOURS|NONE)$")
-    private String routeType;
-    @Size(max = 64)
-    private String routeTarget;
     @NotNull
     private Boolean outboundDefault;
-    private PhoneBusinessHoursRouteRequest businessHoursRoute;
 }

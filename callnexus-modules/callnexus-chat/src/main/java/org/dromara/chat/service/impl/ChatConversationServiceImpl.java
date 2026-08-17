@@ -3,7 +3,16 @@ package org.dromara.chat.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
+import org.dromara.ai.domain.request.AiIntentRecognitionRequest;
+import org.dromara.ai.domain.response.AiChatTurnResult;
+import org.dromara.ai.domain.response.AiIntentRecognitionResponse;
+import org.dromara.ai.service.AiAgentApplicationService;
+import org.dromara.ai.service.AiIntentApplicationService;
 import org.dromara.chat.domain.ChatChannel;
 import org.dromara.chat.domain.ChatConversation;
 import org.dromara.chat.domain.ChatMessage;
@@ -21,8 +30,11 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -34,19 +46,28 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ChatConversationServiceImpl implements ChatConversationService {
-    private static final Set<String> OPEN_STATUSES = Set.of("QUEUING", "ACTIVE");
+    private static final Set<String> OPEN_STATUSES = Set.of("AI_SERVING", "QUEUING", "ACTIVE");
     private static final DateTimeFormatter NUMBER_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final int AI_REPLY_LOCK_STRIPES = 64;
 
     private final ChatChannelMapper channelMapper;
     private final ChatVisitorMapper visitorMapper;
     private final ChatConversationMapper conversationMapper;
     private final ChatMessageMapper messageMapper;
+    private final AiAgentApplicationService aiAgentApplicationService;
+    private final AiIntentApplicationService aiIntentApplicationService;
+    @Qualifier("chatAiReplyExecutor")
+    private final Executor chatAiReplyExecutor;
     private final SecureRandom secureRandom = new SecureRandom();
+    private final Object[] aiReplyLocks = createLocks();
 
     @Override
     public ChatResponses.Bootstrap bootstrap(String channelKey, String origin) {
@@ -114,7 +135,7 @@ public class ChatConversationServiceImpl implements ChatConversationService {
             .orderByDesc(ChatConversation::getLastMessageAt)
             .orderByAsc(ChatConversation::getQueuedAt);
         if ("OPEN".equals(query.getStatus())) {
-            wrapper.in(ChatConversation::getStatus, "QUEUING", "ACTIVE");
+            wrapper.in(ChatConversation::getStatus, "AI_SERVING", "QUEUING", "ACTIVE");
         } else {
             wrapper.eq(hasText(query.getStatus()), ChatConversation::getStatus, query.getStatus());
         }
@@ -198,11 +219,11 @@ public class ChatConversationServiceImpl implements ChatConversationService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void close(Long conversationId) {
-        ChatConversation conversation = requireOwnedActiveConversation(conversationId);
+        ChatConversation conversation = requireClosableConversation(conversationId);
         LocalDateTime now = LocalDateTime.now();
         conversationMapper.update(null, new LambdaUpdateWrapper<ChatConversation>()
             .eq(ChatConversation::getId, conversation.getId())
-            .eq(ChatConversation::getStatus, "ACTIVE")
+            .in(ChatConversation::getStatus, "AI_SERVING", "QUEUING", "ACTIVE")
             .set(ChatConversation::getStatus, "CLOSED")
             .set(ChatConversation::getClosedAt, now));
         insertMessage(conversationId, "SYSTEM", null, "系统", "本次会话已结束", null, now);
@@ -211,7 +232,9 @@ public class ChatConversationServiceImpl implements ChatConversationService {
     @Override
     public void markAgentRead(Long conversationId) {
         ChatConversation conversation = requireConversation(conversationId);
-        ensureOwned(conversation);
+        if (!LoginHelper.getUserId().equals(conversation.getAssignedUserId())) {
+            return;
+        }
         conversationMapper.update(null, new LambdaUpdateWrapper<ChatConversation>()
             .eq(ChatConversation::getId, conversationId)
             .set(ChatConversation::getUnreadAgentCount, 0));
@@ -235,9 +258,11 @@ public class ChatConversationServiceImpl implements ChatConversationService {
         ChatConversation conversation = new ChatConversation();
         conversation.setConversationNo(randomConversationNo());
         conversation.setChannelId(channel.getId());
+        conversation.setSkillGroupId(channel.getSkillGroupId());
         conversation.setVisitorId(visitor.getId());
+        conversation.setAiAgentId(Boolean.TRUE.equals(channel.getAiEnabled()) ? channel.getAiAgentId() : null);
         conversation.setAccessTokenHash(hash(visitorToken));
-        conversation.setStatus("QUEUING");
+        conversation.setStatus(Boolean.TRUE.equals(channel.getAiEnabled()) && channel.getAiAgentId() != null ? "AI_SERVING" : "QUEUING");
         conversation.setPriority(0);
         conversation.setQueuedAt(now);
         conversation.setLastMessageAt(now);
@@ -286,7 +311,144 @@ public class ChatConversationServiceImpl implements ChatConversationService {
             .set(ChatConversation::getLastMessageAt, now)
             .setSql("unread_agent_count = unread_agent_count + 1"));
         touchVisitor(conversation.getVisitorId());
+        if ("AI_SERVING".equals(conversation.getStatus()) && conversation.getAiAgentId() != null) {
+            submitAiReplyAfterCommit(conversation.getTenantId(), conversation.getId(), request.getContent().trim(), now);
+        }
         return toMessage(message);
+    }
+
+    private void submitAiReplyAfterCommit(String tenantId, Long conversationId, String visitorText, LocalDateTime visitorMessageAt) {
+        Runnable task = () -> chatAiReplyExecutor.execute(() -> handleAiReplyAsync(tenantId, conversationId, visitorText, visitorMessageAt));
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    task.run();
+                }
+            });
+            return;
+        }
+        task.run();
+    }
+
+    private void handleAiReplyAsync(String tenantId, Long conversationId, String visitorText, LocalDateTime visitorMessageAt) {
+        synchronized (aiReplyLock(conversationId)) {
+            TenantHelper.dynamic(tenantId, () -> {
+                ChatConversation latest = conversationMapper.selectById(conversationId);
+                if (latest == null || !"AI_SERVING".equals(latest.getStatus()) || latest.getAiAgentId() == null) {
+                    return null;
+                }
+                handleAiReply(latest, visitorText, visitorMessageAt);
+                return null;
+            });
+        }
+    }
+
+    private void handleAiReply(ChatConversation conversation, String visitorText, LocalDateTime visitorMessageAt) {
+        try {
+            AiIntentRecognitionResponse intent = recognizeIntent(conversation.getAiAgentId(), visitorText);
+            if (intent.isMatched() && "TRANSFER_ONLINE_SERVICE".equals(intent.getActionType())) {
+                transferToOnlineService(conversation, intent, visitorMessageAt);
+                return;
+            }
+            if (intent.isMatched() && "CHAT_REPLY".equals(intent.getActionType()) && hasText(intent.getResponseTemplate())) {
+                insertAiMessage(conversation, intent.getResponseTemplate().trim(), visitorMessageAt);
+                return;
+            }
+            AiChatTurnResult result = aiAgentApplicationService.chatOnce(
+                conversation.getAiAgentId(),
+                conversation.getAiConversationId(),
+                visitorText
+            );
+            if (!isAiServing(conversation.getId())) {
+                return;
+            }
+            conversation.setAiConversationId(result.conversationId());
+            conversationMapper.update(null, new LambdaUpdateWrapper<ChatConversation>()
+                .eq(ChatConversation::getId, conversation.getId())
+                .eq(ChatConversation::getStatus, "AI_SERVING")
+                .set(ChatConversation::getAiConversationId, result.conversationId()));
+            insertAiMessage(conversation, result.answer(), visitorMessageAt);
+        } catch (Exception exception) {
+            log.warn("在线客服 AI 回复失败，conversationId={}，aiAgentId={}，error={}",
+                conversation.getId(), conversation.getAiAgentId(), exception.getMessage(), exception);
+            if (!isAiServing(conversation.getId())) {
+                return;
+            }
+            insertAiMessage(conversation, "当前 AI 接待暂时不可用，已为您转接人工客服，请稍候。", visitorMessageAt);
+            transferToHumanQueue(conversation, conversation.getSkillGroupId(), visitorMessageAt);
+        }
+    }
+
+    private AiIntentRecognitionResponse recognizeIntent(Long aiAgentId, String text) {
+        AiIntentRecognitionRequest request = new AiIntentRecognitionRequest();
+        request.setAgentId(aiAgentId);
+        request.setText(text);
+        request.setModelFallbackEnabled(false);
+        return aiIntentApplicationService.recognize(request);
+    }
+
+    private void transferToOnlineService(ChatConversation conversation, AiIntentRecognitionResponse intent, LocalDateTime now) {
+        String reply = hasText(intent.getResponseTemplate()) ? intent.getResponseTemplate().trim() : "正在为您转接人工客服，请稍候。";
+        if (insertAiMessage(conversation, reply, now) == null) {
+            return;
+        }
+        if (!transferToHumanQueue(conversation, skillGroupId(intent.getActionConfigJson(), conversation.getSkillGroupId()), now)) {
+            return;
+        }
+        insertMessage(conversation.getId(), "SYSTEM", null, "系统", "AI 已转接人工客服，等待坐席接入。", null, now.plusNanos(2_000_000));
+    }
+
+    private boolean transferToHumanQueue(ChatConversation conversation, Long skillGroupId, LocalDateTime now) {
+        int updated = conversationMapper.update(null, new LambdaUpdateWrapper<ChatConversation>()
+            .eq(ChatConversation::getId, conversation.getId())
+            .eq(ChatConversation::getStatus, "AI_SERVING")
+            .set(ChatConversation::getStatus, "QUEUING")
+            .set(ChatConversation::getSkillGroupId, skillGroupId)
+            .set(ChatConversation::getQueuedAt, now)
+            .set(ChatConversation::getLastMessageAt, now)
+            .setSql("unread_agent_count = unread_agent_count + 1"));
+        if (updated <= 0) {
+            return false;
+        }
+        conversation.setStatus("QUEUING");
+        conversation.setSkillGroupId(skillGroupId);
+        return true;
+    }
+
+    private ChatMessage insertAiMessage(ChatConversation conversation, String content, LocalDateTime baseTime) {
+        if (!isAiServing(conversation.getId())) {
+            return null;
+        }
+        LocalDateTime sentAt = LocalDateTime.now();
+        if (!sentAt.isAfter(baseTime)) {
+            sentAt = baseTime.plusNanos(1_000_000);
+        }
+        ChatMessage message = insertMessage(conversation.getId(), "AI", conversation.getAiAgentId(), "AI助手", content, null, sentAt);
+        conversationMapper.update(null, new LambdaUpdateWrapper<ChatConversation>()
+            .eq(ChatConversation::getId, conversation.getId())
+            .set(ChatConversation::getLastMessageAt, sentAt)
+            .setSql("unread_visitor_count = unread_visitor_count + 1"));
+        return message;
+    }
+
+    private boolean isAiServing(Long conversationId) {
+        ChatConversation latest = conversationMapper.selectById(conversationId);
+        return latest != null && "AI_SERVING".equals(latest.getStatus());
+    }
+
+    private Long skillGroupId(String actionConfigJson, Long fallback) {
+        if (StringUtils.isBlank(actionConfigJson)) {
+            return fallback;
+        }
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(actionConfigJson);
+            String value = node.path("skillGroupId").asText();
+            return StringUtils.isBlank(value) ? fallback : Long.valueOf(value);
+        } catch (Exception exception) {
+            log.warn("在线客服转人工意图参数解析失败，actionConfigJson={}，error={}", actionConfigJson, exception.getMessage());
+            return fallback;
+        }
     }
 
     private ChatChannel findPublicChannel(String channelKey) {
@@ -322,6 +484,17 @@ public class ChatConversationServiceImpl implements ChatConversationService {
             throw new ServiceException("会话当前不在服务中");
         }
         ensureOwned(conversation);
+        return conversation;
+    }
+
+    private ChatConversation requireClosableConversation(Long conversationId) {
+        ChatConversation conversation = requireConversation(conversationId);
+        if (!OPEN_STATUSES.contains(conversation.getStatus())) {
+            throw new ServiceException("会话已结束，不能重复结束");
+        }
+        if ("ACTIVE".equals(conversation.getStatus())) {
+            ensureOwned(conversation);
+        }
         return conversation;
     }
 
@@ -392,6 +565,8 @@ public class ChatConversationServiceImpl implements ChatConversationService {
             conversation.getConversationNo(),
             conversation.getChannelId(),
             channel == null ? null : channel.getChannelName(),
+            conversation.getSkillGroupId(),
+            conversation.getAiAgentId(),
             conversation.getVisitorId(),
             visitor == null ? null : visitor.getVisitorName(),
             visitor == null ? null : visitor.getPhone(),
@@ -474,5 +649,17 @@ public class ChatConversationServiceImpl implements ChatConversationService {
 
     private static boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private Object aiReplyLock(Long conversationId) {
+        return aiReplyLocks[Math.floorMod(conversationId.hashCode(), aiReplyLocks.length)];
+    }
+
+    private static Object[] createLocks() {
+        Object[] locks = new Object[AI_REPLY_LOCK_STRIPES];
+        for (int i = 0; i < locks.length; i++) {
+            locks[i] = new Object();
+        }
+        return locks;
     }
 }

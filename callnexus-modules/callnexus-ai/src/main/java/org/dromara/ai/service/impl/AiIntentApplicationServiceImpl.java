@@ -34,7 +34,7 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
     private static final Set<String> INTENT_TYPES = Set.of("CONVERSATION", "CONTROL", "ROUTING", "BUSINESS");
     private static final Set<String> ACTION_TYPES = Set.of(
         "NONE", "CHAT_REPLY", "REPEAT_LAST_REPLY", "STOP_PLAYBACK",
-        "TRANSFER_QUEUE", "TRANSFER_EXTENSION", "TRANSFER_IVR", "END_CALL", "KNOWLEDGE_QUERY");
+        "TRANSFER_QUEUE", "TRANSFER_EXTENSION", "TRANSFER_IVR", "TRANSFER_ONLINE_SERVICE", "END_CALL", "KNOWLEDGE_QUERY");
     private static final Set<String> UTTERANCE_TYPES = Set.of("POSITIVE", "NEGATIVE");
 
     private final AiIntentMapper intentMapper;
@@ -343,6 +343,10 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         if ("TRANSFER_IVR".equals(action)
             && (config == null || !config.path("ivrFlowId").asText("").matches("^[0-9]{1,20}$"))) {
             throw new ServiceException("转 IVR 动作必须选择目标 IVR 流程");
+        }
+        if ("TRANSFER_ONLINE_SERVICE".equals(action)
+            && (config == null || !config.path("skillGroupId").asText("").matches("^[0-9]{1,20}$"))) {
+            throw new ServiceException("转在线客服动作必须选择目标在线客服技能组");
         }
     }
 

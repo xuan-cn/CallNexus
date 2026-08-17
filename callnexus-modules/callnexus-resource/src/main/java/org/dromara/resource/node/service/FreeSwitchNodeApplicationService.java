@@ -6,6 +6,7 @@ import org.dromara.resource.node.domain.request.CreateFreeSwitchNodeRequest;
 import org.dromara.resource.node.domain.request.FreeSwitchNodePageQuery;
 import org.dromara.resource.node.domain.request.UpdateFreeSwitchNodeRequest;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeResponse;
+import org.dromara.resource.node.domain.response.FreeSwitchNodeSipProfilePreviewResponse;
 
 public interface FreeSwitchNodeApplicationService {
     TableDataInfo<FreeSwitchNodeResponse> page(FreeSwitchNodePageQuery query, PageQuery pageQuery);
@@ -14,4 +15,5 @@ public interface FreeSwitchNodeApplicationService {
     void update(Long id, UpdateFreeSwitchNodeRequest request);
     void delete(Long id);
     String resetAgentToken(Long id);
+    FreeSwitchNodeSipProfilePreviewResponse previewSipProfile(Long id);
 }

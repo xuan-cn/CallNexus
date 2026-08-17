@@ -10,6 +10,7 @@ import org.dromara.resource.node.domain.request.CreateFreeSwitchNodeRequest;
 import org.dromara.resource.node.domain.request.FreeSwitchNodePageQuery;
 import org.dromara.resource.node.domain.request.UpdateFreeSwitchNodeRequest;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeResponse;
+import org.dromara.resource.node.domain.response.FreeSwitchNodeSipProfilePreviewResponse;
 import org.dromara.resource.node.service.FreeSwitchNodeApplicationService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -62,5 +63,11 @@ public class FreeSwitchNodeController {
     @SaCheckPermission("callcenter:freeswitch-node:agent-token")
     public R<String> resetAgentToken(@PathVariable Long id) {
         return R.ok("创建agent token",applicationService.resetAgentToken(id));
+    }
+
+    @GetMapping("/{id}/sip-profile-preview")
+    @SaCheckPermission("callcenter:freeswitch-node:query")
+    public R<FreeSwitchNodeSipProfilePreviewResponse> previewSipProfile(@PathVariable Long id) {
+        return R.ok(applicationService.previewSipProfile(id));
     }
 }

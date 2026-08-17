@@ -78,6 +78,10 @@ public class QueueDialplanRouteHandler implements DialplanRouteHandler {
                 context.request().tenantId(), context.route().getNodeId());
             if (outbound != null) {
                 queue.setOutboundGatewayCode(outbound.getGatewayCode());
+                queue.setOutboundGatewayAccessMode(outbound.getGatewayAccessMode());
+                queue.setOutboundRegisteredIdentity(outbound.getRegisteredIdentity());
+                queue.setOutboundGatewaySipProfile(outbound.getGatewaySipProfile());
+                queue.setOutboundSipDomain(outbound.getSipDomain());
             } else {
                 log.warn("队列开启转手机但未找到默认外呼网关，转手机分支将不生效，queueId={}，queueCode={}，nodeId={}，tenantId={}",
                     queue.getId(), queue.getQueueCode(), context.route().getNodeId(), context.request().tenantId());

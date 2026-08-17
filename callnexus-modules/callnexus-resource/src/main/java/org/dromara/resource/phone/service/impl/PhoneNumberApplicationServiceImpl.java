@@ -13,21 +13,17 @@ import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.gateway.domain.FreeSwitchGateway;
 import org.dromara.resource.gateway.mapper.FreeSwitchGatewayMapper;
 import org.dromara.resource.businesshours.service.PhoneBusinessHoursRouteService;
-import org.dromara.resource.ivr.service.IvrDialplanQueryService;
 import org.dromara.resource.node.domain.FreeSwitchNode;
 import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
 import org.dromara.resource.phone.domain.PhoneNumber;
 import org.dromara.resource.phone.domain.request.CreatePhoneNumberRequest;
 import org.dromara.resource.phone.domain.request.PhoneNumberPageQuery;
 import org.dromara.resource.phone.domain.request.UpdatePhoneNumberRequest;
-import org.dromara.resource.phone.domain.response.PhoneNumberDialplanRouteResponse;
 import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
 import org.dromara.resource.phone.domain.response.PhoneNumberResponse;
 import org.dromara.resource.phone.mapper.PhoneNumberMapper;
 import org.dromara.resource.phone.service.PhoneNumberApplicationService;
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
-import org.dromara.resource.queue.service.CallQueueQueryService;
-import org.dromara.resource.voicemail.service.VoiceMailBoxQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,9 +34,6 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     private final PhoneNumberMapper mapper;
     private final FreeSwitchNodeMapper nodeMapper;
     private final FreeSwitchGatewayMapper gatewayMapper;
-    private final IvrDialplanQueryService ivrDialplanQueryService;
-    private final CallQueueQueryService callQueueQueryService;
-    private final VoiceMailBoxQueryService voiceMailBoxQueryService;
     private final PhoneBusinessHoursRouteService businessHoursRouteService;
 
     @Override
@@ -51,7 +44,6 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
             .like(StringUtils.isNotBlank(query.getNumber()), PhoneNumber::getNumber, query.getNumber())
             .like(StringUtils.isNotBlank(query.getNumberName()), PhoneNumber::getNumberName, query.getNumberName())
             .eq(StringUtils.isNotBlank(query.getNumberType()), PhoneNumber::getNumberType, query.getNumberType())
-            .eq(StringUtils.isNotBlank(query.getRouteType()), PhoneNumber::getRouteType, query.getRouteType())
             .eq(query.getEnabled() != null, PhoneNumber::getEnabled, query.getEnabled())
             .orderByAsc(PhoneNumber::getNumber);
         Page<PhoneNumber> page = mapper.selectPage(pageQuery.build(), wrapper);
@@ -70,20 +62,16 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     public Long create(CreatePhoneNumberRequest request) {
         ensureNodeExists(request.getNodeId());
         ensureGatewayAvailable(request.getNodeId(), request.getGatewayId());
-        ensureRouteValid(request.getNodeId(), request.getRouteType(), request.getRouteTarget());
         ensureNumberUnique(request.getNumber(), null);
         PhoneNumber number = new PhoneNumber();
         apply(number, request.getNumber(), request.getNumberName(), request.getNumberType(), request.getNodeId(), request.getGatewayId(),
-            request.getRouteType(), request.getRouteTarget(), request.getOutboundDefault());
+            request.getOutboundDefault());
+        number.setRouteType("NONE");
+        number.setRouteTarget(null);
         number.setEnabled(true);
         mapper.insert(number);
-        if ("BUSINESS_HOURS".equals(request.getRouteType())) {
-            number.setRouteTarget(String.valueOf(businessHoursRouteService.save(
-                number.getId(), request.getNodeId(), request.getBusinessHoursRoute(), LoginHelper.getTenantId())));
-            mapper.updateById(number);
-        }
-        log.info("新增号码管理配置，number={}，numberType={}，nodeId={}，gatewayId={}，routeType={}，routeTarget={}",
-            number.getNumber(), number.getNumberType(), number.getNodeId(), number.getGatewayId(), number.getRouteType(), number.getRouteTarget());
+        log.info("新增号码管理配置，number={}，numberType={}，nodeId={}，gatewayId={}",
+            number.getNumber(), number.getNumberType(), number.getNodeId(), number.getGatewayId());
         return number.getId();
     }
 
@@ -92,23 +80,20 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     public void update(Long id, UpdatePhoneNumberRequest request) {
         ensureNodeExists(request.getNodeId());
         ensureGatewayAvailable(request.getNodeId(), request.getGatewayId());
-        ensureRouteValid(request.getNodeId(), request.getRouteType(), request.getRouteTarget());
         ensureNumberUnique(request.getNumber(), id);
         PhoneNumber number = mapper.selectById(id);
         if (number == null) throw new ServiceException("号码不存在");
-        String routeTarget = request.getRouteTarget();
-        if ("BUSINESS_HOURS".equals(request.getRouteType())) {
-            routeTarget = String.valueOf(businessHoursRouteService.save(id, request.getNodeId(), request.getBusinessHoursRoute(), LoginHelper.getTenantId()));
-        } else {
-            businessHoursRouteService.removeByPhoneNumberId(id);
-        }
         apply(number, request.getNumber(), request.getNumberName(), request.getNumberType(), request.getNodeId(), request.getGatewayId(),
-            request.getRouteType(), routeTarget, request.getOutboundDefault());
+            request.getOutboundDefault());
+        if (!"BUSINESS_HOURS".equals(number.getRouteType())) {
+            number.setRouteType("NONE");
+            number.setRouteTarget(null);
+        }
         number.setEnabled(request.getEnabled());
         number.setVersion(request.getVersion());
         if (mapper.updateById(number) != 1) throw new ServiceException("号码已被其他用户修改，请刷新后重试");
-        log.info("更新号码管理配置，id={}，number={}，enabled={}，routeType={}，routeTarget={}",
-            number.getId(), number.getNumber(), number.getEnabled(), number.getRouteType(), number.getRouteTarget());
+        log.info("更新号码管理配置，id={}，number={}，enabled={}",
+            number.getId(), number.getNumber(), number.getEnabled());
     }
 
     @Override
@@ -119,41 +104,6 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
         businessHoursRouteService.removeByPhoneNumberId(id);
         if (mapper.deleteById(id) != 1) throw new ServiceException("号码不存在");
         log.info("删除号码管理配置，id={}，number={}", id, number.getNumber());
-    }
-
-    @Override
-    public PhoneNumberDialplanRouteResponse findDialplanRoute(String tenantId, String domain, String destinationNumber) {
-        if (StringUtils.isBlank(destinationNumber)) return null;
-        return TenantHelper.dynamic(tenantId, () -> {
-            FreeSwitchNode node = findEnabledNodeByDomain(domain);
-            PhoneNumber number = node == null ? null : findEnabledNumber(destinationNumber, node.getId());
-            if (number == null) {
-                number = findEnabledNumber(destinationNumber, null);
-            }
-            if (number == null) return null;
-            if (node == null || !number.getNodeId().equals(node.getId())) {
-                node = nodeMapper.selectById(number.getNodeId());
-                if (node == null || !Boolean.TRUE.equals(node.getEnabled())) return null;
-                log.info("动态呼入路由按号码兜底匹配成功，tenantId={}，requestDomain={}，number={}，nodeId={}，nodeDomain={}",
-                    tenantId, domain, destinationNumber, node.getId(), node.getSipDomain());
-            }
-            PhoneNumberDialplanRouteResponse response = new PhoneNumberDialplanRouteResponse();
-            response.setId(number.getId());
-            response.setNumber(number.getNumber());
-            response.setRouteType(number.getRouteType());
-            response.setRouteTarget(number.getRouteTarget());
-            response.setSipDomain(node.getSipDomain());
-            response.setNodeId(node.getId());
-            return response;
-        });
-    }
-
-    private PhoneNumber findEnabledNumber(String number, Long nodeId) {
-        return mapper.selectOne(new LambdaQueryWrapper<PhoneNumber>()
-            .eq(nodeId != null, PhoneNumber::getNodeId, nodeId)
-            .eq(PhoneNumber::getNumber, number)
-            .eq(PhoneNumber::getEnabled, true)
-            .last("limit 1"));
     }
 
     private FreeSwitchNode findEnabledNodeByDomain(String domain) {
@@ -186,6 +136,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
             response.setGatewayId(gateway.getId());
             response.setGatewayCode(gateway.getGatewayCode());
             response.setGatewayName(gateway.getGatewayName());
+            applyGatewayRoute(response, gateway, nodeId);
             return response;
         });
     }
@@ -260,7 +211,16 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
         response.setGatewayId(gateway.getId());
         response.setGatewayCode(gateway.getGatewayCode());
         response.setGatewayName(gateway.getGatewayName());
+        applyGatewayRoute(response, gateway, nodeId);
         return response;
+    }
+
+    private void applyGatewayRoute(PhoneNumberOutboundRouteResponse response, FreeSwitchGateway gateway, Long nodeId) {
+        response.setGatewayAccessMode(gateway.getAccessMode());
+        response.setRegisteredIdentity(gateway.getRegisteredIdentity());
+        response.setGatewaySipProfile(gateway.getSipProfile());
+        FreeSwitchNode node = nodeMapper.selectById(nodeId);
+        if (node != null) response.setSipDomain(node.getSipDomain());
     }
 
     private void ensureNodeExists(Long nodeId) {
@@ -276,43 +236,6 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
         }
     }
 
-    private void ensureRouteValid(Long nodeId, String routeType, String routeTarget) {
-        if (("EXTENSION".equals(routeType) || "IVR".equals(routeType) || "QUEUE".equals(routeType) || "VOICEMAIL".equals(routeType))
-            && StringUtils.isBlank(routeTarget)) {
-            throw new ServiceException("请填写号码呼入路由目标");
-        }
-        if ("IVR".equals(routeType)) {
-            try {
-                Long flowId = Long.valueOf(routeTarget);
-                if (!ivrDialplanQueryService.isPublishedFlowAvailable(LoginHelper.getTenantId(), flowId, nodeId)) {
-                    throw new ServiceException("关联的 IVR 流程未发布，或目标节点不可用");
-                }
-            } catch (NumberFormatException exception) {
-                throw new ServiceException("号码呼入路由目标 IVR 不合法");
-            }
-        }
-        if ("QUEUE".equals(routeType)) {
-            try {
-                Long queueId = Long.valueOf(routeTarget);
-                if (callQueueQueryService.findAvailableQueue(LoginHelper.getTenantId(), queueId, nodeId) == null) {
-                    throw new ServiceException("关联的呼叫队列未启用、未同步或不属于目标节点");
-                }
-            } catch (NumberFormatException exception) {
-                throw new ServiceException("号码呼入路由目标队列不合法");
-            }
-        }
-        if ("VOICEMAIL".equals(routeType)) {
-            try {
-                Long boxId = Long.valueOf(routeTarget);
-                if (!voiceMailBoxQueryService.isAvailable(LoginHelper.getTenantId(), boxId, nodeId)) {
-                    throw new ServiceException("关联的语音留言箱未启用，或提示音未同步到目标节点");
-                }
-            } catch (NumberFormatException exception) {
-                throw new ServiceException("号码呼入路由目标语音留言箱不合法");
-            }
-        }
-    }
-
     private void ensureNumberUnique(String number, Long excludedId) {
         boolean exists = mapper.exists(new LambdaQueryWrapper<PhoneNumber>()
             .eq(PhoneNumber::getTenantId, LoginHelper.getTenantId())
@@ -322,14 +245,12 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     }
 
     private void apply(PhoneNumber number, String value, String name, String type, Long nodeId, Long gatewayId,
-                       String routeType, String routeTarget, Boolean outboundDefault) {
+                       Boolean outboundDefault) {
         number.setNumber(value);
         number.setNumberName(name);
         number.setNumberType(type);
         number.setNodeId(nodeId);
         number.setGatewayId(gatewayId);
-        number.setRouteType(routeType);
-        number.setRouteTarget(routeTarget);
         number.setOutboundDefault(outboundDefault);
     }
 

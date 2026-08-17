@@ -14,6 +14,7 @@ import org.dromara.resource.node.domain.request.FreeSwitchNodePageQuery;
 import org.dromara.resource.node.domain.request.UpdateFreeSwitchNodeRequest;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeResponse;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionResponse;
+import org.dromara.resource.node.domain.response.FreeSwitchNodeSipProfilePreviewResponse;
 import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
 import org.dromara.resource.node.service.FreeSwitchNodeApplicationService;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
@@ -161,6 +162,8 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         ensureNodeCodeUnique(request.getNodeCode(), null);
         FreeSwitchNode node = new FreeSwitchNode();
         apply(node, request.getNodeCode(), request.getNodeName(), request.getSipDomain(), request.getWssUrl(), request.getEslHost(), request.getEslPort());
+        applySipProfile(node, request.getSipProfileName(), request.getSipIp(), request.getRtpIp(), request.getAutoNatEnabled(),
+            request.getExtSipIp(), request.getExtRtpIp());
         node.setEslPassword(request.getEslPassword());
         node.setEnabled(true);
         node.setAgentEnabled(false);
@@ -176,6 +179,8 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         FreeSwitchNode node = mapper.selectById(id);
         if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
         apply(node, request.getNodeCode(), request.getNodeName(), request.getSipDomain(), request.getWssUrl(), request.getEslHost(), request.getEslPort());
+        applySipProfile(node, request.getSipProfileName(), request.getSipIp(), request.getRtpIp(), request.getAutoNatEnabled(),
+            request.getExtSipIp(), request.getExtRtpIp());
         if (request.getEslPassword() != null && !request.getEslPassword().isBlank()) node.setEslPassword(request.getEslPassword());
         node.setEnabled(request.getEnabled());
         node.setAgentEnabled(request.getAgentEnabled());
@@ -215,6 +220,36 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         return token;
     }
 
+    @Override
+    public FreeSwitchNodeSipProfilePreviewResponse previewSipProfile(Long id) {
+        FreeSwitchNode node = mapper.selectById(id);
+        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
+        String profileName = defaultString(node.getSipProfileName(), "external");
+        String sipIp = defaultString(node.getSipIp(), "$${local_ip_v4}");
+        String rtpIp = defaultString(node.getRtpIp(), "$${local_ip_v4}");
+        String extSipIp = Boolean.TRUE.equals(node.getAutoNatEnabled()) ? "auto-nat" : defaultString(node.getExtSipIp(), sipIp);
+        String extRtpIp = Boolean.TRUE.equals(node.getAutoNatEnabled()) ? "auto-nat" : defaultString(node.getExtRtpIp(), rtpIp);
+        String xml = """
+            <param name="rtp-ip" value="%s"/>
+            <param name="sip-ip" value="%s"/>
+            <param name="ext-rtp-ip" value="%s"/>
+            <param name="ext-sip-ip" value="%s"/>
+            """.formatted(escapeXml(rtpIp), escapeXml(sipIp), escapeXml(extRtpIp), escapeXml(extSipIp));
+        String commands = """
+            fs_cli -x "reloadxml"
+            fs_cli -x "sofia profile %s restart"
+            fs_cli -x "sofia profile %s rescan"
+            fs_cli -x "sofia status profile %s"
+            """.formatted(profileName, profileName, profileName);
+        FreeSwitchNodeSipProfilePreviewResponse response = new FreeSwitchNodeSipProfilePreviewResponse();
+        response.setNodeId(node.getId());
+        response.setNodeName(node.getNodeName());
+        response.setProfileName(profileName);
+        response.setXmlSnippet(xml);
+        response.setApplyCommands(commands);
+        return response;
+    }
+
     private void ensureNodeCodeUnique(String nodeCode, Long excludedId) {
         boolean exists = mapper.exists(new LambdaQueryWrapper<FreeSwitchNode>()
             .eq(FreeSwitchNode::getTenantId, LoginHelper.getTenantId())
@@ -232,6 +267,16 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         node.setEslPort(eslPort == null ? 8021 : eslPort);
     }
 
+    private void applySipProfile(FreeSwitchNode node, String sipProfileName, String sipIp, String rtpIp,
+                                 Boolean autoNatEnabled, String extSipIp, String extRtpIp) {
+        node.setSipProfileName(defaultString(sipProfileName, "external"));
+        node.setSipIp(defaultString(sipIp, "$${local_ip_v4}"));
+        node.setRtpIp(defaultString(rtpIp, "$${local_ip_v4}"));
+        node.setAutoNatEnabled(autoNatEnabled == null || autoNatEnabled);
+        node.setExtSipIp(blankToNull(extSipIp));
+        node.setExtRtpIp(blankToNull(extRtpIp));
+    }
+
     private FreeSwitchNodeResponse toResponse(FreeSwitchNode node) {
         FreeSwitchNodeResponse response = new FreeSwitchNodeResponse();
         response.setId(node.getId());
@@ -246,6 +291,12 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         response.setAgentLastHeartbeat(node.getAgentLastHeartbeat());
         response.setAgentVersion(node.getAgentVersion());
         response.setMediaRootPath(node.getMediaRootPath());
+        response.setSipProfileName(defaultString(node.getSipProfileName(), "external"));
+        response.setSipIp(defaultString(node.getSipIp(), "$${local_ip_v4}"));
+        response.setRtpIp(defaultString(node.getRtpIp(), "$${local_ip_v4}"));
+        response.setAutoNatEnabled(node.getAutoNatEnabled() == null || node.getAutoNatEnabled());
+        response.setExtSipIp(node.getExtSipIp());
+        response.setExtRtpIp(node.getExtRtpIp());
         response.setVersion(node.getVersion());
         response.setCreateTime(node.getCreateTime());
         return response;
@@ -259,5 +310,21 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         response.setEslPort(node.getEslPort());
         response.setEslPassword(node.getEslPassword());
         return response;
+    }
+
+    private String defaultString(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value.trim();
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private String escapeXml(String value) {
+        return value == null ? "" : value
+            .replace("&", "&amp;")
+            .replace("\"", "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;");
     }
 }

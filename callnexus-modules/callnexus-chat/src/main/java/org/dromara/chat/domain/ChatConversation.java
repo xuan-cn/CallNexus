@@ -18,7 +18,10 @@ public class ChatConversation extends TenantEntity {
     private Long id;
     private String conversationNo;
     private Long channelId;
+    private Long skillGroupId;
     private Long visitorId;
+    private Long aiAgentId;
+    private Long aiConversationId;
     private String accessTokenHash;
     private String status;
     private Integer priority;

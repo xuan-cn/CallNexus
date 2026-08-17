@@ -552,6 +552,8 @@ public class AiRealtimeMrcpEventService {
                     }
                     for (String sentence : sentences) {
                         enqueueSpeak(runtime, sentence, generation);
+                        appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_AI, SOURCE_AI_GENERATED,
+                            sentence, LocalDateTime.now(), runtime.agentId);
                     }
                 }
                 case "completed" -> {
@@ -585,6 +587,8 @@ public class AiRealtimeMrcpEventService {
                         (firstSpeakReadyNanos.get() - chatNanos) / 1_000_000L, tail.length());
                 }
                 enqueueSpeak(runtime, tail, generation);
+                appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_AI, SOURCE_AI_GENERATED,
+                    tail, LocalDateTime.now(), runtime.agentId);
             }
             long chatCostMs = elapsedMillis(chatNanos);
             if (failure.get() != null) {
@@ -603,7 +607,6 @@ public class AiRealtimeMrcpEventService {
             sessionMapper.updateById(runtime.entity);
             runtime.llmStreaming.set(false);
             prewarmPendingSegments(runtime);
-            appendRealtimeTranscriptSegment(runtime, SPEAKER_AI, SOURCE_AI_GENERATED, fullAnswer.toString(), answeredAt, runtime.agentId);
             log.info("AI UniMRCP 轮次回答完成，sessionId={}，businessCallId={}，turn={}，source={}，answerLength={}，chatCostMs={}",
                 runtime.entity.getId(), runtime.businessCallId, turn.getSequenceNo(), sourceType.get(),
                 fullAnswer.length(), chatCostMs);

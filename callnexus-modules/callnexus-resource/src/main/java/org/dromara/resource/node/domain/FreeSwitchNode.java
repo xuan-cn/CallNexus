@@ -29,6 +29,12 @@ public class FreeSwitchNode extends TenantEntity {
     private java.time.LocalDateTime agentLastHeartbeat;
     private String agentVersion;
     private String mediaRootPath;
+    private String sipProfileName;
+    private String sipIp;
+    private String rtpIp;
+    private Boolean autoNatEnabled;
+    private String extSipIp;
+    private String extRtpIp;
     @Version
     private Integer version;
     @TableLogic

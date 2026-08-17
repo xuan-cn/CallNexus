@@ -22,6 +22,8 @@ public class CreateFreeSwitchGatewayRequest {
     @Pattern(regexp = "^(INBOUND|OUTBOUND|BOTH)$")
     private String direction;
     @NotBlank
+    @Pattern(regexp = "^(IP_TRUNK|OUTBOUND_REGISTER|DEVICE_REGISTER)$")
+    private String accessMode;
     @Size(max = 128)
     private String proxy;
     @Size(max = 128)
@@ -30,6 +32,12 @@ public class CreateFreeSwitchGatewayRequest {
     private String username;
     @Size(max = 128)
     private String password;
+    @Size(max = 64)
+    @Pattern(regexp = "^[A-Za-z0-9_.-]{1,64}$")
+    private String registeredIdentity;
+    @Size(max = 32)
+    @Pattern(regexp = "^[A-Za-z0-9_-]{1,32}$")
+    private String sipProfile;
     @NotNull
     private Boolean registerEnabled;
     @NotBlank

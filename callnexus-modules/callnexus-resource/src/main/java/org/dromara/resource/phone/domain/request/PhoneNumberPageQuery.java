@@ -9,6 +9,5 @@ public class PhoneNumberPageQuery {
     private String number;
     private String numberName;
     private String numberType;
-    private String routeType;
     private Boolean enabled;
 }

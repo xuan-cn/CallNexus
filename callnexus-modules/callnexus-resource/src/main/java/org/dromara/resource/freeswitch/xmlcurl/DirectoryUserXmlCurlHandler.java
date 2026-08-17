@@ -6,6 +6,9 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.resource.event.queue.AgentRingSignalEvent;
 import org.dromara.resource.freeswitch.xml.FreeSwitchXmlRenderer;
 import org.dromara.resource.freeswitch.xml.directory.FreeSwitchDirectoryXmlRenderer;
+import org.dromara.resource.freeswitch.xml.gateway.FreeSwitchGatewayXmlRenderer;
+import org.dromara.resource.gateway.domain.response.FreeSwitchGatewayDirectoryResponse;
+import org.dromara.resource.gateway.service.FreeSwitchGatewayQueryService;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
 import org.dromara.resource.sip.service.SipAccountQueryService;
@@ -18,6 +21,8 @@ import org.springframework.stereotype.Component;
 public class DirectoryUserXmlCurlHandler implements FreeSwitchXmlCurlHandler {
     private final SipAccountQueryService sipAccountQueryService;
     private final FreeSwitchDirectoryXmlRenderer directoryXmlRenderer;
+    private final FreeSwitchGatewayQueryService gatewayQueryService;
+    private final FreeSwitchGatewayXmlRenderer gatewayXmlRenderer;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final ApplicationEventPublisher eventPublisher;
 
@@ -58,6 +63,13 @@ public class DirectoryUserXmlCurlHandler implements FreeSwitchXmlCurlHandler {
                 request.tenantId(), domain, requestedUser);
         }
         if (account == null) {
+            FreeSwitchGatewayDirectoryResponse device = gatewayQueryService.findEnabledRegisteredDevice(
+                request.tenantId(), domain, requestedUser, authUsername);
+            if (device != null) {
+                log.info("FreeSWITCH Directory 设备注册身份解析成功，tenantId={}，domain={}，user={}，authUsername={}，gatewayCode={}",
+                    request.tenantId(), domain, requestedUser, authUsername, device.getGatewayCode());
+                return gatewayXmlRenderer.renderRegisteredDevice(device);
+            }
             log.warn("FreeSWITCH Directory 未找到启用的 SIP 分机，tenantId={}，domain={}，user={}，authUsername={}，action={}",
                 request.tenantId(), domain, requestedUser, authUsername, request.firstValue("action"));
             return FreeSwitchXmlRenderer.notFound();

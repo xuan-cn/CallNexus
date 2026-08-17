@@ -11,6 +11,7 @@ import org.dromara.resource.number.domain.response.PhoneNumberNormalizeResponse;
 import org.dromara.resource.number.service.PhoneNumberNormalizationService;
 import org.dromara.resource.outboundline.service.OutboundLinePolicyService;
 import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
+import org.dromara.resource.gateway.support.OutboundGatewayDialString;
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
 import org.springframework.stereotype.Service;
 
@@ -157,14 +158,15 @@ public class IvrExternalNumberRouteService {
     private String buildBridgeData(IvrNodeContext context, JsonNode config, PhoneNumberOutboundRouteResponse route,
                                    List<ExternalTarget> targets, int timeoutSeconds) {
         String callerId = safeDialValue(route.getNumber());
-        String gatewayCode = safeDialValue(route.getGatewayCode());
         List<String> endpoints = new ArrayList<>();
         for (ExternalTarget target : targets) {
             PhoneNumberNormalizeResponse normalized = normalizeDialTarget(context, config, target.number());
             endpoints.add("{ignore_early_media=true,originate_timeout=" + timeoutSeconds
                 + ",origination_caller_id_number=" + callerId
                 + ",origination_caller_id_name=" + callerId
-                + "}sofia/gateway/" + gatewayCode + "/" + safeDialValue(normalized.getDialNumber()));
+                + "}" + OutboundGatewayDialString.build(route.getGatewayAccessMode(), route.getGatewayCode(),
+                    route.getRegisteredIdentity(), route.getGatewaySipProfile(), route.getSipDomain(),
+                    safeDialValue(normalized.getDialNumber())));
         }
         return String.join("|", endpoints);
     }

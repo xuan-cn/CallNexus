@@ -69,7 +69,7 @@ public class ChatChannelServiceImpl implements ChatChannelService {
         requireChannel(id);
         long activeCount = conversationMapper.selectCount(new LambdaQueryWrapper<ChatConversation>()
             .eq(ChatConversation::getChannelId, id)
-            .in(ChatConversation::getStatus, "QUEUING", "ACTIVE"));
+            .in(ChatConversation::getStatus, "AI_SERVING", "QUEUING", "ACTIVE"));
         if (activeCount > 0) {
             throw new ServiceException("渠道存在排队中或服务中的会话，不能删除");
         }
@@ -87,6 +87,11 @@ public class ChatChannelServiceImpl implements ChatChannelService {
     private void apply(ChatChannel channel, ChatRequests.SaveChannel request) {
         channel.setChannelName(request.getChannelName().trim());
         channel.setSkillGroupId(request.getSkillGroupId());
+        channel.setAiEnabled(Boolean.TRUE.equals(request.getAiEnabled()));
+        channel.setAiAgentId(Boolean.TRUE.equals(request.getAiEnabled()) ? request.getAiAgentId() : null);
+        if (Boolean.TRUE.equals(channel.getAiEnabled()) && channel.getAiAgentId() == null) {
+            throw new ServiceException("启用 AI 接待时必须选择 AI 助手");
+        }
         channel.setWelcomeMessage(trimToNull(request.getWelcomeMessage()));
         channel.setOfflineMessage(trimToNull(request.getOfflineMessage()));
         channel.setAllowedOrigins(trimToNull(request.getAllowedOrigins()));
@@ -105,6 +110,8 @@ public class ChatChannelServiceImpl implements ChatChannelService {
             channel.getChannelKey(),
             channel.getChannelName(),
             channel.getSkillGroupId(),
+            Boolean.TRUE.equals(channel.getAiEnabled()),
+            channel.getAiAgentId(),
             channel.getWelcomeMessage(),
             channel.getOfflineMessage(),
             channel.getAllowedOrigins(),

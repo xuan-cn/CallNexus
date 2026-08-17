@@ -24,6 +24,7 @@ public class FormField extends TenantEntity {
     private String defaultValue;
     private String placeholderText;
     private String validationRules;
+    private Boolean listVisible;
     private Boolean enabled;
     @Version
     private Integer version;

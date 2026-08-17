@@ -20,6 +20,8 @@ public interface TelephonyCommandGateway {
     void park(EslEndpoint endpoint, String callId);
     void recoverMedia(EslEndpoint endpoint, String callId);
     void setCallVariable(EslEndpoint endpoint, String callId, String name, String value);
+    void startSpeechRecognition(EslEndpoint endpoint, String callId, String profile, String grammar, String detectScript);
+    void stopSpeechRecognition(EslEndpoint endpoint, String callId);
     void bridgeCalls(EslEndpoint endpoint, String leftCallId, String rightCallId);
     boolean callsAreBridged(EslEndpoint endpoint, String leftCallId, String rightCallId);
     void blindTransfer(EslEndpoint endpoint, String callId, String targetExtension);

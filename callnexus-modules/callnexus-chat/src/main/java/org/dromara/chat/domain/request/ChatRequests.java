@@ -14,6 +14,8 @@ public final class ChatRequests {
         @Size(max = 128)
         private String channelName;
         private Long skillGroupId;
+        private Boolean aiEnabled;
+        private Long aiAgentId;
         @Size(max = 1000)
         private String welcomeMessage;
         @Size(max = 1000)

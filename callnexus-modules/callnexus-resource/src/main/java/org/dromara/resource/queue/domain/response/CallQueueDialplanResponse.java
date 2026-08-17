@@ -59,4 +59,8 @@ public class CallQueueDialplanResponse {
 
     /** 转手机时使用的默认外呼网关编码；为空则忽略所有手机转接动作。 */
     private String outboundGatewayCode;
+    private String outboundGatewayAccessMode;
+    private String outboundRegisteredIdentity;
+    private String outboundGatewaySipProfile;
+    private String outboundSipDomain;
 }

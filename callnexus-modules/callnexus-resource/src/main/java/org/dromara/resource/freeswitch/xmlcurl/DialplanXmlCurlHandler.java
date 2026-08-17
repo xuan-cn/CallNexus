@@ -9,6 +9,7 @@ import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteHandler;
 import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteHandlerRegistry;
 import org.dromara.resource.event.queue.QueueSatisfactionSignalEvent;
 import org.dromara.resource.ivr.service.IvrDialplanQueryService;
+import org.dromara.resource.inbound.service.InboundDidEntryQueryService;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationCommand;
 import org.dromara.resource.outboundauth.domain.OutboundAuthorizationResult;
 import org.dromara.resource.outboundauth.service.OutboundAuthorizationService;
@@ -37,6 +38,7 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
     private final OutboundAuthorizationService outboundAuthorizationService;
     private final CallQueueQueryService callQueueQueryService;
     private final ApplicationEventPublisher eventPublisher;
+    private final InboundDidEntryQueryService inboundDidEntryQueryService;
 
     @Override
     public boolean supports(FreeSwitchXmlCurlRequest request) {
@@ -153,7 +155,12 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
             return xml;
         }
 
-        PhoneNumberDialplanRouteResponse route = phoneNumberQueryService.findDialplanRoute(request.tenantId(), domain, destinationNumber);
+        PhoneNumberDialplanRouteResponse route = inboundDidEntryQueryService.findDialplanRoute(
+            request, nodeId(request), gatewayId(request), destinationNumber);
+        if (route != null) {
+            log.info("FreeSWITCH 动态拨号计划命中 DID/端口入口，context={}，destinationNumber={}，routeType={}，routeTarget={}，tenantId={}",
+                context, destinationNumber, route.getRouteType(), route.getRouteTarget(), request.tenantId());
+        }
         if (route == null) {
             OutboundAuthorizationResult authorization = authorizeOutbound(request, context, domain, destinationNumber);
             if (authorization.allowed() && authorization.external()) {
@@ -185,7 +192,7 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
 
     private OutboundAuthorizationResult authorizeOutbound(FreeSwitchXmlCurlRequest request, String context,
                                                           String domain, String destinationNumber) {
-        if (!"default".equalsIgnoreCase(context)) {
+        if (!isOutboundContextAllowed(request, context, domain)) {
             return OutboundAuthorizationResult.reject("DIALPLAN_CONTEXT_NOT_ALLOWED", "当前拨号计划上下文不允许默认外呼", destinationNumber);
         }
         return outboundAuthorizationService.authorize(new OutboundAuthorizationCommand(
@@ -204,6 +211,34 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
             null,
             null
         ));
+    }
+
+    private boolean isOutboundContextAllowed(FreeSwitchXmlCurlRequest request, String context, String domain) {
+        if ("default".equalsIgnoreCase(context)) return true;
+        if (!"public".equalsIgnoreCase(context) || !isInternalSofiaProfile(request)) return false;
+
+        String caller = normalizeDialedNumber(callerNumber(request));
+        if (caller == null || caller.isBlank()) return false;
+        SipDirectoryAccountResponse account = sipAccountQueryService.findDirectoryAccountByExtension(
+            request.tenantId(), domain, caller);
+        if (account == null) {
+            log.warn("拒绝 public 上下文默认外呼：主叫不是当前租户启用的 SIP 分机，context={}，domain={}，caller={}，tenantId={}",
+                context, domain, caller, request.tenantId());
+            return false;
+        }
+        return true;
+    }
+
+    private boolean isInternalSofiaProfile(FreeSwitchXmlCurlRequest request) {
+        String profile = firstValue(request,
+            "variable_sofia_profile_name", "sofia_profile_name",
+            "variable_sip_profile_name", "sip_profile_name");
+        if ("internal".equalsIgnoreCase(profile)) return true;
+
+        String channelName = firstValue(request,
+            "Channel-Name", "Caller-Channel-Name", "variable_channel_name");
+        return channelName != null && channelName.regionMatches(true, 0,
+            "sofia/internal/", 0, "sofia/internal/".length());
     }
 
     private String destinationNumber(FreeSwitchXmlCurlRequest request) {
@@ -257,6 +292,18 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         }
     }
 
+    private Long gatewayId(FreeSwitchXmlCurlRequest request) {
+        String value = firstValue(request,
+            "variable_callnexus_gateway_id", "callnexus_gateway_id",
+            "variable_gateway_id", "gateway_id");
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
     private boolean isQueueInternalTransfer(FreeSwitchXmlCurlRequest request) {
         String value = request.firstValue("variable_callnexus_internal_transfer");
         if (value == null || value.isBlank()) value = request.firstValue("callnexus_internal_transfer");
@@ -288,6 +335,10 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         PhoneNumberOutboundRouteResponse outbound = phoneNumberQueryService.findDefaultOutboundRoute(tenantId, freeSwitchNodeId);
         if (outbound != null) {
             queue.setOutboundGatewayCode(outbound.getGatewayCode());
+            queue.setOutboundGatewayAccessMode(outbound.getGatewayAccessMode());
+            queue.setOutboundRegisteredIdentity(outbound.getRegisteredIdentity());
+            queue.setOutboundGatewaySipProfile(outbound.getGatewaySipProfile());
+            queue.setOutboundSipDomain(outbound.getSipDomain());
         }
     }
 
