@@ -3,9 +3,7 @@ package org.dromara.common.web.core;
 import cn.hutool.captcha.AbstractCaptcha;
 import cn.hutool.captcha.generator.CodeGenerator;
 import cn.hutool.captcha.generator.RandomGenerator;
-import cn.hutool.core.img.GraphicsUtil;
 import cn.hutool.core.img.ImgUtil;
-import cn.hutool.core.util.ObjectUtil;
 import cn.hutool.core.util.RandomUtil;
 
 import java.awt.*;
@@ -55,8 +53,6 @@ public class WaveAndCircleCaptcha extends AbstractCaptcha {
 
         try {
             drawString(g, code);
-            // 扭曲
-            shear(g, this.width, this.height, ObjectUtil.defaultIfNull(this.background, Color.WHITE));
             drawInterfere(g);
         } finally {
             g.dispose();
@@ -65,25 +61,44 @@ public class WaveAndCircleCaptcha extends AbstractCaptcha {
         return image;
     }
 
+    private static final Color[] TEXT_COLORS = {
+        new Color(241, 245, 249),
+        new Color(125, 211, 252),
+        new Color(34, 211, 238),
+        new Color(147, 197, 253)
+    };
+
+    private static final Color[] INTERFERE_COLORS = {
+        new Color(56, 189, 248, 120),
+        new Color(125, 211, 252, 100),
+        new Color(148, 163, 184, 90)
+    };
+
     private void drawString(Graphics2D g, String code) {
-        // 设置抗锯齿（让字体渲染更清晰）
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-
-        if (this.textAlpha != null) {
-            g.setComposite(this.textAlpha);
+        g.setFont(this.font);
+        FontMetrics metrics = g.getFontMetrics();
+        int len = code.length();
+        int paddingX = Math.max(10, width / 16);
+        int slot = Math.max(1, (width - paddingX * 2) / Math.max(len, 1));
+        for (int i = 0; i < len; i++) {
+            char ch = code.charAt(i);
+            g.setColor(TEXT_COLORS[RandomUtil.randomInt(TEXT_COLORS.length)]);
+            int charW = metrics.charWidth(ch);
+            int x = paddingX + slot * i + Math.max(0, (slot - charW) / 2);
+            x = Math.min(x, width - charW - 6);
+            int y = (height + metrics.getAscent() - metrics.getDescent()) / 2;
+            g.drawString(String.valueOf(ch), x, y);
         }
-
-        GraphicsUtil.drawStringColourful(g, code, this.font, this.width, this.height);
     }
 
     protected void drawInterfere(Graphics2D g) {
         ThreadLocalRandom random = RandomUtil.getRandom();
         int circleCount = Math.max(0, this.interfereCount - 1);
 
-        // 圈圈
         for (int i = 0; i < circleCount; i++) {
-            g.setColor(ImgUtil.randomColor(random));
+            g.setColor(INTERFERE_COLORS[random.nextInt(INTERFERE_COLORS.length)]);
             int x = random.nextInt(width);
             int y = random.nextInt(height);
             int w = random.nextInt(height >> 1);
@@ -91,9 +106,8 @@ public class WaveAndCircleCaptcha extends AbstractCaptcha {
             g.drawOval(x, y, w, h);
         }
 
-        // 仅 1 条平滑波浪线
         if (this.interfereCount >= 1) {
-            g.setColor(getRandomColor(120, 230, random));
+            g.setColor(INTERFERE_COLORS[random.nextInt(INTERFERE_COLORS.length)]);
             drawSmoothWave(g, random);
         }
     }

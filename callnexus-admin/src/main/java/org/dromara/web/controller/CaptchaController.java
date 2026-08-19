@@ -136,11 +136,12 @@ public class CaptchaController {
         if ("math".equals(captchaType)) {
             codeGenerator = new MathGenerator(captchaProperties.getNumberLength(), false);
         } else {
-            codeGenerator = new RandomGenerator(captchaProperties.getCharLength());
+            // 英文大写 + 数字，去掉 0/O、1/I 等易混字符
+            codeGenerator = new RandomGenerator("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", captchaProperties.getCharLength());
         }
-        WaveAndCircleCaptcha captcha = new WaveAndCircleCaptcha(160, 60);
-        // captcha.setBackground(Color.WHITE); // 不设置就是透明底
-        captcha.setFont(new Font("Arial", Font.BOLD, 45));
+        WaveAndCircleCaptcha captcha = new WaveAndCircleCaptcha(200, 56, 4, 2);
+        captcha.setBackground(new Color(11, 26, 48));
+        captcha.setFont(new Font("Arial", Font.BOLD, 36));
         captcha.setGenerator(codeGenerator);
         captcha.createCode();
         // 如果是数学验证码，使用SpEL表达式处理验证码结果
