@@ -12,5 +12,6 @@ public class CallEventResponse {
     private String eventType;
     private String fromTarget;
     private String toTarget;
+    private String description;
     private LocalDateTime occurredAt;
 }

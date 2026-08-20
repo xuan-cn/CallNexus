@@ -236,6 +236,10 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
             } else {
                 response.setActiveCallId(activeCall.getCallId());
                 response.setActiveCallNumber(activeCall.getDestination());
+                response.setActiveAgentLegUuid(activeCall.getAgentChannelId());
+                response.setActiveCallPhase(activeCall.getCallPhase());
+                response.setActiveCallOperation(activeCall.getCallOperation());
+                response.setActiveCallStateVersion(activeCall.getStateVersion());
             }
         }
         if (presence != null) {

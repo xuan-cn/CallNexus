@@ -17,4 +17,7 @@ public class AgentActiveCall implements Serializable {
     private String gatewayCode;
     private String callerIdNumber;
     private Set<String> relatedUuids;
+    private AgentCallPhase callPhase;
+    private AgentCallOperation callOperation;
+    private Long stateVersion;
 }

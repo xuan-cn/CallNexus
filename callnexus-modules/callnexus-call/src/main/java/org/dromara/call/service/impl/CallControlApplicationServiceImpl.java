@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.agent.domain.AgentActiveCall;
+import org.dromara.agent.domain.AgentCallOperation;
+import org.dromara.agent.domain.AgentCallPhase;
 import org.dromara.agent.domain.AgentConsultCall;
 import org.dromara.agent.domain.AgentConsultCallStatus;
 import org.dromara.agent.domain.AgentPresenceStatus;
@@ -62,6 +64,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     private static final String TRANSFERRED_SOURCE_AGENT_KEY_PREFIX = "callnexus:call:transferred-source-agent:";
     private static final String TRANSFERRED_SOURCE_EXTENSION_KEY_PREFIX = "callnexus:call:transferred-source-extension:";
     private static final String TRANSFERRED_SOURCE_LEG_KEY_PREFIX = "callnexus:call:transferred-source-leg:";
+    private static final String CALL_STATE_VERSION_KEY_PREFIX = "callnexus:agent:call-state-version:";
     private static final String PHONE_MODE_WEBRTC = "WEBRTC";
     private static final String PHONE_MODE_EXTERNAL_SOFTPHONE = "EXTERNAL_SOFTPHONE";
     private static final Duration ACTIVE_CALL_TTL = Duration.ofHours(4);
@@ -122,6 +125,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         activeCall.setExternal(outboundRoute.isExternal());
         activeCall.setGatewayCode(outboundRoute.getGatewayCode());
         activeCall.setCallerIdNumber(outboundRoute.getCallerIdNumber());
+        stampActiveCall(TenantHelper.getTenantId(), agent.getAgentId(), activeCall,
+            AgentCallPhase.OUTBOUND_DIALING, AgentCallOperation.NONE);
         RedisUtils.setCacheObject(key, activeCall, ACTIVE_CALL_TTL);
         try {
             changeAgentStatus(agent, AgentPresenceStatus.BUSY);
@@ -192,6 +197,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
         telephonyCommandGateway.hold(endpoint, legs.customerLegUuid());
+        saveActiveCallState(agent, activeCall, AgentCallPhase.HELD, activeCall.getCallOperation());
         log.info("已保持当前客户腿，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}",
             TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension());
@@ -209,6 +215,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
         telephonyCommandGateway.unhold(endpoint, legs.customerLegUuid());
+        saveActiveCallState(agent, activeCall, AgentCallPhase.CONNECTED, activeCall.getCallOperation());
         log.info("已恢复当前客户腿，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}",
             TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension());
@@ -437,11 +444,13 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
                 businessCallId, customerCallId, sourceAgentCallId);
             consultCall.setStatus(AgentConsultCallStatus.DIALING);
             saveConsultCall(agent, consultCall);
+            saveActiveCallState(agent, activeCall, AgentCallPhase.HELD, AgentCallOperation.CONSULTING);
             telephonyCommandGateway.originateConsultation(endpoint, businessCallId, consultCallId, agent.getExtension(),
                 targetExtension, customerCallId, sourceAgentCallId);
         } catch (RuntimeException exception) {
             deleteConsultCall(agent, consultCall);
             restoreOriginalBridgeIfPossible(agent, consultCall);
+            saveActiveCallState(agent, activeCall, AgentCallPhase.CONNECTED, AgentCallOperation.NONE);
             throw exception;
         }
 
@@ -466,12 +475,13 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         AgentConsultCall consultCall = requireConsultCall(agent, callId);
         consultCall.setStatus(AgentConsultCallStatus.CANCELLING);
         saveConsultCall(agent, consultCall);
-        requireActiveCall(agent, consultCall.getCustomerCallId());
+        AgentActiveCall activeCall = requireActiveCall(agent, consultCall.getCustomerCallId());
         restoreOriginalBridgeIfPossible(agent, consultCall);
         waitForConsultBridgeReleased();
         hangupConsultCallIfExists(agent, consultCall);
         consultCall.setStatus(AgentConsultCallStatus.CANCELLED);
         deleteConsultCall(agent, consultCall);
+        saveActiveCallState(agent, activeCall, AgentCallPhase.CONNECTED, AgentCallOperation.NONE);
     }
 
     @Override
@@ -1003,6 +1013,27 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         return ACTIVE_CALL_KEY_PREFIX + tenantId + ":" + agentId;
     }
 
+    private void saveActiveCallState(CurrentAgentResponse agent, AgentActiveCall activeCall,
+                                     AgentCallPhase phase, AgentCallOperation operation) {
+        stampActiveCall(TenantHelper.getTenantId(), agent.getAgentId(), activeCall, phase, operation);
+        RedisUtils.setCacheObject(activeCallKey(agent.getAgentId()), activeCall, ACTIVE_CALL_TTL);
+    }
+
+    private void stampActiveCall(String tenantId, Long agentId, AgentActiveCall activeCall,
+                                 AgentCallPhase phase, AgentCallOperation operation) {
+        activeCall.setCallPhase(phase);
+        activeCall.setCallOperation(operation == null ? AgentCallOperation.NONE : operation);
+        activeCall.setStateVersion(nextStateVersion(tenantId, agentId));
+    }
+
+    private long nextStateVersion(String tenantId, Long agentId) {
+        String key = CALL_STATE_VERSION_KEY_PREFIX + tenantId + ":" + agentId;
+        var counter = RedisUtils.getClient().getAtomicLong(key);
+        long version = counter.incrementAndGet();
+        counter.expire(ACTIVE_CALL_TTL);
+        return version;
+    }
+
     private String consultCallKey(Long agentId) {
         return CONSULT_CALL_KEY_PREFIX + TenantHelper.getTenantId() + ":" + agentId;
     }
@@ -1273,6 +1304,10 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         message.setCallId(callId);
         message.setBusinessCallId(firstNotBlank(sourceCall.getBusinessCallId(), sourceCall.getCallId(), callId));
         message.setLegUuid(callId);
+        message.setAgentLegUuid(callId);
+        message.setCallPhase(AgentCallPhase.ENDED);
+        message.setCallOperation(AgentCallOperation.NONE);
+        message.setStateVersion(nextStateVersion(TenantHelper.getTenantId(), sourceAgent.getAgentId()));
         message.setCallerNumber(sourceCall.getDestination());
         message.setCalledNumber(sourceAgent.getExtension());
         message.setAgentExtension(sourceAgent.getExtension());
@@ -1303,6 +1338,8 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
             addCallId(relatedUuids, sourceCall.getCallId());
         }
         targetCall.setRelatedUuids(relatedUuids);
+        stampActiveCall(target.getTenantId(), target.getAgentId(), targetCall,
+            AgentCallPhase.CONNECTED, AgentCallOperation.NONE);
         RedisUtils.setCacheObject(activeCallKey(target.getTenantId(), target.getAgentId()), targetCall, ACTIVE_CALL_TTL);
 
         CallRealtimeMessage message = new CallRealtimeMessage();
@@ -1310,6 +1347,10 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         message.setCallId(targetCall.getCallId());
         message.setBusinessCallId(targetCall.getBusinessCallId());
         message.setLegUuid(targetCall.getAgentChannelId());
+        message.setAgentLegUuid(targetCall.getAgentChannelId());
+        message.setCallPhase(targetCall.getCallPhase());
+        message.setCallOperation(targetCall.getCallOperation());
+        message.setStateVersion(targetCall.getStateVersion());
         message.setCallerNumber(sourceCall.getDestination());
         message.setCalledNumber(target.getExtension());
         message.setAgentExtension(target.getExtension());

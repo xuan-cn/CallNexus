@@ -47,6 +47,7 @@ import org.dromara.call.service.TelephonyEndpointIdentityResolver;
 import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.tenant.helper.TenantHelper;
@@ -63,6 +64,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -898,11 +900,15 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             case "DTMF_SENT" -> "发送 DTMF";
             case "QUEUE_DTMF" -> "按键采集";
             case "QUEUE_SATISFACTION" -> "满意度评价";
+            case "CALL_NOTE" -> "通话备注";
             default -> safeText(eventType);
         };
     }
 
     private String eventDescription(CallEvent event) {
+        if ("CALL_NOTE".equals(event.getEventType())) {
+            return callNoteContent(event.getMetadataJson());
+        }
         if ("QUEUE_SATISFACTION".equals(event.getEventType())) {
             return "NO_INPUT".equals(event.getToTarget()) ? "客户未提交评价" : "客户评分：" + event.getToTarget() + " 分";
         }
@@ -918,6 +924,22 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             return to;
         }
         return "事件：" + safeText(event.getEventType());
+    }
+
+    private String callNoteContent(String metadataJson) {
+        if (StringUtils.isBlank(metadataJson)) {
+            return "未记录备注内容";
+        }
+        try {
+            Map<String, Object> metadata = JsonUtils.parseMap(metadataJson);
+            Object content = metadata.get("content");
+            return content == null || StringUtils.isBlank(String.valueOf(content))
+                ? "未记录备注内容"
+                : String.valueOf(content);
+        } catch (Exception exception) {
+            log.warn("解析通话备注事件失败，metadataJson={}，error={}", metadataJson, exception.getMessage());
+            return "备注内容解析失败";
+        }
     }
 
     private String eventTone(String eventType) {
@@ -1156,6 +1178,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         response.setEventType(event.getEventType());
         response.setFromTarget(event.getFromTarget());
         response.setToTarget(event.getToTarget());
+        response.setDescription(eventDescription(event));
         response.setOccurredAt(event.getOccurredAt());
         return response;
     }

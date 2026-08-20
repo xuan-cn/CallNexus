@@ -1,6 +1,8 @@
 package org.dromara.agent.domain.response;
 
 import lombok.Data;
+import org.dromara.agent.domain.AgentCallOperation;
+import org.dromara.agent.domain.AgentCallPhase;
 import org.dromara.agent.domain.AgentPresenceStatus;
 
 import java.time.LocalDateTime;
@@ -22,6 +24,10 @@ public class CurrentAgentResponse {
     private String wssUrl;
     private String activeCallId;
     private String activeCallNumber;
+    private String activeAgentLegUuid;
+    private AgentCallPhase activeCallPhase;
+    private AgentCallOperation activeCallOperation;
+    private Long activeCallStateVersion;
     private AgentPresenceStatus status;
     private Long afterCallRemainingSeconds;
     private LocalDateTime signedInAt;

@@ -14,6 +14,7 @@ public interface AiSpeechApplicationService {
     void updateProvider(Long id, AiSpeechProviderRequest request);
     void deleteProvider(Long id);
     TtsTestResponse testProvider(Long id, TtsTestRequest request);
+    List<String> providerVoices(Long id);
     AsrTestResponse testAsrProvider(Long id, MultipartFile file, String format, Integer sampleRate);
 
     List<AiSpeechTemplateResponse> templates();

@@ -44,4 +44,12 @@ class AiRealtimeMrcpEventServiceTest {
         assertFalse(AiRealtimeMrcpEventService.matchesSpeakCompletion(second, null));
         assertTrue(AiRealtimeMrcpEventService.matchesSpeakCompletion(second, currentEvent));
     }
+
+    @Test
+    void shouldWaitForRealCompletionEventInWebSocketMode() {
+        assertEquals(180000L,
+            AiRealtimeMrcpEventService.resolveSpeakCompletionTimeout(VoiceTransport.WS, 4380L, 180000L));
+        assertEquals(4380L,
+            AiRealtimeMrcpEventService.resolveSpeakCompletionTimeout(VoiceTransport.HTTP, 4380L, 180000L));
+    }
 }
