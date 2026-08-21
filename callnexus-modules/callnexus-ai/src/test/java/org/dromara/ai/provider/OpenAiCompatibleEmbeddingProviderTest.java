@@ -22,4 +22,18 @@ class OpenAiCompatibleEmbeddingProviderTest {
         assertThat(OpenAiCompatibleEmbeddingProvider.isRetryableGatewayFailure(
             new ServiceException("Embedding 模型调用失败，HTTP状态码=401，响应=unauthorized"))).isFalse();
     }
+
+    @Test
+    void shouldExtractUpstreamBatchLimit() {
+        ServiceException exception = new ServiceException("Embedding 模型调用失败，HTTP状态码=400，响应={\"error\":{\"message\":\"Value error, batch size is invalid, it should not be larger than 10.: input.contents\"}}");
+
+        assertThat(OpenAiCompatibleEmbeddingProvider.extractBatchLimit(exception)).isEqualTo(10);
+    }
+
+    @Test
+    void shouldIgnoreUnrelatedBadRequest() {
+        ServiceException exception = new ServiceException("Embedding 模型调用失败，HTTP状态码=400，响应=invalid model");
+
+        assertThat(OpenAiCompatibleEmbeddingProvider.extractBatchLimit(exception)).isNull();
+    }
 }

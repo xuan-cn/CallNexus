@@ -10,6 +10,7 @@ import org.dromara.ai.provider.StreamingTtsProvider;
 import org.dromara.ai.provider.StreamingTtsProviderRegistry;
 import org.dromara.ai.provider.StreamingTtsRequest;
 import org.dromara.ai.provider.StreamingTtsSession;
+import org.dromara.ai.provider.Pcm16AudioNormalizer;
 import org.dromara.ai.provider.TtsGenerateRequest;
 import org.dromara.ai.provider.TtsGenerateResult;
 import org.dromara.ai.provider.TtsProviderRegistry;
@@ -25,13 +26,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 @Slf4j
@@ -41,12 +42,13 @@ public class AiRealtimeTtsInternalService {
     private static final int MAX_TEXT_LENGTH = 2000;
     private static final long CACHE_TTL_MILLIS = 10 * 60 * 1000L;
     private static final int MAX_CACHE_ENTRIES = 256;
-    private static final long STREAM_TIMEOUT_SECONDS = 15L;
+    private static final long DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 15L;
 
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final AiSpeechProviderMapper providerMapper;
     private final TtsProviderRegistry ttsProviderRegistry;
     private final StreamingTtsProviderRegistry streamingTtsProviderRegistry;
+    private final Pcm16AudioNormalizer audioNormalizer;
     private final ThreadPoolTaskScheduler aiRealtimeScheduler;
     private final Map<String, CachedAudio> audioCache = new ConcurrentHashMap<>();
 
@@ -54,11 +56,13 @@ public class AiRealtimeTtsInternalService {
                                         AiSpeechProviderMapper providerMapper,
                                         TtsProviderRegistry ttsProviderRegistry,
                                         StreamingTtsProviderRegistry streamingTtsProviderRegistry,
+                                        Pcm16AudioNormalizer audioNormalizer,
                                         @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler aiRealtimeScheduler) {
         this.nodeQueryService = nodeQueryService;
         this.providerMapper = providerMapper;
         this.ttsProviderRegistry = ttsProviderRegistry;
         this.streamingTtsProviderRegistry = streamingTtsProviderRegistry;
+        this.audioNormalizer = audioNormalizer;
         this.aiRealtimeScheduler = aiRealtimeScheduler;
     }
 
@@ -112,9 +116,9 @@ public class AiRealtimeTtsInternalService {
      * <p>未配置默认流式 TTS 时抛 {@link ServiceException}，由上层（WS handler）决定是否
      * 回退到 {@link #generateForStream(AiRealtimeTtsRequest)} 的 HTTP 一次性合成路径。</p>
      *
-     * <p>为避免 provider 永不回调导致 session 泄漏，方法内启动 {@value #STREAM_TIMEOUT_SECONDS}s
-     * 兜底定时器；到期后强制 close session 并给 listener 发 {@code onError}。定时器在
-     * {@code onCompleted} / {@code onError} 里 cancel。</p>
+     * <p>为避免 provider 永不回调导致 session 泄漏，方法内按服务商超时时间检测音频空闲。
+     * 每次收到音频都会刷新活动时间，只有连续无音频达到阈值才关闭 session。该超时不能按整段
+     * 总时长计算，否则长文本在正常持续返回 PCM 时也会被错误中断。</p>
      *
      * <p>本次不实现文本缓存：不同 chunk 到达是异步的，缓存会破坏 chunk 边界；且实时对话
      * 短句复用率低，缓存收益有限。老 HTTP 路径的缓存不受影响。</p>
@@ -141,6 +145,8 @@ public class AiRealtimeTtsInternalService {
 
         AtomicBoolean finished = new AtomicBoolean();
         AtomicBoolean timedOut = new AtomicBoolean();
+        AtomicLong lastAudioActivityNanos = new AtomicLong(System.nanoTime());
+        long streamIdleTimeoutSeconds = streamIdleTimeoutSeconds(provider);
         // session 由外层 open() 返回，onCompleted/onError 里负责 close，
         // generateStream 本身在 commit+finish 后就返回，等待事件异步驱动。
         StreamingTtsSession[] sessionRef = new StreamingTtsSession[1];
@@ -149,6 +155,7 @@ public class AiRealtimeTtsInternalService {
         StreamingTtsListener wrapped = new StreamingTtsListener() {
             @Override
             public void onStarted() {
+                lastAudioActivityNanos.set(System.nanoTime());
                 safeInvoke(listener::onStarted, "onStarted");
             }
 
@@ -157,6 +164,7 @@ public class AiRealtimeTtsInternalService {
                 if (finished.get() || timedOut.get()) {
                     return;
                 }
+                lastAudioActivityNanos.set(System.nanoTime());
                 try {
                     listener.onAudio(audioBytes);
                 } catch (Exception exception) {
@@ -197,15 +205,21 @@ public class AiRealtimeTtsInternalService {
         }
         sessionRef[0] = session;
 
-        timerRef[0] = aiRealtimeScheduler.schedule(() -> {
+        timerRef[0] = aiRealtimeScheduler.scheduleWithFixedDelay(() -> {
             if (finished.get()) {
                 return;
             }
-            timedOut.set(true);
-            log.warn("AI 实时 TTS 流式合成超时 {}s，强制关闭 session，providerCode={}",
-                STREAM_TIMEOUT_SECONDS, provider.getProviderCode());
-            wrapped.onError("流式 TTS 超时");
-        }, Instant.now().plus(Duration.ofSeconds(STREAM_TIMEOUT_SECONDS)));
+            long idleNanos = System.nanoTime() - lastAudioActivityNanos.get();
+            if (idleNanos < Duration.ofSeconds(streamIdleTimeoutSeconds).toNanos()) {
+                return;
+            }
+            if (!timedOut.compareAndSet(false, true)) {
+                return;
+            }
+            log.warn("AI 实时 TTS 连续 {}s 未返回音频，强制关闭 session，providerCode={}",
+                streamIdleTimeoutSeconds, provider.getProviderCode());
+            wrapped.onError("流式 TTS 连续" + streamIdleTimeoutSeconds + "秒未返回音频");
+        }, Duration.ofSeconds(1));
 
         try {
             session.append(request.getText());
@@ -230,6 +244,14 @@ public class AiRealtimeTtsInternalService {
         // 校验 registry 中确实注册了对应的 StreamingTtsProvider；不匹配会抛异常
         streamingTtsProviderRegistry.get(provider.getProviderType());
         return provider;
+    }
+
+    private long streamIdleTimeoutSeconds(AiSpeechProvider provider) {
+        Integer configured = provider.getTimeoutSeconds();
+        if (configured == null || configured <= 0) {
+            return DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS;
+        }
+        return Math.min(configured.longValue(), 300L);
     }
 
     private static void safeInvoke(Runnable action, String tag) {
@@ -371,60 +393,7 @@ public class AiRealtimeTtsInternalService {
         if (audio.length < 44 || !startsWith(audio, 0, "RIFF") || !startsWith(audio, 8, "WAVE")) {
             return audio;
         }
-
-        int offset = 12;
-        while (offset + 8 <= audio.length) {
-            String chunkId = new String(audio, offset, 4, StandardCharsets.US_ASCII);
-            long chunkSize = readLittleEndianUnsignedInt(audio, offset + 4);
-            int dataStart = offset + 8;
-            if ("fmt ".equals(chunkId)) {
-                validatePcmFormat(audio, dataStart, chunkSize, expectedSampleRate);
-            } else if ("data".equals(chunkId)) {
-                return extractDataChunk(audio, dataStart, chunkSize);
-            }
-            long nextOffset = dataStart + chunkSize + (chunkSize % 2);
-            if (nextOffset <= offset || nextOffset > Integer.MAX_VALUE) {
-                throw new ServiceException("TTS WAV 音频 chunk 结构异常");
-            }
-            offset = (int) nextOffset;
-        }
-        throw new ServiceException("TTS WAV 音频未找到 data 块");
-    }
-
-    private byte[] extractDataChunk(byte[] audio, int dataStart, long chunkSize) {
-        if (dataStart >= audio.length) {
-            throw new ServiceException("TTS WAV 音频 data 块为空");
-        }
-        int remaining = audio.length - dataStart;
-        int copyLength;
-        if (chunkSize <= 0 || chunkSize > remaining) {
-            // Some cloud vendors return streaming WAV with a placeholder data size.
-            log.warn("TTS WAV data 块长度与实际音频不一致，按实际剩余字节处理，declaredSize={}，remaining={}",
-                chunkSize, remaining);
-            copyLength = remaining;
-        } else {
-            copyLength = (int) chunkSize;
-        }
-        byte[] pcm = new byte[copyLength];
-        System.arraycopy(audio, dataStart, pcm, 0, copyLength);
-        return pcm;
-    }
-
-    private void validatePcmFormat(byte[] audio, int offset, long chunkSize, int expectedSampleRate) {
-        if (chunkSize < 16 || offset + 16 > audio.length) {
-            throw new ServiceException("TTS WAV 音频 fmt 块异常");
-        }
-        int audioFormat = readLittleEndianShort(audio, offset);
-        int channels = readLittleEndianShort(audio, offset + 2);
-        int sampleRate = (int) readLittleEndianUnsignedInt(audio, offset + 4);
-        int bitsPerSample = readLittleEndianShort(audio, offset + 14);
-        if (audioFormat != 1 || channels != 1 || bitsPerSample != 16) {
-            throw new ServiceException("AI 实时 MRCP TTS 需要 16bit 单声道 PCM WAV，请调整语音服务商输出参数");
-        }
-        if (sampleRate != expectedSampleRate) {
-            throw new ServiceException("AI 实时 MRCP TTS 采样率不匹配，期望 " + expectedSampleRate
-                + "Hz，实际 " + sampleRate + "Hz，请调整语音服务商输出参数");
-        }
+        return audioNormalizer.normalize(audio, "wav", null, expectedSampleRate).bytes();
     }
 
     private boolean startsWith(byte[] audio, int offset, String value) {
@@ -438,17 +407,6 @@ public class AiRealtimeTtsInternalService {
             }
         }
         return true;
-    }
-
-    private int readLittleEndianShort(byte[] bytes, int offset) {
-        return (bytes[offset] & 0xff) | ((bytes[offset + 1] & 0xff) << 8);
-    }
-
-    private long readLittleEndianUnsignedInt(byte[] bytes, int offset) {
-        return ((long) bytes[offset] & 0xff)
-            | (((long) bytes[offset + 1] & 0xff) << 8)
-            | (((long) bytes[offset + 2] & 0xff) << 16)
-            | (((long) bytes[offset + 3] & 0xff) << 24);
     }
 
     private String cacheKey(String tenantId, AiSpeechProvider provider, String voice, String format, int sampleRate, String text) {

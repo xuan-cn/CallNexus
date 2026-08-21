@@ -89,11 +89,8 @@ public class AiRealtimeAsrInternalService {
     }
 
     private AiSpeechProvider defaultRealtimeAsrProvider() {
-        try {
-            return speechProviderSelector.requireDefaultStreamingAsr();
-        } catch (ServiceException exception) {
-            return speechProviderSelector.requireDefaultRecordingAsr();
-        }
+        // UniMRCP sends one completed utterance to this endpoint, so select the finite-audio ASR capability.
+        return speechProviderSelector.requireDefaultRecordingAsr();
     }
 
     private void validateRequest(String nodeCode, String nodeToken, String tenantId, byte[] audio) {

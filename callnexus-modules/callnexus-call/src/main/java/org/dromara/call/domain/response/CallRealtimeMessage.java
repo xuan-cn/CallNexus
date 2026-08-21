@@ -1,6 +1,8 @@
 package org.dromara.call.domain.response;
 
 import lombok.Data;
+import org.dromara.agent.domain.AgentCallOperation;
+import org.dromara.agent.domain.AgentCallPhase;
 
 import java.time.LocalDateTime;
 
@@ -10,6 +12,10 @@ public class CallRealtimeMessage {
     private String callId;
     private String businessCallId;
     private String legUuid;
+    private String agentLegUuid;
+    private AgentCallPhase callPhase;
+    private AgentCallOperation callOperation;
+    private Long stateVersion;
     private String callerNumber;
     private String callerNumberType;
     private String callerMobileSegment;

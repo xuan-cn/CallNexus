@@ -9,14 +9,56 @@ import lombok.extern.slf4j.Slf4j;
 import java.io.IOException;
 import java.net.http.HttpResponse;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Component
 @Slf4j
 public class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
+    private static final Pattern BATCH_LIMIT_PATTERN = Pattern.compile(
+        "(?i)batch size.*?(?:not be larger than|maximum|max(?:imum)?(?: is| of)?)\\s*(\\d+)");
+    private final ConcurrentMap<String, Integer> learnedBatchLimits = new ConcurrentHashMap<>();
+
     @Override public String providerType() { return "OPENAI_COMPATIBLE"; }
 
     @Override
     public EmbeddingResult embed(EmbeddingRequest request) {
+        if (request.inputs() == null || request.inputs().isEmpty()) {
+            throw new ServiceException("Embedding 输入不能为空");
+        }
+        int batchSize = configuredBatchSize(request);
+        try {
+            return embedInBatches(request, batchSize);
+        } catch (ServiceException exception) {
+            Integer upstreamLimit = extractBatchLimit(exception);
+            if (upstreamLimit == null || upstreamLimit <= 0 || batchSize <= upstreamLimit) {
+                throw exception;
+            }
+            learnedBatchLimits.put(batchLimitKey(request), upstreamLimit);
+            log.warn("Embedding 上游限制单次批量，已自动调整并重试，providerCode={}，model={}，configuredBatchSize={}，upstreamBatchSize={}",
+                request.provider().getProviderCode(), request.model().getModelName(), batchSize, upstreamLimit);
+            return embedInBatches(request, upstreamLimit);
+        }
+    }
+
+    private EmbeddingResult embedInBatches(EmbeddingRequest request, int batchSize) {
+        List<List<Double>> vectors = new ArrayList<>(request.inputs().size());
+        Integer totalTokens = null;
+        for (int offset = 0; offset < request.inputs().size(); offset += batchSize) {
+            List<String> inputs = List.copyOf(request.inputs().subList(offset,
+                Math.min(request.inputs().size(), offset + batchSize)));
+            EmbeddingResult result = embedSingleBatch(new EmbeddingRequest(request.provider(), request.model(), inputs));
+            vectors.addAll(result.vectors());
+            if (result.inputTokens() != null) {
+                totalTokens = (totalTokens == null ? 0 : totalTokens) + result.inputTokens();
+            }
+        }
+        return new EmbeddingResult(vectors, totalTokens);
+    }
+
+    private EmbeddingResult embedSingleBatch(EmbeddingRequest request) {
         IOException transportFailure = null;
         for (int attempt = 1; attempt <= 2; attempt++) {
             try {
@@ -47,6 +89,29 @@ public class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
             }
         }
         throw new ServiceException("Embedding 模型调用异常：" + transportFailure.getMessage());
+    }
+
+    private int configuredBatchSize(EmbeddingRequest request) {
+        int configured = request.model().getMaxBatchSize() == null
+            ? request.inputs().size() : Math.max(1, request.model().getMaxBatchSize());
+        Integer learned = learnedBatchLimits.get(batchLimitKey(request));
+        return Math.min(request.inputs().size(), learned == null ? configured : Math.min(configured, learned));
+    }
+
+    private String batchLimitKey(EmbeddingRequest request) {
+        return request.provider().getId() + ":" + request.model().getId();
+    }
+
+    static Integer extractBatchLimit(ServiceException exception) {
+        String message = exception.getMessage();
+        if (message == null) return null;
+        Matcher matcher = BATCH_LIMIT_PATTERN.matcher(message);
+        if (!matcher.find()) return null;
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     static boolean isRetryableGatewayFailure(ServiceException exception) {
