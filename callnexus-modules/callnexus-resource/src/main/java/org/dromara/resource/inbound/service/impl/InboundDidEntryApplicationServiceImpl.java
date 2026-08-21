@@ -28,6 +28,8 @@ import org.dromara.resource.businesshours.service.PhoneBusinessHoursRouteService
 import org.dromara.resource.node.domain.FreeSwitchNode;
 import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
 import org.dromara.resource.phone.domain.response.PhoneNumberDialplanRouteResponse;
+import org.dromara.resource.phone.domain.PhoneNumber;
+import org.dromara.resource.phone.mapper.PhoneNumberMapper;
 import org.dromara.resource.queue.domain.response.CallQueueDialplanResponse;
 import org.dromara.resource.queue.service.CallQueueQueryService;
 import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
@@ -49,6 +51,7 @@ public class InboundDidEntryApplicationServiceImpl implements InboundDidEntryApp
     private final InboundDidEntryMapper mapper;
     private final FreeSwitchNodeMapper nodeMapper;
     private final FreeSwitchGatewayMapper gatewayMapper;
+    private final PhoneNumberMapper phoneNumberMapper;
     private final IvrDialplanQueryService ivrDialplanQueryService;
     private final CallQueueQueryService callQueueQueryService;
     private final SipAccountQueryService sipAccountQueryService;
@@ -60,6 +63,7 @@ public class InboundDidEntryApplicationServiceImpl implements InboundDidEntryApp
         LambdaQueryWrapper<InboundDidEntry> wrapper = new LambdaQueryWrapper<InboundDidEntry>()
             .eq(query.getNodeId() != null, InboundDidEntry::getNodeId, query.getNodeId())
             .eq(query.getGatewayId() != null, InboundDidEntry::getGatewayId, query.getGatewayId())
+            .eq(query.getPhoneNumberId() != null, InboundDidEntry::getPhoneNumberId, query.getPhoneNumberId())
             .like(StringUtils.isNotBlank(query.getEntryName()), InboundDidEntry::getEntryName, query.getEntryName())
             .eq(StringUtils.isNotBlank(query.getEntryType()), InboundDidEntry::getEntryType, query.getEntryType())
             .like(StringUtils.isNotBlank(query.getDidNumber()), InboundDidEntry::getDidNumber, query.getDidNumber())
@@ -82,12 +86,12 @@ public class InboundDidEntryApplicationServiceImpl implements InboundDidEntryApp
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long create(CreateInboundDidEntryRequest request) {
-        validateReference(request.getNodeId(), request.getGatewayId(), request.getEntryType(), request.getRouteTargetType(), request.getRouteTargetId());
+        validateReference(request.getNodeId(), request.getGatewayId(), request.getPhoneNumberId(), request.getEntryType(), request.getRouteTargetType(), request.getRouteTargetId());
         ensureMatchKey(request.getEntryType(), request.getDidNumber(), request.getPortCode(), request.getAccountCode(), request.getHeaderName(), request.getHeaderValue());
         ensureUnique(request.getNodeId(), request.getGatewayId(), request.getEntryType(), request.getDidNumber(), request.getPortCode(),
             request.getAccountCode(), request.getHeaderName(), request.getHeaderValue(), null);
         InboundDidEntry entry = new InboundDidEntry();
-        apply(entry, request.getNodeId(), request.getGatewayId(), request.getEntryName(), request.getEntryType(), request.getDidNumber(),
+        apply(entry, request.getNodeId(), request.getGatewayId(), request.getPhoneNumberId(), request.getEntryName(), request.getEntryType(), request.getDidNumber(),
             request.getPortCode(), request.getAccountCode(), request.getHeaderName(), request.getHeaderValue(), request.getRouteTargetType(),
             request.getRouteTargetId(), request.getPriority(), request.getRemark());
         entry.setEnabled(true);
@@ -98,13 +102,13 @@ public class InboundDidEntryApplicationServiceImpl implements InboundDidEntryApp
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void update(Long id, UpdateInboundDidEntryRequest request) {
-        validateReference(request.getNodeId(), request.getGatewayId(), request.getEntryType(), request.getRouteTargetType(), request.getRouteTargetId());
+        validateReference(request.getNodeId(), request.getGatewayId(), request.getPhoneNumberId(), request.getEntryType(), request.getRouteTargetType(), request.getRouteTargetId());
         ensureMatchKey(request.getEntryType(), request.getDidNumber(), request.getPortCode(), request.getAccountCode(), request.getHeaderName(), request.getHeaderValue());
         ensureUnique(request.getNodeId(), request.getGatewayId(), request.getEntryType(), request.getDidNumber(), request.getPortCode(),
             request.getAccountCode(), request.getHeaderName(), request.getHeaderValue(), id);
         InboundDidEntry entry = mapper.selectById(id);
         if (entry == null) throw new ServiceException("DID/端口入口不存在");
-        apply(entry, request.getNodeId(), request.getGatewayId(), request.getEntryName(), request.getEntryType(), request.getDidNumber(),
+        apply(entry, request.getNodeId(), request.getGatewayId(), request.getPhoneNumberId(), request.getEntryName(), request.getEntryType(), request.getDidNumber(),
             request.getPortCode(), request.getAccountCode(), request.getHeaderName(), request.getHeaderValue(), request.getRouteTargetType(),
             request.getRouteTargetId(), request.getPriority(), request.getRemark());
         entry.setEnabled(request.getEnabled());
@@ -163,11 +167,19 @@ public class InboundDidEntryApplicationServiceImpl implements InboundDidEntryApp
         return route;
     }
 
-    private void validateReference(Long nodeId, Long gatewayId, String entryType, String routeType, String routeTargetId) {
+    private void validateReference(Long nodeId, Long gatewayId, Long phoneNumberId, String entryType, String routeType, String routeTargetId) {
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
         if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
         FreeSwitchGateway gateway = gatewayMapper.selectById(gatewayId);
         if (gateway == null || !nodeId.equals(gateway.getNodeId())) throw new ServiceException("网关不存在或不属于当前节点");
+        if (phoneNumberId != null) {
+            PhoneNumber phoneNumber = phoneNumberMapper.selectById(phoneNumberId);
+            if (phoneNumber == null) throw new ServiceException("关联号码不存在");
+            if (!nodeId.equals(phoneNumber.getNodeId())) throw new ServiceException("关联号码不属于当前节点");
+            if (phoneNumber.getGatewayId() != null && !gatewayId.equals(phoneNumber.getGatewayId())) {
+                throw new ServiceException("关联号码不属于当前网关");
+            }
+        }
         if (!ENTRY_TYPES.contains(entryType)) throw new ServiceException("不支持的入口类型");
         if (!ROUTE_TYPES.contains(routeType)) throw new ServiceException("不支持的呼入路由目标类型");
         validateRouteTarget(node, routeType, routeTargetId);
@@ -226,11 +238,12 @@ public class InboundDidEntryApplicationServiceImpl implements InboundDidEntryApp
         if (exists) throw new ServiceException("相同网关下已存在相同入口规则");
     }
 
-    private void apply(InboundDidEntry entry, Long nodeId, Long gatewayId, String entryName, String entryType, String didNumber,
+    private void apply(InboundDidEntry entry, Long nodeId, Long gatewayId, Long phoneNumberId, String entryName, String entryType, String didNumber,
                        String portCode, String accountCode, String headerName, String headerValue, String routeTargetType,
                        String routeTargetId, Integer priority, String remark) {
         entry.setNodeId(nodeId);
         entry.setGatewayId(gatewayId);
+        entry.setPhoneNumberId(phoneNumberId);
         entry.setEntryName(entryName);
         entry.setEntryType(entryType);
         entry.setDidNumber("DID".equals(entryType) ? blankToNull(didNumber) : null);
@@ -300,6 +313,14 @@ public class InboundDidEntryApplicationServiceImpl implements InboundDidEntryApp
         if (gateway != null) {
             response.setGatewayName(gateway.getGatewayName());
             response.setGatewayCode(gateway.getGatewayCode());
+        }
+        response.setPhoneNumberId(entry.getPhoneNumberId());
+        if (entry.getPhoneNumberId() != null) {
+            PhoneNumber phoneNumber = phoneNumberMapper.selectById(entry.getPhoneNumberId());
+            if (phoneNumber != null) {
+                response.setPhoneNumber(phoneNumber.getNumber());
+                response.setPhoneNumberName(phoneNumber.getNumberName());
+            }
         }
         response.setEntryName(entry.getEntryName());
         response.setEntryType(entry.getEntryType());

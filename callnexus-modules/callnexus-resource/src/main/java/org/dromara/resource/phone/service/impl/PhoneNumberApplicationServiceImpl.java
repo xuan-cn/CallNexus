@@ -13,6 +13,8 @@ import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.gateway.domain.FreeSwitchGateway;
 import org.dromara.resource.gateway.mapper.FreeSwitchGatewayMapper;
 import org.dromara.resource.businesshours.service.PhoneBusinessHoursRouteService;
+import org.dromara.resource.inbound.domain.InboundDidEntry;
+import org.dromara.resource.inbound.mapper.InboundDidEntryMapper;
 import org.dromara.resource.node.domain.FreeSwitchNode;
 import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
 import org.dromara.resource.phone.domain.PhoneNumber;
@@ -27,6 +29,8 @@ import org.dromara.resource.phone.service.PhoneNumberQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Objects;
+
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -34,6 +38,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     private final PhoneNumberMapper mapper;
     private final FreeSwitchNodeMapper nodeMapper;
     private final FreeSwitchGatewayMapper gatewayMapper;
+    private final InboundDidEntryMapper inboundDidEntryMapper;
     private final PhoneBusinessHoursRouteService businessHoursRouteService;
 
     @Override
@@ -83,6 +88,11 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
         ensureNumberUnique(request.getNumber(), id);
         PhoneNumber number = mapper.selectById(id);
         if (number == null) throw new ServiceException("号码不存在");
+        if (hasInboundRoutes(id)
+            && (!Objects.equals(number.getNumber(), request.getNumber()) || !Objects.equals(number.getNodeId(), request.getNodeId())
+                || !Objects.equals(number.getGatewayId(), request.getGatewayId()))) {
+            throw new ServiceException("该号码已配置呼入规则，请先删除规则后再修改号码、节点或网关");
+        }
         apply(number, request.getNumber(), request.getNumberName(), request.getNumberType(), request.getNodeId(), request.getGatewayId(),
             request.getOutboundDefault());
         if (!"BUSINESS_HOURS".equals(number.getRouteType())) {
@@ -101,6 +111,7 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
     public void delete(Long id) {
         PhoneNumber number = mapper.selectById(id);
         if (number == null) throw new ServiceException("号码不存在");
+        if (hasInboundRoutes(id)) throw new ServiceException("该号码已配置呼入规则，请先删除规则后再删除号码");
         businessHoursRouteService.removeByPhoneNumberId(id);
         if (mapper.deleteById(id) != 1) throw new ServiceException("号码不存在");
         log.info("删除号码管理配置，id={}，number={}", id, number.getNumber());
@@ -242,6 +253,11 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
             .eq(PhoneNumber::getNumber, number)
             .ne(excludedId != null, PhoneNumber::getId, excludedId));
         if (exists) throw new ServiceException("该号码已存在");
+    }
+
+    private boolean hasInboundRoutes(Long phoneNumberId) {
+        return inboundDidEntryMapper.exists(new LambdaQueryWrapper<InboundDidEntry>()
+            .eq(InboundDidEntry::getPhoneNumberId, phoneNumberId));
     }
 
     private void apply(PhoneNumber number, String value, String name, String type, Long nodeId, Long gatewayId,

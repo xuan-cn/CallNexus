@@ -12,6 +12,9 @@ public class InboundDidEntryResponse {
     private Long gatewayId;
     private String gatewayName;
     private String gatewayCode;
+    private Long phoneNumberId;
+    private String phoneNumber;
+    private String phoneNumberName;
     private String entryName;
     private String entryType;
     private String didNumber;

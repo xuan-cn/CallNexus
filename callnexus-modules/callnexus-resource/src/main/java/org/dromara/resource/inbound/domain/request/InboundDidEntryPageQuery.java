@@ -6,6 +6,7 @@ import lombok.Data;
 public class InboundDidEntryPageQuery {
     private Long nodeId;
     private Long gatewayId;
+    private Long phoneNumberId;
     private String entryName;
     private String entryType;
     private String didNumber;

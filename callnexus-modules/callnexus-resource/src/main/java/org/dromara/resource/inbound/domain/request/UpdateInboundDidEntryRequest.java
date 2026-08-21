@@ -11,6 +11,7 @@ public class UpdateInboundDidEntryRequest {
     private Long nodeId;
     @NotNull(message = "请选择网关")
     private Long gatewayId;
+    private Long phoneNumberId;
     @NotBlank(message = "请输入入口名称")
     @Size(max = 64, message = "入口名称不能超过 64 个字符")
     private String entryName;

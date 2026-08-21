@@ -1,0 +1,12 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="CallNexusApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+    <option name="ALTERNATIVE_JRE_PATH" value="ms-17" />
+    <option name="ALTERNATIVE_JRE_PATH_ENABLED" value="true" />
+    <module name="callnexus-admin" />
+    <option name="SHORTEN_COMMAND_LINE" value="ARGS_FILE" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="org.dromara.CallNexusApplication" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

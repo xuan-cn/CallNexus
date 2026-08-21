@@ -204,9 +204,6 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
                 event.uuid(), relatedUuids(event));
             targets.clear();
         }
-        if (isConnectedEvent(event)) {
-            saveAnsweredTargets(event, channelOwner == null ? targets.values() : List.of(channelOwner));
-        }
         boolean survivingRelatedLeg = EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())
             && hasSurvivingRelatedLeg(event);
         if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
@@ -230,9 +227,19 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             log.info("电话腿已结束但业务通话仍有存活腿，暂不发布整通挂机事件，uuid={}，relatedUuids={}",
                 event.uuid(), relatedUuids(event));
         }
+        Map<Long, AgentRealtimeTargetResponse> acceptedTargets = new LinkedHashMap<>();
+        boolean authoritativeOwnerRequired = requiresAuthoritativeChannelOwner(event);
+        if (authoritativeOwnerRequired && channelOwner == null && !targets.isEmpty()) {
+            log.warn("实时事件缺少权威坐席电话腿，不更新坐席状态，nodeId={}，eventName={}，uuid={}，candidateExtensions={}",
+                event.nodeId(), event.eventName(), event.uuid(),
+                targets.values().stream().map(AgentRealtimeTargetResponse::getExtension).toList());
+        }
         for (AgentRealtimeTargetResponse target : targets.values()) {
             boolean channelOwnerTarget = channelOwner != null
                 && channelOwner.getAgentId().equals(target.getAgentId());
+            if (authoritativeOwnerRequired && channelOwner == null) {
+                continue;
+            }
             if (channelOwner != null && isChannelOwnerOnlyRealtimeEvent(event) && !channelOwnerTarget) {
                 log.debug("忽略非当前电话腿所有者的实时事件，uuid={}，eventName={}，ownerExtension={}，targetExtension={}",
                     event.uuid(), event.eventName(), channelOwner.getExtension(), target.getExtension());
@@ -261,8 +268,12 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             if (!publishToTarget) {
                 continue;
             }
+            acceptedTargets.put(target.getAgentId(), target);
             String realtimeMessage = JsonUtils.toJsonString(toMessage(event, target));
             publishRealtimeMessage(target.getUserId(), realtimeMessage);
+        }
+        if (isConnectedEvent(event) && !acceptedTargets.isEmpty()) {
+            saveAnsweredTargets(event, acceptedTargets.values());
         }
         if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())) {
             if (transferredSourceLegHangup || survivingRelatedLeg) {
@@ -273,8 +284,8 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
                 deleteAnsweredTargetMappings(event);
                 deleteUuidActiveCallIndexes(event);
             }
-        } else if (!targets.isEmpty()) {
-            saveUuidMappings(event, targets.values());
+        } else if (!acceptedTargets.isEmpty()) {
+            saveUuidMappings(event, acceptedTargets.values());
         }
     }
 
@@ -351,7 +362,9 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             String handlingCallId = wasAnswered(event, target) ? event.uuid() : null;
             updatePresence(target, wasAnswered(event, target) ? AgentPresenceStatus.AFTER_CALL : AgentPresenceStatus.IDLE, handlingCallId);
         } else if (isConnectedEvent(event)) {
-            saveActiveCallIfAbsent(event, target);
+            if (!saveActiveCallIfAbsent(event, target, true)) {
+                return false;
+            }
             updatePresence(target, AgentPresenceStatus.BUSY, null);
         }
         return true;
@@ -382,7 +395,18 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             || EslEventNames.CHANNEL_PROGRESS.equals(event.eventName())
             || EslEventNames.CHANNEL_PROGRESS_MEDIA.equals(event.eventName())
             || EslEventNames.CHANNEL_ANSWER.equals(event.eventName())
+            || EslEventNames.CHANNEL_HOLD.equals(event.eventName())
+            || EslEventNames.CHANNEL_UNHOLD.equals(event.eventName())
             || EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName());
+    }
+
+    private boolean requiresAuthoritativeChannelOwner(TelephonyEvent event) {
+        return EslEventNames.CHANNEL_CREATE.equals(event.eventName())
+            || EslEventNames.CHANNEL_PROGRESS.equals(event.eventName())
+            || EslEventNames.CHANNEL_PROGRESS_MEDIA.equals(event.eventName())
+            || EslEventNames.CHANNEL_ANSWER.equals(event.eventName())
+            || EslEventNames.CHANNEL_HOLD.equals(event.eventName())
+            || EslEventNames.CHANNEL_UNHOLD.equals(event.eventName());
     }
 
     private boolean isOwnAgentLegStillActive(TelephonyEvent event, AgentActiveCall activeCall) {
@@ -1195,12 +1219,17 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         return false;
     }
 
-    private void saveActiveCallIfAbsent(TelephonyEvent event, AgentRealtimeTargetResponse target) {
+    private boolean saveActiveCallIfAbsent(TelephonyEvent event, AgentRealtimeTargetResponse target) {
+        return saveActiveCallIfAbsent(event, target, false);
+    }
+
+    private boolean saveActiveCallIfAbsent(TelephonyEvent event, AgentRealtimeTargetResponse target,
+                                           boolean requireAgentChannel) {
         String key = activeCallKey(target);
         AgentActiveCall existing = RedisUtils.getCacheObject(key);
+        String agentChannelId = resolveAgentChannelId(event, target);
         if (existing != null) {
             String previousAgentChannelId = existing.getAgentChannelId();
-            String agentChannelId = resolveAgentChannelId(event, target);
             boolean agentLegChanged = agentChannelId != null
                 && previousAgentChannelId != null
                 && !agentChannelId.equals(previousAgentChannelId);
@@ -1217,12 +1246,17 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             }
             RedisUtils.setCacheObject(key, existing, ACTIVE_CALL_TTL);
             saveUuidActiveCallIndexes(event, key);
-            return;
+            return true;
+        }
+        if (requireAgentChannel && (agentChannelId == null || agentChannelId.isBlank())) {
+            log.warn("拒绝创建缺少坐席电话腿的活动通话，nodeId={}，eventName={}，uuid={}，agentId={}，extension={}",
+                event.nodeId(), event.eventName(), event.uuid(), target.getAgentId(), target.getExtension());
+            return false;
         }
         AgentActiveCall call = new AgentActiveCall();
         call.setCallId(resolvePrimaryCallId(event, null));
         call.setBusinessCallId(callStateRuntimeService.resolveBusinessCallId(event));
-        call.setAgentChannelId(resolveAgentChannelId(event, target));
+        call.setAgentChannelId(agentChannelId);
         call.setAgentId(target.getAgentId());
         call.setAgentExtension(target.getExtension());
         call.setDestination(resolvePeerNumber(event, target, null));
@@ -1231,6 +1265,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         call.setCallOperation(AgentCallOperation.NONE);
         RedisUtils.setCacheObject(key, call, ACTIVE_CALL_TTL);
         saveUuidActiveCallIndexes(event, key);
+        return true;
     }
 
     private String resolvePrimaryCallId(TelephonyEvent event, AgentActiveCall existing) {
