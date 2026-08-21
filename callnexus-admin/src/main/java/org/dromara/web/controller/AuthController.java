@@ -80,7 +80,7 @@ public class AuthController {
     /**
      * 登录方法
      *
-     * @param body 登录信息
+     * @param body 登录信息.
      * @return 结果
      */
     @ApiEncrypt
