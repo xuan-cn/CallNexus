@@ -62,6 +62,12 @@ public class AiSpeechProviderController {
         return R.ok(service.testProvider(id, request));
     }
 
+    @GetMapping("/{id}/voices")
+    @SaCheckPermission("callcenter:ai-speech:test")
+    public R<List<String>> voices(@PathVariable Long id) {
+        return R.ok(service.providerVoices(id));
+    }
+
     @PostMapping(value = "/{id}/asr/test", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @SaCheckPermission("callcenter:ai-speech:test")
     public R<AsrTestResponse> testAsr(@PathVariable Long id,
@@ -71,4 +77,3 @@ public class AiSpeechProviderController {
         return R.ok(service.testAsrProvider(id, file, format, sampleRate));
     }
 }
-

@@ -384,7 +384,7 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
                 if (!fallbackTriggered.compareAndSet(false, true)) {
                     return;
                 }
-                log.warn("AI 实时 TTS WS 流式合成失败，将回退到 HTTP 一次性 TTS，sessionId={}，text={}，error={}",
+                log.warn("AI TTS 上游流式合成失败，将回退到 HTTP 一次性 TTS（FreeSWITCH 侧仍为内部 WS），sessionId={}，text={}，error={}",
                     session.getId(), sentence, message);
                 fallbackHttp(session, state, segment);
                 done.countDown();
@@ -395,16 +395,17 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
             ttsService.generateStream(request, listener);
         } catch (Exception exception) {
             if (fallbackTriggered.compareAndSet(false, true)) {
-                log.warn("AI 实时 TTS WS 流式入口异常，回退 HTTP，sessionId={}，text={}",
+                log.warn("AI TTS 上游流式入口异常，回退 HTTP（FreeSWITCH 侧仍为内部 WS），sessionId={}，text={}",
                     session.getId(), sentence, exception);
                 fallbackHttp(session, state, segment);
             }
             done.countDown();
         }
         try {
-            if (!done.await(30, TimeUnit.SECONDS)) {
-                sendError(session, "TTS segment timeout");
-                log.warn("AI 实时 TTS WS 段合成等待超时，sessionId={}，seq={}", session.getId(), segment.seq());
+            // 服务层负责检测连续无音频超时。这里仅等待段真正结束，避免长文本超过固定总时长后
+            // 消费下一段，造成同一低配 CPU 上多个 Kokoro 请求并发、进一步拖慢合成。
+            while (session.isOpen() && !state.cancelled.get() && !done.await(1, TimeUnit.SECONDS)) {
+                // Periodically re-check WebSocket and cancellation state.
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();

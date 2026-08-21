@@ -835,7 +835,7 @@ public class AiRealtimeMrcpEventService {
             tryRecognize(runtime);
             return;
         }
-        long delay = estimateSpeakDelay(openingText) + properties.getUnimrcp().getSpeakCompleteDelayMs();
+        long delay = speakCompletionTimeout(runtime, openingText);
         ScheduledFuture<?> old = runtime.pendingSpeakTimer.getAndSet(null);
         if (old != null) {
             old.cancel(false);
@@ -847,7 +847,7 @@ public class AiRealtimeMrcpEventService {
             if (!ensureChannelAlive(runtime, "CHANNEL_GONE_BEFORE_OPENING_TIMEOUT")) {
                 return;
             }
-            log.warn("AI UniMRCP 未收到首句播报完成事件，按估算时长启动识别，sessionId={}，businessCallId={}，customerLegUuid={}，delayMs={}",
+            log.warn("AI UniMRCP 长时间未收到首句播报完成事件，按安全超时启动识别，sessionId={}，businessCallId={}，customerLegUuid={}，timeoutMs={}",
                 runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, delay);
             markListening(runtime);
             tryRecognize(runtime);
@@ -893,7 +893,7 @@ public class AiRealtimeMrcpEventService {
         gateway().speak(runtime.nodeId, runtime.customerLegUuid, text, runtime.ttsVoice, turnId, seq, turnEnd);
         tryRecognizeDuringPlayback(runtime, turn == null);
         long gatewayCostMs = elapsedMillis(gatewayNanos);
-        long delay = estimateSpeakDelay(text) + properties.getUnimrcp().getSpeakCompleteDelayMs();
+        long delay = speakCompletionTimeout(runtime, text);
         ScheduledFuture<?> old = runtime.pendingSpeakTimer.getAndSet(null);
         if (old != null) {
             old.cancel(false);
@@ -908,7 +908,7 @@ public class AiRealtimeMrcpEventService {
             if (!ensureChannelAlive(runtime, "CHANNEL_GONE_BEFORE_SPEAK_TIMEOUT")) {
                 return;
             }
-            log.warn("AI UniMRCP 未收到播报完成事件，按估算时长兜底处理，sessionId={}，businessCallId={}，customerLegUuid={}，delayMs={}",
+            log.warn("AI UniMRCP 长时间未收到播报完成事件，按安全超时兜底处理，sessionId={}，businessCallId={}，customerLegUuid={}，timeoutMs={}",
                 runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, delay);
             completeSpeak(runtime, activeSpeak, "TIMEOUT");
         }), Instant.now().plusMillis(delay));
@@ -1799,6 +1799,22 @@ public class AiRealtimeMrcpEventService {
 
     private long estimateSpeakDelay(String text) {
         return Math.max(1200L, text.length() * 180L);
+    }
+
+    private long speakCompletionTimeout(RuntimeSession runtime, String text) {
+        long estimatedDelay = estimateSpeakDelay(text) + properties.getUnimrcp().getSpeakCompleteDelayMs();
+        return resolveSpeakCompletionTimeout(runtime.voiceTransport, estimatedDelay,
+            properties.getUnimrcp().getStreamingSpeakCompleteTimeoutMs());
+    }
+
+    static long resolveSpeakCompletionTimeout(VoiceTransport transport, long estimatedDelay,
+                                               Long streamingTimeoutMs) {
+        if (transport != VoiceTransport.WS) {
+            return estimatedDelay;
+        }
+        long configured = streamingTimeoutMs == null ? 180000L : streamingTimeoutMs;
+        long safeTimeout = Math.max(30000L, Math.min(configured, 600000L));
+        return Math.max(estimatedDelay, safeTimeout);
     }
 
     private long elapsedMillis(long startNanos) {

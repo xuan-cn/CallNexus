@@ -151,6 +151,16 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     }
 
     @Override
+    public List<String> providerVoices(Long id) {
+        AiSpeechProvider provider = requireEnabledTtsProvider(id);
+        TtsProvider ttsProvider = providerRegistry.get(provider.getProviderType());
+        if (!(ttsProvider instanceof TtsVoiceCatalogProvider catalogProvider)) {
+            throw new ServiceException("当前语音服务商不支持查询音色列表");
+        }
+        return catalogProvider.voices(provider);
+    }
+
+    @Override
     public AsrTestResponse testAsrProvider(Long id, MultipartFile file, String format, Integer sampleRate) {
         AiSpeechProvider provider = requireEnabledRecordingAsrProvider(id);
         validateAsrTestFile(file);
@@ -972,6 +982,35 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             && !"ALIYUN_NLS".equals(provider.getProviderType())
             && StringUtils.isBlank(provider.getEndpointUrl())) {
             throw new ServiceException("TTS 请求地址不能为空");
+        }
+        if ("FUNASR".equals(provider.getProviderType())) {
+            if (!Boolean.TRUE.equals(provider.getRecordingAsrEnabled())) {
+                throw new ServiceException("FunASR 必须启用录音 ASR 能力");
+            }
+            if (Boolean.TRUE.equals(provider.getTtsEnabled())
+                || Boolean.TRUE.equals(provider.getStreamingTtsEnabled())
+                || Boolean.TRUE.equals(provider.getStreamingAsrEnabled())) {
+                throw new ServiceException("当前 FunASR 接入仅支持句级 ASR 能力");
+            }
+            String endpoint = provider.getRecordingAsrEndpointUrl();
+            if (StringUtils.isBlank(endpoint)
+                || !(endpoint.startsWith("http://") || endpoint.startsWith("https://"))) {
+                throw new ServiceException("FunASR HTTP 地址必须以 http:// 或 https:// 开头");
+            }
+        }
+        if ("KOKORO_LOCAL".equals(provider.getProviderType())) {
+            if (!Boolean.TRUE.equals(provider.getTtsEnabled())) {
+                throw new ServiceException("Kokoro 必须启用 TTS 能力");
+            }
+            if (Boolean.TRUE.equals(provider.getRecordingAsrEnabled())
+                || Boolean.TRUE.equals(provider.getStreamingAsrEnabled())) {
+                throw new ServiceException("Kokoro 本地服务仅支持 TTS 能力");
+            }
+            String endpoint = provider.getEndpointUrl();
+            if (StringUtils.isBlank(endpoint)
+                || !(endpoint.startsWith("http://") || endpoint.startsWith("https://"))) {
+                throw new ServiceException("Kokoro 服务地址必须以 http:// 或 https:// 开头");
+            }
         }
     }
     private void validateDefaultMutation(AiSpeechProvider current, AiSpeechProviderRequest request) {

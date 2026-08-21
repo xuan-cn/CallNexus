@@ -48,7 +48,7 @@ public class AliyunDashScopeRealtimeSpeechProvider
     private static final String DEFAULT_REALTIME_ENDPOINT = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime";
     private static final String DEFAULT_ASR_ENDPOINT_TEMPLATE = "https://{workspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions";
     private static final String DEFAULT_FILE_ASR_MODEL = "qwen3-asr-flash";
-    private static final String DEFAULT_ASR_MODEL = "qwen3-asr-flash-realtime";
+    private static final String DEFAULT_REALTIME_ASR_MODEL = "qwen3-asr-flash-realtime";
     private static final String DEFAULT_TTS_MODEL = "qwen3-tts-flash-realtime";
 
     @Override
@@ -230,9 +230,9 @@ public class AliyunDashScopeRealtimeSpeechProvider
 
         private void connect() {
             String endpoint = StringUtils.blankToDefault(provider.getStreamingAsrEndpointUrl(), DEFAULT_REALTIME_ENDPOINT);
-            String model = StringUtils.blankToDefault(option(provider.getAsrOptionsJson(), "model"), DEFAULT_ASR_MODEL);
+            String model = realtimeAsrModel(provider);
             if (!model.toLowerCase().contains("realtime")) {
-                throw new ServiceException("百炼实时 ASR 需要使用 realtime 模型，请将 ASR扩展参数 model 配置为 qwen3-asr-flash-realtime");
+                throw new ServiceException("百炼实时 ASR 需要使用 realtime 模型，请将 ASR扩展参数 realtimeModel 配置为 qwen3-asr-flash-realtime");
             }
             connect(endpoint, model);
             log.info("已连接百炼实时 ASR，providerCode={}，model={}，sampleRate={}",
@@ -457,7 +457,7 @@ public class AliyunDashScopeRealtimeSpeechProvider
         message.put("content", List.of(content));
 
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("model", StringUtils.blankToDefault(option(provider.getAsrOptionsJson(), "model"), DEFAULT_FILE_ASR_MODEL));
+        payload.put("model", fileAsrModel(provider));
         payload.put("messages", List.of(message));
         payload.put("stream", false);
 
@@ -473,7 +473,7 @@ public class AliyunDashScopeRealtimeSpeechProvider
         Dict options = dict(provider.getAsrOptionsJson());
         if (options != null) {
             for (Map.Entry<String, Object> entry : options.entrySet()) {
-                if (!"model".equals(entry.getKey()) && entry.getValue() != null) {
+                if (!isAsrConfigOnlyOption(entry.getKey()) && entry.getValue() != null) {
                     result.put(entry.getKey(), entry.getValue());
                 }
             }
@@ -486,6 +486,33 @@ public class AliyunDashScopeRealtimeSpeechProvider
             result.putIfAbsent("enable_itn", provider.getAsrEnableItn());
         }
         return result;
+    }
+
+    static String fileAsrModel(AiSpeechProvider provider) {
+        String configured = option(provider.getAsrOptionsJson(), "fileModel");
+        if (StringUtils.isNotBlank(configured)) {
+            return configured;
+        }
+        String legacy = option(provider.getAsrOptionsJson(), "model");
+        return StringUtils.isNotBlank(legacy) && !legacy.toLowerCase().contains("realtime")
+            ? legacy : DEFAULT_FILE_ASR_MODEL;
+    }
+
+    static String realtimeAsrModel(AiSpeechProvider provider) {
+        String configured = option(provider.getAsrOptionsJson(), "realtimeModel");
+        if (StringUtils.isNotBlank(configured)) {
+            return configured;
+        }
+        String legacy = option(provider.getAsrOptionsJson(), "model");
+        return StringUtils.isNotBlank(legacy) && legacy.toLowerCase().contains("realtime")
+            ? legacy : DEFAULT_REALTIME_ASR_MODEL;
+    }
+
+    private static boolean isAsrConfigOnlyOption(String key) {
+        return switch (key) {
+            case "model", "fileModel", "realtimeModel", "corpus", "vadThreshold", "prefixPaddingMs" -> true;
+            default -> false;
+        };
     }
 
     private static String fileAsrEndpoint(AiSpeechProvider provider) {

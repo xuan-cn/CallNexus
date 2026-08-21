@@ -4,6 +4,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.agent.domain.AgentConsultCall;
 import org.dromara.agent.domain.AgentConsultCallStatus;
+import org.dromara.agent.domain.AgentCallOperation;
+import org.dromara.agent.domain.AgentCallPhase;
 import org.dromara.agent.domain.AgentPresence;
 import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
@@ -65,6 +67,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private static final String TRANSFERRED_SOURCE_EXTENSION_KEY_PREFIX = "callnexus:call:transferred-source-extension:";
     private static final String TRANSFERRED_SOURCE_LEG_KEY_PREFIX = "callnexus:call:transferred-source-leg:";
     private static final String PRESENCE_KEY_PREFIX = "callnexus:agent:presence:";
+    private static final String CALL_STATE_VERSION_KEY_PREFIX = "callnexus:agent:call-state-version:";
     private static final Duration ACTIVE_CALL_TTL = Duration.ofHours(4);
     private static final Duration PRESENCE_TTL = Duration.ofHours(12);
     private static final Duration ENDED_CALL_TTL = Duration.ofSeconds(30);
@@ -756,15 +759,18 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         message.setCalledNumber(target.getExtension());
         message.setAgentExtension(target.getExtension());
         message.setOccurredAt(LocalDateTime.now());
-        enrichCallerLocation(message, target.getTenantId());
-        publishRealtimeMessage(target.getUserId(), JsonUtils.toJsonString(message));
-        publishLifecycleEvent(event, target);
         if (EslEventNames.SUBCLASS_CC_AGENT_ANSWER.equals(event.eventSubclass())) {
             TenantHelper.dynamic(target.getTenantId(), () -> {
                 saveActiveCallIfAbsent(event, target);
                 updatePresence(target, AgentPresenceStatus.BUSY, null);
             });
         }
+        applyRealtimeCallState(message, event, target,
+            EslEventNames.SUBCLASS_CC_AGENT_ANSWER.equals(event.eventSubclass())
+                ? AgentCallPhase.CONNECTED : AgentCallPhase.INCOMING_RINGING);
+        enrichCallerLocation(message, target.getTenantId());
+        publishRealtimeMessage(target.getUserId(), JsonUtils.toJsonString(message));
+        publishLifecycleEvent(event, target);
     }
 
     private boolean hasLiveActiveAgentLeg(TelephonyEvent event, AgentRealtimeTargetResponse target) {
@@ -834,8 +840,75 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         message.setAgentExtension(target.getExtension());
         message.setHangupCause(event.hangupCause());
         message.setOccurredAt(LocalDateTime.now());
+        applyRealtimeCallState(message, event, target, resolveCallPhase(event, target));
         enrichCallerLocation(message, target.getTenantId());
         return message;
+    }
+
+    private AgentCallPhase resolveCallPhase(TelephonyEvent event, AgentRealtimeTargetResponse target) {
+        return switch (event.eventName()) {
+            case EslEventNames.CHANNEL_ANSWER, EslEventNames.CHANNEL_BRIDGE -> AgentCallPhase.CONNECTED;
+            case EslEventNames.CHANNEL_HOLD -> AgentCallPhase.HELD;
+            case EslEventNames.CHANNEL_UNHOLD -> AgentCallPhase.CONNECTED;
+            case EslEventNames.CHANNEL_HANGUP_COMPLETE -> AgentCallPhase.ENDED;
+            case EslEventNames.CHANNEL_CREATE, EslEventNames.CHANNEL_PROGRESS, EslEventNames.CHANNEL_PROGRESS_MEDIA ->
+                isIncomingAgentEvent(event, target) ? AgentCallPhase.INCOMING_RINGING : AgentCallPhase.OUTBOUND_DIALING;
+            default -> null;
+        };
+    }
+
+    private boolean isIncomingAgentEvent(TelephonyEvent event, AgentRealtimeTargetResponse target) {
+        String extension = normalizeExtension(target.getExtension());
+        return extension != null
+            && !eventEndpointMatchesExtension(event.nodeId(), extension, event.callerNumber())
+            && (eventEndpointMatchesExtension(event.nodeId(), extension, event.destinationNumber())
+                || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_SIP_TO_USER))
+                || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_SIP_REQ_USER)));
+    }
+
+    private void applyRealtimeCallState(CallRealtimeMessage message, TelephonyEvent event,
+                                        AgentRealtimeTargetResponse target, AgentCallPhase phase) {
+        AgentActiveCall activeCall = RedisUtils.getCacheObject(activeCallKey(target));
+        AgentCallPhase effectivePhase = preserveAuthoritativePhase(activeCall, phase);
+        long stateVersion = nextStateVersion(target);
+        message.setCallPhase(effectivePhase);
+        message.setAgentLegUuid(activeCall == null
+            ? resolveAgentChannelId(event, target) : activeCall.getAgentChannelId());
+        message.setCallOperation(activeCall == null || activeCall.getCallOperation() == null
+            ? AgentCallOperation.NONE : activeCall.getCallOperation());
+        message.setStateVersion(stateVersion);
+        if (activeCall != null && effectivePhase != AgentCallPhase.ENDED) {
+            if (effectivePhase != null) {
+                activeCall.setCallPhase(effectivePhase);
+            }
+            if (activeCall.getCallOperation() == null) {
+                activeCall.setCallOperation(AgentCallOperation.NONE);
+            }
+            activeCall.setStateVersion(stateVersion);
+            RedisUtils.setCacheObject(activeCallKey(target), activeCall, ACTIVE_CALL_TTL);
+        }
+    }
+
+    private AgentCallPhase preserveAuthoritativePhase(AgentActiveCall activeCall, AgentCallPhase eventPhase) {
+        if (activeCall == null || activeCall.getCallPhase() == null || eventPhase == null) {
+            return eventPhase;
+        }
+        AgentCallPhase activePhase = activeCall.getCallPhase();
+        boolean preConnectEvent = eventPhase == AgentCallPhase.INCOMING_RINGING
+            || eventPhase == AgentCallPhase.OUTBOUND_DIALING;
+        if (preConnectEvent && (activePhase == AgentCallPhase.OUTBOUND_DIALING
+            || activePhase == AgentCallPhase.CONNECTED || activePhase == AgentCallPhase.HELD)) {
+            return activePhase;
+        }
+        return eventPhase;
+    }
+
+    private long nextStateVersion(AgentRealtimeTargetResponse target) {
+        String key = CALL_STATE_VERSION_KEY_PREFIX + target.getTenantId() + ":" + target.getAgentId();
+        var counter = RedisUtils.getClient().getAtomicLong(key);
+        long version = counter.incrementAndGet();
+        counter.expire(ACTIVE_CALL_TTL);
+        return version;
     }
 
     private void applyRealtimeCallIdentity(CallRealtimeMessage message, TelephonyEvent event,
@@ -1138,6 +1211,10 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             }
             existing.setDestination(resolvePeerNumber(event, target, existing.getDestination()));
             existing.setRelatedUuids(mergeRelatedUuids(event, existing, agentLegChanged));
+            existing.setCallPhase(AgentCallPhase.CONNECTED);
+            if (existing.getCallOperation() == null) {
+                existing.setCallOperation(AgentCallOperation.NONE);
+            }
             RedisUtils.setCacheObject(key, existing, ACTIVE_CALL_TTL);
             saveUuidActiveCallIndexes(event, key);
             return;
@@ -1150,6 +1227,8 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         call.setAgentExtension(target.getExtension());
         call.setDestination(resolvePeerNumber(event, target, null));
         call.setRelatedUuids(relatedUuids(event));
+        call.setCallPhase(AgentCallPhase.CONNECTED);
+        call.setCallOperation(AgentCallOperation.NONE);
         RedisUtils.setCacheObject(key, call, ACTIVE_CALL_TTL);
         saveUuidActiveCallIndexes(event, key);
     }
