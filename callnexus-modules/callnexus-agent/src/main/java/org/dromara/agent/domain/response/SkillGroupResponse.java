@@ -13,6 +13,8 @@ public class SkillGroupResponse {
     private List<Long> agentIds;
     private Integer memberCount;
     private Boolean enabled;
+    private Boolean assistEnabled;
+    private Long assistAgentId;
     private String remark;
     private Integer version;
     private Date createTime;

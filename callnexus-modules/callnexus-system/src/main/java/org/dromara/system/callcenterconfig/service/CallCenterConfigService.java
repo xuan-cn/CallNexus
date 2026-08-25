@@ -18,5 +18,7 @@ public interface CallCenterConfigService {
 
     Integer getInt(String configKey);
 
+    Integer getIntOrDefault(String configKey, Integer defaultValue);
+
     Boolean getBoolean(String configKey);
 }

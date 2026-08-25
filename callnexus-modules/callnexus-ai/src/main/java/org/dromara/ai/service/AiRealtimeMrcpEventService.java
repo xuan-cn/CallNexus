@@ -100,6 +100,7 @@ public class AiRealtimeMrcpEventService {
     private final AiRealtimeTtsInternalService realtimeTtsService;
     private final AiRealtimeTtsConnectionRegistry ttsConnectionRegistry;
     private final ObjectProvider<AiRealtimeTelephonyGateway> telephonyGatewayProvider;
+    private final ObjectProvider<AiIntentTicketActionService> ticketActionServiceProvider;
     @Qualifier("aiRealtimeExecutor")
     private final Executor executor;
     @Qualifier("aiRealtimeScheduler")
@@ -122,6 +123,7 @@ public class AiRealtimeMrcpEventService {
                                        AiRealtimeTtsInternalService realtimeTtsService,
                                        AiRealtimeTtsConnectionRegistry ttsConnectionRegistry,
                                        ObjectProvider<AiRealtimeTelephonyGateway> telephonyGatewayProvider,
+                                       ObjectProvider<AiIntentTicketActionService> ticketActionServiceProvider,
                                       @Qualifier("aiRealtimeExecutor") Executor executor,
                                       @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler scheduler) {
         this.properties = properties;
@@ -139,6 +141,7 @@ public class AiRealtimeMrcpEventService {
         this.realtimeTtsService = realtimeTtsService;
         this.ttsConnectionRegistry = ttsConnectionRegistry;
         this.telephonyGatewayProvider = telephonyGatewayProvider;
+        this.ticketActionServiceProvider = ticketActionServiceProvider;
         this.executor = executor;
         this.scheduler = scheduler;
     }
@@ -742,10 +745,11 @@ public class AiRealtimeMrcpEventService {
     private PendingIntentAction pendingAction(AiIntentRecognitionResponse recognition) throws Exception {
         String actionType = StringUtils.blankToDefault(recognition.getActionType(), "NONE").toUpperCase(Locale.ROOT);
         String target = null;
+        String actionConfigJson = recognition.getActionConfigJson();
         if ("TRANSFER_EXTENSION".equals(actionType)
             || "TRANSFER_QUEUE".equals(actionType)
             || "TRANSFER_IVR".equals(actionType)) {
-            JsonNode config = JsonUtils.getObjectMapper().readTree(recognition.getActionConfigJson());
+            JsonNode config = JsonUtils.getObjectMapper().readTree(actionConfigJson);
             target = switch (actionType) {
                 case "TRANSFER_EXTENSION" -> config.path("extension").asText(null);
                 case "TRANSFER_QUEUE" -> config.path("queueCode").asText(null);
@@ -757,9 +761,9 @@ public class AiRealtimeMrcpEventService {
             }
         }
         return switch (actionType) {
-            case "STOP_PLAYBACK", "TRANSFER_EXTENSION", "TRANSFER_QUEUE", "TRANSFER_IVR", "END_CALL" ->
+            case "STOP_PLAYBACK", "TRANSFER_EXTENSION", "TRANSFER_QUEUE", "TRANSFER_IVR", "CREATE_TICKET", "END_CALL" ->
                 new PendingIntentAction(recognition.getIntentCode(), recognition.getIntentName(), actionType,
-                    target, recognition.getResponseTemplate());
+                    target, recognition.getResponseTemplate(), actionConfigJson);
             default -> null;
         };
     }
@@ -1160,6 +1164,17 @@ public class AiRealtimeMrcpEventService {
                 case "END_CALL" -> {
                     scheduleIntentHangup(runtime, action);
                     return true;
+                }
+                case "CREATE_TICKET" -> {
+                    JsonNode config = JsonUtils.getObjectMapper().readTree(action.actionConfigJson());
+                    Long templateId = config.path("templateId").asLong(0L);
+                    if (templateId <= 0) throw new ServiceException("创建工单动作未配置工单模板");
+                    AiIntentTicketActionService service = ticketActionServiceProvider.getIfAvailable();
+                    if (service == null) throw new ServiceException("工单动作服务不可用");
+                    Long ticketId = service.create(runtime.businessCallId, templateId,
+                        config.path("submitAfterCreate").asBoolean(false));
+                    log.info("AI intent created ticket, sessionId={}, businessCallId={}, intentCode={}, ticketId={}",
+                        runtime.entity.getId(), runtime.businessCallId, action.intentCode(), ticketId);
                 }
                 default -> {
                     return false;
@@ -1843,7 +1858,7 @@ public class AiRealtimeMrcpEventService {
     }
 
     private record PendingIntentAction(String intentCode, String intentName, String actionType,
-                                       String target, String responseTemplate) {
+                                       String target, String responseTemplate, String actionConfigJson) {
     }
 
     private static final class RuntimeSession {

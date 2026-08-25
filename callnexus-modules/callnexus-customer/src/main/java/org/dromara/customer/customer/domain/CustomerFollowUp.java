@@ -16,6 +16,8 @@ public class CustomerFollowUp extends TenantEntity {
     private Long customerId;
     private String content;
     private String followUpByName;
+    private String sourceType;
+    private Long sourceId;
     @TableLogic
     private Boolean deleted;
 }

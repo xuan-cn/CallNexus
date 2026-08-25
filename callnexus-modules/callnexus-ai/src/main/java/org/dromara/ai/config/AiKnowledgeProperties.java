@@ -37,6 +37,7 @@ public class AiKnowledgeProperties {
         private Long speakCompleteDelayMs = 600L;
         private Long streamingSpeakCompleteTimeoutMs = 180000L;
         private Long recognizeRetryDelayMs = 500L;
+        private Long recognizeStallTimeoutMs = 25000L;
         private Long channelProbeIntervalMs = 2000L;
         private Integer maxConsecutiveEmptyRecognitions = 3;
         private Boolean hangupOnRecognitionIdle = true;

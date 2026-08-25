@@ -4,6 +4,8 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.ivr.domain.IvrFlowRequest;
 import org.dromara.ivr.domain.IvrFlowResponse;
 import org.dromara.ivr.domain.IvrFlowVersionResponse;
@@ -22,6 +24,12 @@ public class IvrFlowController {
     @SaCheckPermission("callcenter:ivr-flow:list")
     public R<List<IvrFlowResponse>> list() {
         return R.ok(service.list());
+    }
+
+    @GetMapping("/page")
+    @SaCheckPermission("callcenter:ivr-flow:list")
+    public TableDataInfo<IvrFlowResponse> page(PageQuery pageQuery) {
+        return service.page(pageQuery);
     }
 
     @GetMapping("/{id}")

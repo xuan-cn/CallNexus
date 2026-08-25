@@ -29,4 +29,7 @@ public class OutboundAttemptResponse {
     private Integer billableSeconds;
     private String hangupCause;
     private String hangupCauseLabel;
+    private String failureCategory;
+    private String failureCategoryLabel;
+    private Boolean retryable;
 }

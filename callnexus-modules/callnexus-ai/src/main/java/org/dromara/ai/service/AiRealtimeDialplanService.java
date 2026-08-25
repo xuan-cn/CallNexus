@@ -10,11 +10,13 @@ import org.dromara.ai.realtime.AiRealtimeTokenService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.resource.ai.service.AiAgentDialplanQueryService;
+import org.dromara.resource.freeswitch.xml.FreeSwitchXmlRenderer;
 import org.springframework.stereotype.Service;
 
 @Service
 @RequiredArgsConstructor
-public class AiRealtimeDialplanService {
+public class AiRealtimeDialplanService implements AiAgentDialplanQueryService {
     private final AiKnowledgeProperties properties;
     private final AiAgentMapper agentMapper;
     private final AiSpeechProviderSelector speechProviderSelector;
@@ -59,6 +61,62 @@ public class AiRealtimeDialplanService {
 
     public boolean isAudioStreamTransport() {
         return !isUniMrcpTransport();
+    }
+
+    @Override
+    public String renderDirectAgent(String tenantId, Long agentId, Long nodeId, String destinationNumber,
+                                    String context, String sipDomain) {
+        return TenantHelper.dynamic(tenantId, () -> renderDirectAgentInTenant(
+            agentId, nodeId, destinationNumber, context));
+    }
+
+    private String renderDirectAgentInTenant(Long agentId, Long nodeId, String destinationNumber, String context) {
+        validate(agentId);
+        String destination = FreeSwitchXmlRenderer.escape(destinationNumber);
+        String dialplanContext = FreeSwitchXmlRenderer.escape(
+            StringUtils.isBlank(context) ? "default" : context);
+        StringBuilder actions = new StringBuilder()
+            .append("      <action application=\"export\" data=\"callnexus_ai_active=true\"/>\n")
+            .append("      <action application=\"export\" data=\"callnexus_ai_agent_id=")
+            .append(agentId).append("\"/>\n")
+              .append("      <action application=\"export\" data=\"callnexus_ai_flow_id=0\"/>\n")
+              .append("      <action application=\"export\" data=\"callnexus_ai_node_id=")
+              .append(nodeId == null ? 0L : nodeId).append("\"/>\n")
+            .append("      <action application=\"export\" data=\"callnexus_ai_customer_leg_uuid=${uuid}\"/>\n");
+        if (isUniMrcpTransport()) {
+            UniMrcpOpeningPrompt opening = buildUniMrcpOpeningPrompt(agentId);
+            actions.append("      <action application=\"export\" data=\"callnexus_ai_transport=UNIMRCP\"/>\n");
+            if (opening.hasText()) {
+                String speak = cleanSegment(opening.profile()) + "|" + cleanSegment(opening.voice()) + "|"
+                    + cleanSegment(opening.text());
+                actions.append("      <action application=\"export\" data=\"callnexus_ai_opening_preplayed=true\"/>\n")
+                    .append("      <action application=\"speak\" data=\"")
+                    .append(FreeSwitchXmlRenderer.escape(speak)).append("\"/>\n");
+            }
+        } else {
+            String streamUrl = buildStreamUrl(agentId, 0L, nodeId);
+            actions.append("      <action application=\"set\" data=\"STREAM_BUFFER_SIZE=100\"/>\n")
+                .append("      <action application=\"set\" data=\"STREAM_HEART_BEAT=30\"/>\n")
+                .append("      <action application=\"set\" data=\"callnexus_ai_stream_result=${api(uuid_audio_stream ${uuid} start ")
+                .append(FreeSwitchXmlRenderer.escape(streamUrl)).append(" mono 16k)}\"/>\n");
+        }
+        actions.append("      <action application=\"park\"/>\n");
+        return """
+            <document type="freeswitch/xml">
+              <section name="dialplan" description="CallNexus Direct AI Dialplan">
+                <context name="%s">
+                  <extension name="%s" continue="false">
+                    <condition field="destination_number" expression="^%s$">
+            %s                    </condition>
+                  </extension>
+                </context>
+              </section>
+            </document>
+            """.formatted(dialplanContext, destination, destination, actions);
+    }
+
+    private String cleanSegment(String value) {
+        return value == null ? "" : value.replace('|', '，').trim();
     }
 
     private AiAgent requireAgent(Long agentId) {

@@ -3,6 +3,7 @@ package org.dromara.customer.customer.service.impl;
 import lombok.RequiredArgsConstructor;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.agent.domain.Agent;
 import org.dromara.agent.domain.SkillGroupMember;
@@ -386,6 +387,16 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     }
 
     @Override
+    public TableDataInfo<CustomerFollowUpResponse> pageFollowUps(Long customerId, PageQuery pageQuery) {
+        requireCustomer(customerId);
+        IPage<CustomerFollowUpResponse> page = followUpMapper.selectPage(pageQuery.build(), new LambdaQueryWrapper<CustomerFollowUp>()
+                .eq(CustomerFollowUp::getCustomerId, customerId)
+                .orderByDesc(CustomerFollowUp::getCreateTime))
+            .convert(this::toFollowUpResponse);
+        return TableDataInfo.build(page);
+    }
+
+    @Override
     public Long addFollowUp(Long customerId, String content) {
         requireCustomer(customerId);
         CustomerFollowUp followUp = new CustomerFollowUp();
@@ -394,6 +405,47 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         followUp.setFollowUpByName(LoginHelper.getUsername());
         followUpMapper.insert(followUp);
         return followUp.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void recordOutboundResult(Long customerId, Long attemptId, String content, String tag) {
+        requireCustomer(customerId);
+        if (attemptId == null) return;
+        long existing = followUpMapper.selectCount(new LambdaQueryWrapper<CustomerFollowUp>()
+            .eq(CustomerFollowUp::getSourceType, "AUTO_OUTBOUND")
+            .eq(CustomerFollowUp::getSourceId, attemptId));
+        if (existing == 0) {
+            CustomerFollowUp followUp = new CustomerFollowUp();
+            followUp.setCustomerId(customerId);
+            followUp.setContent(content);
+            followUp.setFollowUpByName("自动外呼");
+            followUp.setSourceType("AUTO_OUTBOUND");
+            followUp.setSourceId(attemptId);
+            try {
+                followUpMapper.insert(followUp);
+            } catch (DuplicateKeyException ignored) {
+                // 通话结束事件可能重复到达，来源唯一键保证只生成一条跟进记录。
+            }
+        }
+        appendAssignmentTag(customerId, tag);
+    }
+
+    private void appendAssignmentTag(Long customerId, String tag) {
+        String normalized = cleanText(tag);
+        if (normalized == null) return;
+        CustomerAssignment assignment = loadActiveAssignment(customerId);
+        if (assignment == null) return;
+        List<String> tags = new java.util.ArrayList<>();
+        if (hasText(assignment.getTags())) {
+            tags.addAll(java.util.Arrays.stream(assignment.getTags().split("[,，]"))
+                .map(String::trim).filter(value -> !value.isEmpty()).toList());
+        }
+        if (tags.stream().noneMatch(value -> value.equalsIgnoreCase(normalized))) {
+            tags.add(normalized);
+            assignment.setTags(String.join(",", tags));
+            customerAssignmentMapper.updateById(assignment);
+        }
     }
 
     private Customer findByPhone(String primaryPhone) {

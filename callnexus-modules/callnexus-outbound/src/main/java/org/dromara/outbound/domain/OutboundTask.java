@@ -18,6 +18,19 @@ public class OutboundTask extends TenantEntity {
     private String status;
     private String description;
     private Long callerNumberId;
+    private String dialMode;
+    private String targetType;
+    private Long targetId;
+    private Long skillGroupId;
+    private Integer concurrencyLimit;
+    private Integer callsPerMinute;
+    private Integer maxCallsPerDay;
+    private Integer maxCallsTotal;
+    private Integer minCallIntervalMinutes;
+    private String scheduleTimezone;
+    private Boolean resultWritebackEnabled;
+    private String connectedTag;
+    private String failedTag;
     private Boolean autoRetryEnabled;
     private Integer maxRetryCount;
     private Integer retryIntervalMinutes;
@@ -26,6 +39,9 @@ public class OutboundTask extends TenantEntity {
     private Long retryAssigneeAgentId;
     private LocalDateTime lastScheduledAt;
     private String lastScheduleSummary;
+    private String schedulerOwner;
+    private LocalDateTime schedulerLeaseUntil;
+    private LocalDateTime schedulerHeartbeatAt;
     @Version private Integer version;
     @TableLogic private Boolean deleted;
 }

@@ -9,6 +9,8 @@ import org.dromara.outbound.domain.OutboundMember;
 import org.dromara.outbound.domain.OutboundTask;
 import org.dromara.outbound.mapper.OutboundMemberMapper;
 import org.dromara.outbound.mapper.OutboundTaskMapper;
+import org.dromara.outbound.domain.OutboundTaskRetryRule;
+import org.dromara.outbound.mapper.OutboundTaskRetryRuleMapper;
 import org.dromara.outbound.service.OutboundAutomaticRetryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +30,7 @@ public class OutboundAutomaticRetryServiceImpl implements OutboundAutomaticRetry
 
     private final OutboundTaskMapper taskMapper;
     private final OutboundMemberMapper memberMapper;
+    private final OutboundTaskRetryRuleMapper retryRuleMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -40,14 +43,15 @@ public class OutboundAutomaticRetryServiceImpl implements OutboundAutomaticRetry
         OutboundTask task = taskMapper.selectById(member.getTaskId());
         if (task == null) return;
 
-        boolean retryResult = retryResultCodes(task).contains(suggestedResultCode);
-        int maxRetryCount = task.getMaxRetryCount() == null ? DEFAULT_MAX_RETRY_COUNT : task.getMaxRetryCount();
-        boolean retryLimitReached = Boolean.TRUE.equals(task.getAutoRetryEnabled()) && retryResult
+        RetryPolicy policy = retryPolicy(task, suggestedResultCode);
+        boolean retryResult = policy.enabled();
+        int maxRetryCount = policy.maxRetryCount();
+        boolean retryLimitReached = retryResult
             && member.getAttemptCount() != null && member.getAttemptCount() > maxRetryCount;
-        boolean retry = Boolean.TRUE.equals(task.getAutoRetryEnabled()) && retryResult && !retryLimitReached;
+        boolean retry = retryResult && !retryLimitReached;
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime nextRetryAt = retry ? now.plusMinutes(
-            task.getRetryIntervalMinutes() == null ? DEFAULT_RETRY_INTERVAL_MINUTES : task.getRetryIntervalMinutes()) : null;
+            policy.retryIntervalMinutes()) : null;
         String completionReason = retry ? null : retryLimitReached ? "RETRY_LIMIT_REACHED" : "SYSTEM";
         String resultRemark = retry
             ? "系统根据通话结果自动安排重呼"
@@ -84,10 +88,28 @@ public class OutboundAutomaticRetryServiceImpl implements OutboundAutomaticRetry
             .collect(Collectors.toSet());
     }
 
+    private RetryPolicy retryPolicy(OutboundTask task, String resultCode) {
+        if ("AUTO".equals(task.getTaskType())) {
+            OutboundTaskRetryRule rule = retryRuleMapper.selectOne(new LambdaQueryWrapper<OutboundTaskRetryRule>()
+                .eq(OutboundTaskRetryRule::getTaskId, task.getId())
+                .eq(OutboundTaskRetryRule::getResultCode, resultCode)
+                .eq(OutboundTaskRetryRule::getRetryEnabled, true)
+                .last("LIMIT 1"));
+            if (rule == null) return new RetryPolicy(false, 0, DEFAULT_RETRY_INTERVAL_MINUTES);
+            return new RetryPolicy(true,
+                rule.getMaxRetryCount() == null ? 1 : rule.getMaxRetryCount(),
+                rule.getRetryIntervalMinutes() == null ? DEFAULT_RETRY_INTERVAL_MINUTES : rule.getRetryIntervalMinutes());
+        }
+        boolean enabled = Boolean.TRUE.equals(task.getAutoRetryEnabled()) && retryResultCodes(task).contains(resultCode);
+        return new RetryPolicy(enabled,
+            task.getMaxRetryCount() == null ? DEFAULT_MAX_RETRY_COUNT : task.getMaxRetryCount(),
+            task.getRetryIntervalMinutes() == null ? DEFAULT_RETRY_INTERVAL_MINUTES : task.getRetryIntervalMinutes());
+    }
+
     private void completeTaskIfFinished(Long taskId) {
         long remaining = memberMapper.selectCount(new LambdaQueryWrapper<OutboundMember>()
             .eq(OutboundMember::getTaskId, taskId)
-            .in(OutboundMember::getStatus, "PENDING", "RETRY", "CLAIMED", "DIALING"));
+            .in(OutboundMember::getStatus, "PENDING", "RETRY", "SCHEDULED", "CLAIMED", "DIALING"));
         if (remaining == 0) {
             taskMapper.update(null, new LambdaUpdateWrapper<OutboundTask>()
                 .eq(OutboundTask::getId, taskId)
@@ -100,5 +122,8 @@ public class OutboundAutomaticRetryServiceImpl implements OutboundAutomaticRetry
             .eq(OutboundTask::getId, taskId)
             .eq(OutboundTask::getStatus, "COMPLETED")
             .set(OutboundTask::getStatus, "RUNNING"));
+    }
+
+    private record RetryPolicy(boolean enabled, int maxRetryCount, int retryIntervalMinutes) {
     }
 }

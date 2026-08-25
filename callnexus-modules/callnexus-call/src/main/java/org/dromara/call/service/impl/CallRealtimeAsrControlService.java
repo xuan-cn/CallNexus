@@ -18,9 +18,12 @@ import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionResponse;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -39,6 +42,8 @@ public class CallRealtimeAsrControlService {
     private static final String LEG_CUSTOMER = "CUSTOMER";
     private static final String LEG_AGENT = "AGENT";
     private static final String EVENT_BODY_HEADER = "CallNexus-Event-Body";
+
+    private final ConcurrentMap<String, RecognitionWatch> recognitionWatches = new ConcurrentHashMap<>();
 
     private final AiKnowledgeProperties properties;
     private final FreeSwitchNodeQueryService nodeQueryService;
@@ -81,6 +86,7 @@ public class CallRealtimeAsrControlService {
         if (!isUuid(event.uuid())) {
             return;
         }
+        touchWatch(event.nodeId(), event.uuid());
         if (!hasRecognitionResult(event.headers())) {
             return;
         }
@@ -133,6 +139,8 @@ public class CallRealtimeAsrControlService {
             telephonyCommandGateway.startSpeechRecognition(endpoint, legUuid,
                 unimrcp.getProfile(), unimrcp.getGrammar(), unimrcp.getDetectScript());
             RedisUtils.setCacheObject(key, leg.getBusinessCallId(), ACTIVE_TTL);
+            recognitionWatches.put(watchKey(nodeId, legUuid),
+                new RecognitionWatch(nodeId, legUuid, System.currentTimeMillis()));
             log.info("Realtime call ASR {}, businessCallId={}, legUuid={}, legRole={}",
                 forceRestart ? "restarted" : "started", leg.getBusinessCallId(), legUuid, leg.getLegRole());
         } catch (Exception exception) {
@@ -186,7 +194,58 @@ public class CallRealtimeAsrControlService {
                 event.nodeId(), event.uuid(), exception.getMessage());
         } finally {
             RedisUtils.deleteObject(key);
+            recognitionWatches.remove(watchKey(event.nodeId(), event.uuid()));
         }
+    }
+
+    @Scheduled(fixedDelayString = "${ai.unimrcp.channel-probe-interval-ms:2000}")
+    public void restartStalledRecognitions() {
+        if (!Boolean.TRUE.equals(properties.getCallRealtimeAsrEnabled())) {
+            recognitionWatches.clear();
+            return;
+        }
+        long timeoutMs = Math.max(10000L, properties.getUnimrcp().getRecognizeStallTimeoutMs());
+        long now = System.currentTimeMillis();
+        for (Map.Entry<String, RecognitionWatch> entry : recognitionWatches.entrySet()) {
+            RecognitionWatch watch = entry.getValue();
+            if (now - watch.lastActivityAt() < timeoutMs) {
+                continue;
+            }
+            RecognitionWatch claimed = new RecognitionWatch(watch.nodeId(), watch.legUuid(), now);
+            if (!recognitionWatches.replace(entry.getKey(), watch, claimed)) {
+                continue;
+            }
+            restartStalledRecognition(entry.getKey(), claimed, timeoutMs);
+        }
+    }
+
+    private void restartStalledRecognition(String key, RecognitionWatch watch, long timeoutMs) {
+        EslEndpoint endpoint;
+        try {
+            endpoint = endpoint(watch.nodeId());
+            if (!isLiveChannel(endpoint, watch.nodeId(), watch.legUuid(), true)) {
+                recognitionWatches.remove(key);
+                RedisUtils.deleteObject(activeKey(watch.legUuid()));
+                return;
+            }
+            log.warn("Realtime call ASR stalled, restart recognition, nodeId={}, legUuid={}, stallTimeoutMs={}",
+                watch.nodeId(), watch.legUuid(), timeoutMs);
+            telephonyCommandGateway.stopSpeechRecognition(endpoint, watch.legUuid());
+            long retryDelayMs = Math.max(100L, properties.getUnimrcp().getRecognizeRetryDelayMs());
+            Thread.sleep(Math.min(retryDelayMs, 1000L));
+            tryStartLeg(endpoint, watch.nodeId(), watch.legUuid(), true);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        } catch (Exception exception) {
+            log.warn("Realtime call ASR watchdog restart failed, nodeId={}, legUuid={}, error={}",
+                watch.nodeId(), watch.legUuid(), exception.getMessage());
+        }
+    }
+
+    private void touchWatch(Long nodeId, String legUuid) {
+        String key = watchKey(nodeId, legUuid);
+        recognitionWatches.computeIfPresent(key,
+            (ignored, current) -> new RecognitionWatch(current.nodeId(), current.legUuid(), System.currentTimeMillis()));
     }
 
     private boolean shouldStartForRole(String legRole) {
@@ -275,5 +334,12 @@ public class CallRealtimeAsrControlService {
 
     private String activeKey(String uuid) {
         return ACTIVE_KEY_PREFIX + uuid;
+    }
+
+    private String watchKey(Long nodeId, String uuid) {
+        return nodeId + ":" + uuid;
+    }
+
+    private record RecognitionWatch(Long nodeId, String legUuid, long lastActivityAt) {
     }
 }

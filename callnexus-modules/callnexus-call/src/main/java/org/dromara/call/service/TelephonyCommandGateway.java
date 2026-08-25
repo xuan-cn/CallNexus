@@ -5,10 +5,14 @@ import org.dromara.call.domain.OutboundRoute;
 import org.dromara.call.domain.CallOriginateContext;
 
 import java.util.Set;
+import java.util.Map;
 
 public interface TelephonyCommandGateway {
     void originate(EslEndpoint endpoint, String callId, String agentExtension, String destination,
                    OutboundRoute outboundRoute, CallOriginateContext context);
+    void originateAgentless(EslEndpoint endpoint, String callId, String destination, OutboundRoute outboundRoute,
+                            CallOriginateContext context, String answeredDestination,
+                            Map<String, String> channelVariables);
     void hangup(EslEndpoint endpoint, String callId);
     void hold(EslEndpoint endpoint, String callId);
     void unhold(EslEndpoint endpoint, String callId);

@@ -91,6 +91,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     @Override
     public List<OutboundTaskResponse> list() {
         return taskMapper.selectList(new LambdaQueryWrapper<OutboundTask>()
+                .eq(OutboundTask::getTaskType, "PREVIEW")
                 .orderByDesc(OutboundTask::getCreateTime))
             .stream().map(this::toTaskResponse).toList();
     }
@@ -739,6 +740,9 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setBillableSeconds(attempt.getBillableSeconds());
         response.setHangupCause(attempt.getHangupCause());
         response.setHangupCauseLabel(resultSuggestionService.hangupCauseLabel(attempt.getHangupCause()));
+        response.setFailureCategory(attempt.getFailureCategory());
+        response.setFailureCategoryLabel(resultSuggestionService.failureCategoryLabel(attempt.getFailureCategory()));
+        response.setRetryable(attempt.getRetryable());
         return response;
     }
 }

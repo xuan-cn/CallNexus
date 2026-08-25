@@ -13,6 +13,8 @@ public class SkillGroup extends TenantEntity {
     private String groupCode;
     private String groupName;
     private Boolean enabled;
+    private Boolean assistEnabled;
+    private Long assistAgentId;
     private String remark;
     @Version private Integer version;
     @TableLogic private Boolean deleted;

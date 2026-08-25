@@ -45,4 +45,5 @@ public class BusinessAssociationQueryServiceImpl implements BusinessAssociationQ
             return ticket == null ? null : ticket.getId();
         });
     }
+
 }

@@ -3,9 +3,18 @@ package org.dromara.outbound.service;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class OutboundResultSuggestionService {
+    private static final Set<String> CUSTOMER_RETRYABLE = Set.of(
+        "USER_BUSY", "NO_ANSWER", "NO_USER_RESPONSE", "CALL_REJECTED", "ORIGINATOR_CANCEL"
+    );
+    private static final Set<String> NUMBER_FAILURES = Set.of("UNALLOCATED_NUMBER", "INVALID_NUMBER_FORMAT");
+    private static final Set<String> NETWORK_FAILURES = Set.of(
+        "NORMAL_TEMPORARY_FAILURE", "NETWORK_OUT_OF_ORDER", "DESTINATION_OUT_OF_ORDER", "RECOVERY_ON_TIMER_EXPIRE"
+    );
+    private static final Set<String> PLATFORM_FAILURES = Set.of("SYSTEM_RECOVERED", "ORIGINATE_FAILED");
     private static final Map<String, String> HANGUP_CAUSE_LABELS = Map.ofEntries(
         Map.entry("NORMAL_CLEARING", "正常挂断"),
         Map.entry("USER_BUSY", "客户忙"),
@@ -49,5 +58,31 @@ public class OutboundResultSuggestionService {
     public String hangupCauseLabel(String hangupCause) {
         if (hangupCause == null || hangupCause.isBlank()) return null;
         return HANGUP_CAUSE_LABELS.getOrDefault(hangupCause, hangupCause);
+    }
+
+    public FailureClassification classify(String hangupCause, Boolean destinationAnswered) {
+        if (Boolean.TRUE.equals(destinationAnswered)) {
+            return new FailureClassification(null, false);
+        }
+        String cause = hangupCause == null ? "" : hangupCause.trim().toUpperCase();
+        if (CUSTOMER_RETRYABLE.contains(cause)) return new FailureClassification("CUSTOMER", true);
+        if (NUMBER_FAILURES.contains(cause)) return new FailureClassification("NUMBER", false);
+        if (NETWORK_FAILURES.contains(cause)) return new FailureClassification("NETWORK", true);
+        if (PLATFORM_FAILURES.contains(cause)) return new FailureClassification("PLATFORM", true);
+        return new FailureClassification("UNKNOWN", true);
+    }
+
+    public String failureCategoryLabel(String category) {
+        if (category == null) return null;
+        return switch (category) {
+            case "CUSTOMER" -> "客户侧未接通";
+            case "NUMBER" -> "号码问题";
+            case "NETWORK" -> "线路或网络问题";
+            case "PLATFORM" -> "平台执行异常";
+            default -> "未分类失败";
+        };
+    }
+
+    public record FailureClassification(String category, boolean retryable) {
     }
 }

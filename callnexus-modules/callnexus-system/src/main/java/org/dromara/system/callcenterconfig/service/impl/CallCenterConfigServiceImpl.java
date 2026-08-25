@@ -87,6 +87,18 @@ public class CallCenterConfigServiceImpl implements CallCenterConfigService {
     }
 
     @Override
+    public Integer getIntOrDefault(String configKey, Integer defaultValue) {
+        CallCenterConfigDefinition definition = findDefinition(configKey);
+        if (definition == null) {
+            return defaultValue;
+        }
+        CallCenterConfigValue value = valueMapper.selectOne(new LambdaQueryWrapper<CallCenterConfigValue>()
+            .eq(CallCenterConfigValue::getConfigKey, configKey));
+        String effectiveValue = value == null ? definition.getDefaultValue() : value.getConfigValue();
+        return Convert.toInt(effectiveValue, defaultValue);
+    }
+
+    @Override
     public Boolean getBoolean(String configKey) {
         return Convert.toBool(getString(configKey));
     }
@@ -99,13 +111,17 @@ public class CallCenterConfigServiceImpl implements CallCenterConfigService {
     }
 
     private CallCenterConfigDefinition requireDefinition(String configKey) {
-        CallCenterConfigDefinition definition = definitionMapper.selectOne(new LambdaQueryWrapper<CallCenterConfigDefinition>()
-            .eq(CallCenterConfigDefinition::getConfigKey, configKey)
-            .eq(CallCenterConfigDefinition::getEnabled, true));
+        CallCenterConfigDefinition definition = findDefinition(configKey);
         if (definition == null) {
             throw new ServiceException("配置项不存在：" + configKey);
         }
         return definition;
+    }
+
+    private CallCenterConfigDefinition findDefinition(String configKey) {
+        return definitionMapper.selectOne(new LambdaQueryWrapper<CallCenterConfigDefinition>()
+            .eq(CallCenterConfigDefinition::getConfigKey, configKey)
+            .eq(CallCenterConfigDefinition::getEnabled, true));
     }
 
     private Map<String, CallCenterConfigValue> currentValues() {

@@ -111,9 +111,14 @@ public class SkillGroupService {
     }
 
     private void apply(SkillGroup group, SkillGroupRequest request) {
+        if (Boolean.TRUE.equals(request.getAssistEnabled()) && request.getAssistAgentId() == null) {
+            throw new ServiceException("启用坐席辅助时必须选择 AI 助手");
+        }
         group.setGroupCode(request.getGroupCode());
         group.setGroupName(request.getGroupName());
         group.setEnabled(request.getEnabled());
+        group.setAssistEnabled(request.getAssistEnabled());
+        group.setAssistAgentId(Boolean.TRUE.equals(request.getAssistEnabled()) ? request.getAssistAgentId() : null);
         group.setRemark(request.getRemark());
     }
 
@@ -125,6 +130,8 @@ public class SkillGroupService {
         response.setAgentIds(memberIds(group.getId()));
         response.setMemberCount(response.getAgentIds().size());
         response.setEnabled(group.getEnabled());
+        response.setAssistEnabled(group.getAssistEnabled());
+        response.setAssistAgentId(group.getAssistAgentId());
         response.setRemark(group.getRemark());
         response.setVersion(group.getVersion());
         response.setCreateTime(group.getCreateTime());

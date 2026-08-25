@@ -11,6 +11,8 @@ public class SkillGroupRequest {
     @NotBlank @Size(max = 64) private String groupName;
     @NotEmpty private List<Long> agentIds;
     @NotNull private Boolean enabled;
+    @NotNull private Boolean assistEnabled;
+    private Long assistAgentId;
     @Size(max = 500) private String remark;
     private Integer version;
 }

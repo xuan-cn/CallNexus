@@ -12,11 +12,23 @@ import org.dromara.ai.mapper.AiCallRecordingSourceMapper;
 import org.dromara.ai.mapper.AiCallTranscriptMapper;
 import org.dromara.ai.mapper.AiCallTranscriptSegmentMapper;
 import org.dromara.ai.mapper.AiRealtimeCallSessionMapper;
+import org.dromara.ai.domain.request.AiAgentAssistSegmentRequest;
+import org.dromara.ai.domain.response.AiCallTranscriptSegmentResponse;
+import org.dromara.ai.service.AiAgentAssistService;
+import org.dromara.ai.service.AiAgentAssistStreamService;
 import org.dromara.ai.service.AiCallTranscriptStreamService;
+import org.dromara.agent.domain.CallQueue;
+import org.dromara.agent.domain.SkillGroup;
+import org.dromara.agent.domain.SkillGroupMember;
+import org.dromara.agent.mapper.CallQueueMapper;
+import org.dromara.agent.mapper.SkillGroupMapper;
+import org.dromara.agent.mapper.SkillGroupMemberMapper;
 import org.dromara.call.constant.EslEventNames;
 import org.dromara.call.domain.CallLeg;
+import org.dromara.call.domain.CallSession;
 import org.dromara.call.domain.TelephonyEvent;
 import org.dromara.call.mapper.CallLegMapper;
+import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.springframework.stereotype.Service;
@@ -30,6 +42,7 @@ import javax.xml.xpath.XPathConstants;
 import javax.xml.xpath.XPathFactory;
 import java.io.StringReader;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -54,6 +67,12 @@ public class CallRealtimeTranscriptEventService {
     private final AiCallTranscriptMapper transcriptMapper;
     private final AiCallTranscriptSegmentMapper transcriptSegmentMapper;
     private final AiCallTranscriptStreamService transcriptStreamService;
+    private final AiAgentAssistStreamService agentAssistStreamService;
+    private final CallSessionMapper callSessionMapper;
+    private final CallQueueMapper callQueueMapper;
+    private final SkillGroupMapper skillGroupMapper;
+    private final SkillGroupMemberMapper skillGroupMemberMapper;
+    private final AiAgentAssistService agentAssistService;
 
     public void handle(TelephonyEvent event) {
         if (!EslEventNames.DETECTED_SPEECH.equals(event.eventName())) {
@@ -119,8 +138,66 @@ public class CallRealtimeTranscriptEventService {
         transcriptMapper.updateById(transcript);
 
         transcriptStreamService.publishSegment(tenantId, source.getId(), transcript.getId(), segment);
+        agentAssistStreamService.publishSegment(tenantId, source.getBusinessCallId(), transcriptResponse(segment));
+        triggerAgentAssist(tenantId, source, segment);
         log.info("Realtime call transcript segment saved, sessionId={}, businessCallId={}, legUuid={}, speaker={}, sentenceIndex={}",
             source.getId(), source.getBusinessCallId(), leg.getLegUuid(), segment.getSpeaker(), segment.getSentenceIndex());
+    }
+
+    private void triggerAgentAssist(String tenantId, AiCallRecordingSource source, AiCallTranscriptSegment segment) {
+        if (!SPEAKER_CUSTOMER.equals(segment.getSpeaker()) || !Boolean.TRUE.equals(segment.getFinalResult())) {
+            return;
+        }
+        CallSession callSession = callSessionMapper.selectById(source.getId());
+        if (callSession == null) {
+            return;
+        }
+        Long agentId = firstNonNull(callSession.getOwnerAgentId(), callSession.getAgentId());
+        SkillGroup group = resolveAssistGroup(callSession.getHandlingQueueId(), agentId);
+        if (group == null || !Boolean.TRUE.equals(group.getAssistEnabled()) || group.getAssistAgentId() == null) {
+            return;
+        }
+        agentAssistService.accept(new AiAgentAssistSegmentRequest(
+            tenantId,
+            source.getId(),
+            source.getBusinessCallId(),
+            segment.getId(),
+            segment.getTextContent(),
+            agentId,
+            group.getId(),
+            group.getAssistAgentId()
+        ));
+    }
+
+    private SkillGroup resolveAssistGroup(Long queueId, Long agentId) {
+        if (queueId != null) {
+            CallQueue queue = callQueueMapper.selectById(queueId);
+            if (queue != null && queue.getSkillGroupId() != null) {
+                SkillGroup group = skillGroupMapper.selectById(queue.getSkillGroupId());
+                if (isAssistGroup(group)) {
+                    return group;
+                }
+            }
+        }
+        if (agentId == null) {
+            return null;
+        }
+        List<SkillGroupMember> memberships = skillGroupMemberMapper.selectList(
+            new LambdaQueryWrapper<SkillGroupMember>()
+                .eq(SkillGroupMember::getAgentId, agentId)
+                .orderByAsc(SkillGroupMember::getPriority, SkillGroupMember::getId));
+        for (SkillGroupMember membership : memberships) {
+            SkillGroup group = skillGroupMapper.selectById(membership.getSkillGroupId());
+            if (isAssistGroup(group)) {
+                return group;
+            }
+        }
+        return null;
+    }
+
+    private boolean isAssistGroup(SkillGroup group) {
+        return group != null && Boolean.TRUE.equals(group.getEnabled())
+            && Boolean.TRUE.equals(group.getAssistEnabled()) && group.getAssistAgentId() != null;
     }
 
     private boolean isAiRealtimeLeg(CallLeg leg) {
@@ -226,6 +303,27 @@ public class CallRealtimeTranscriptEventService {
             return first;
         }
         return second != null ? second : third;
+    }
+
+    private AiCallTranscriptSegmentResponse transcriptResponse(AiCallTranscriptSegment segment) {
+        AiCallTranscriptSegmentResponse response = new AiCallTranscriptSegmentResponse();
+        response.setId(segment.getId());
+        response.setSpeaker(segment.getSpeaker());
+        response.setSourceType(segment.getSourceType());
+        response.setLegUuid(segment.getLegUuid());
+        response.setAgentId(segment.getAgentId());
+        response.setSentenceIndex(segment.getSentenceIndex());
+        response.setStartMs(segment.getStartMs());
+        response.setEndMs(segment.getEndMs());
+        response.setMessageTime(segment.getMessageTime());
+        response.setTextContent(segment.getTextContent());
+        response.setFinalResult(segment.getFinalResult());
+        response.setConfidence(segment.getConfidence());
+        return response;
+    }
+
+    private Long firstNonNull(Long first, Long second) {
+        return first != null ? first : second;
     }
 
     private String firstNonBlank(String... values) {

@@ -1,0 +1,35 @@
+CREATE TABLE cc_outbound_task_source (
+    id BIGINT NOT NULL COMMENT '自动外呼名单来源ID',
+    tenant_id VARCHAR(20) NOT NULL COMMENT '租户ID',
+    task_id BIGINT NOT NULL COMMENT '自动外呼任务ID',
+    import_task_id BIGINT NOT NULL COMMENT '客户资料导入任务ID',
+    import_batch_id BIGINT NULL COMMENT '限定客户资料导入批次ID',
+    customer_type VARCHAR(64) NULL COMMENT '客户类型筛选',
+    tags VARCHAR(500) NULL COMMENT '客户标签筛选',
+    skill_group_id BIGINT NULL COMMENT '归属技能组筛选',
+    agent_id BIGINT NULL COMMENT '归属坐席筛选',
+    assignment_state VARCHAR(16) NOT NULL DEFAULT 'ALL' COMMENT '归属筛选：ALL、ASSIGNED、UNASSIGNED',
+    phone_strategy VARCHAR(32) NOT NULL DEFAULT 'PRIMARY_OR_FIRST' COMMENT '号码策略：PRIMARY_ONLY、PRIMARY_OR_FIRST、LABEL_OR_PRIMARY',
+    phone_label VARCHAR(64) NULL COMMENT '优先使用的客户号码标签',
+    enabled TINYINT NOT NULL DEFAULT 1 COMMENT '是否启用',
+    filter_summary VARCHAR(1000) NULL COMMENT '筛选条件摘要',
+    create_dept BIGINT NULL COMMENT '创建部门',
+    create_by BIGINT NULL COMMENT '创建人',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_by BIGINT NULL COMMENT '更新人',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除标志',
+    PRIMARY KEY (id),
+    KEY idx_cc_outbound_source_task (tenant_id, task_id, enabled),
+    KEY idx_cc_outbound_source_import (tenant_id, import_task_id, import_batch_id)
+) ENGINE=InnoDB COMMENT='自动外呼客户资料来源';
+
+ALTER TABLE cc_outbound_member
+    MODIFY COLUMN source_type VARCHAR(16) NOT NULL DEFAULT 'MANUAL' COMMENT '名单来源：MANUAL、EXCEL、IMPORT_TASK',
+    ADD COLUMN source_id BIGINT NULL COMMENT '自动外呼来源规则ID' AFTER import_batch_id,
+    ADD COLUMN source_import_task_id BIGINT NULL COMMENT '来源客户导入任务ID' AFTER source_id,
+    ADD COLUMN source_import_batch_id BIGINT NULL COMMENT '来源客户导入批次ID' AFTER source_import_task_id,
+    ADD COLUMN customer_phone_id BIGINT NULL COMMENT '客户号码ID快照' AFTER source_import_batch_id,
+    ADD COLUMN phone_label VARCHAR(64) NULL COMMENT '号码标签快照' AFTER customer_phone_id,
+    ADD COLUMN phone_priority INT NULL COMMENT '号码优先级快照' AFTER phone_label,
+    ADD KEY idx_cc_outbound_member_source (tenant_id, task_id, source_id);

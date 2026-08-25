@@ -71,6 +71,49 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     }
 
     @Override
+    public void originateAgentless(EslEndpoint endpoint, String callId, String destination, OutboundRoute outboundRoute,
+                                   CallOriginateContext context, String answeredDestination,
+                                   Map<String, String> channelVariables) {
+        requireDialValue(callId);
+        requireDialValue(destination);
+        requireDialValue(answeredDestination);
+        if (outboundRoute == null || !outboundRoute.isExternal()) {
+            throw new ServiceException("自动外呼当前只支持外线号码");
+        }
+        CallOriginateContext safeContext = context == null ? CallOriginateContext.empty() : context;
+        String businessCallId = businessCallId(callId, safeContext);
+        String callerIdNumber = outboundRoute.getCallerIdNumber();
+        requireDialValue(callerIdNumber);
+        StringBuilder variables = new StringBuilder("{origination_uuid=").append(callId)
+            .append(",callnexus_business_call_id=").append(businessCallId)
+            .append(",callnexus_direction=OUTBOUND")
+            .append(",callnexus_original_caller=").append(callerIdNumber)
+            .append(",callnexus_original_called=").append(destination)
+            .append(optionalVariable("callnexus_customer_id", safeContext.customerId()))
+            .append(optionalVariable("callnexus_outbound_task_id", safeContext.outboundTaskId()))
+            .append(optionalVariable("callnexus_outbound_member_id", safeContext.outboundMemberId()))
+            .append(",RECORD_STEREO=true,record_sample_rate=8000")
+            .append(",origination_caller_id_number=").append(callerIdNumber)
+            .append(",origination_caller_id_name=").append(callerIdNumber)
+            .append(",execute_on_answer=record_session::/var/lib/freeswitch/recordings/").append(callId).append(".wav")
+            .append(",api_hangup_hook='bg_system /opt/callnexus/bin/upload-recording.sh ").append(businessCallId)
+            .append(" /var/lib/freeswitch/recordings/").append(callId).append(".wav'")
+            .append(",hangup_after_bridge=true");
+        if (channelVariables != null) {
+            channelVariables.forEach((name, value) -> variables.append(',').append(name).append('=').append(value));
+        }
+        variables.append('}');
+        String dialString = destinationDialString(endpoint, destination, endpoint.sipDomain(), outboundRoute,
+            businessCallId, callerIdNumber);
+        String command = "bgapi originate " + variables + dialString
+            + " &transfer(" + answeredDestination + " XML default)";
+        sendCommand(endpoint, command);
+        log.info("FreeSWITCH 无人值守外呼命令已提交，channelUuid={}，businessCallId={}，destination={}，target={}，taskId={}，memberId={}",
+            callId, businessCallId, destination, answeredDestination,
+            safeContext.outboundTaskId(), safeContext.outboundMemberId());
+    }
+
+    @Override
     public void hangup(EslEndpoint endpoint, String callId) {
         requireCallId(callId);
         sendCommand(endpoint, "api uuid_kill " + callId + " NORMAL_CLEARING");

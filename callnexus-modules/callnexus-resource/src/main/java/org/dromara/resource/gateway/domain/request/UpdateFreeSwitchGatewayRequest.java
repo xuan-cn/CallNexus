@@ -33,7 +33,8 @@ public class UpdateFreeSwitchGatewayRequest {
     @Size(max = 128)
     private String password;
     @Size(max = 64)
-    @Pattern(regexp = "^[A-Za-z0-9_.-]{1,64}$")
+    @Pattern(regexp = "^$|^[A-Za-z0-9_.-]{1,64}$",
+        message = "注册账号只能包含字母、数字、下划线、点和横线，长度不能超过 64 位")
     private String registeredIdentity;
     @Size(max = 32)
     @Pattern(regexp = "^[A-Za-z0-9_-]{1,32}$")

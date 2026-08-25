@@ -35,6 +35,8 @@ public class OutboundAttempt extends TenantEntity {
     private Integer durationSeconds;
     private Integer billableSeconds;
     private String hangupCause;
+    private String failureCategory;
+    private Boolean retryable;
     @Version private Integer version;
     @TableLogic private Boolean deleted;
 }

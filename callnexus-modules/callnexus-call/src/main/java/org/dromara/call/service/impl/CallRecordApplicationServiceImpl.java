@@ -41,7 +41,6 @@ import org.dromara.call.service.CallRecordApplicationService;
 import org.dromara.call.service.CallSessionCompletedListener;
 import org.dromara.call.service.BusinessAssociationQueryService;
 import org.dromara.call.service.QueueEventApplicationService;
-import org.dromara.call.service.CallBusinessAssociationService;
 import org.dromara.call.service.SipBusinessIdentityResolver;
 import org.dromara.call.service.TelephonyEndpointIdentityResolver;
 import org.dromara.common.core.service.OssService;
@@ -71,7 +70,7 @@ import java.util.Set;
 @Service
 @RequiredArgsConstructor
 @Slf4j
-public class CallRecordApplicationServiceImpl implements CallRecordApplicationService, CallBusinessAssociationService {
+public class CallRecordApplicationServiceImpl implements CallRecordApplicationService {
     private final CallRecordMapper recordMapper;
     private final CallSessionMapper sessionMapper;
     private final CallEventMapper eventMapper;
@@ -137,24 +136,6 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         CallSession session = sessionMapper.selectById(id);
         if (session == null) throw new ServiceException("通话记录不存在");
         return toResponse(session, true);
-    }
-
-    @Override
-    public void associateCustomer(String businessCallId, Long customerId) {
-        if (StringUtils.isBlank(businessCallId) || customerId == null) return;
-        sessionMapper.update(null, new LambdaUpdateWrapper<CallSession>()
-            .eq(CallSession::getBusinessCallId, businessCallId)
-            .set(CallSession::getCustomerId, customerId));
-    }
-
-    @Override
-    public void associateTicket(String businessCallId, Long ticketId, Long customerId) {
-        if (StringUtils.isBlank(businessCallId) || ticketId == null) return;
-        LambdaUpdateWrapper<CallSession> update = new LambdaUpdateWrapper<CallSession>()
-            .eq(CallSession::getBusinessCallId, businessCallId)
-            .set(CallSession::getTicketId, ticketId);
-        if (customerId != null) update.set(CallSession::getCustomerId, customerId);
-        sessionMapper.update(null, update);
     }
 
     private void persistEvent(TelephonyEvent event, String tenantId) {

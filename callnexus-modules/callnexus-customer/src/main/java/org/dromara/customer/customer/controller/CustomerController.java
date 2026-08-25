@@ -106,6 +106,11 @@ public class CustomerController {
         return R.ok(applicationService.listFollowUps(id));
     }
 
+    @GetMapping("/{id}/follow-ups/page")
+    public TableDataInfo<CustomerFollowUpResponse> pageFollowUps(@PathVariable Long id, PageQuery pageQuery) {
+        return applicationService.pageFollowUps(id, pageQuery);
+    }
+
     @PostMapping("/{id}/follow-ups")
     public R<Long> addFollowUp(@PathVariable Long id, @Valid @RequestBody AddCustomerFollowUpRequest request) {
         return R.ok(applicationService.addFollowUp(id, request.getContent()));

@@ -7,6 +7,7 @@ import org.dromara.resource.freeswitch.xml.dialplan.FreeSwitchDialplanXmlRendere
 import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteContext;
 import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteHandler;
 import org.dromara.resource.freeswitch.xmlcurl.route.DialplanRouteHandlerRegistry;
+import org.dromara.resource.ai.service.AiAgentDialplanQueryService;
 import org.dromara.resource.event.queue.QueueSatisfactionSignalEvent;
 import org.dromara.resource.ivr.service.IvrDialplanQueryService;
 import org.dromara.resource.inbound.service.InboundDidEntryQueryService;
@@ -39,6 +40,7 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
     private final CallQueueQueryService callQueueQueryService;
     private final ApplicationEventPublisher eventPublisher;
     private final InboundDidEntryQueryService inboundDidEntryQueryService;
+    private final AiAgentDialplanQueryService aiAgentDialplanQueryService;
 
     @Override
     public boolean supports(FreeSwitchXmlCurlRequest request) {
@@ -140,6 +142,11 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
             }
             return ivrDialplanQueryService.renderPublishedFlow(request.tenantId(), internalIvrFlowId, null,
                 destinationNumber, context, domain, callerNumber(request));
+        }
+        Long directAiAgentId = directAiAgentId(destinationNumber);
+        if (directAiAgentId != null) {
+            return aiAgentDialplanQueryService.renderDirectAgent(request.tenantId(), directAiAgentId,
+                nodeId(request), destinationNumber, context, domain);
         }
 
         SipDirectoryAccountResponse internalAccount = findInternalAccount(request, context, domain, destinationNumber);
@@ -361,6 +368,16 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
         if (separator <= 0) return null;
         try {
             return Long.valueOf(remainder.substring(0, separator));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private Long directAiAgentId(String destinationNumber) {
+        String prefix = "callnexus_auto_ai_";
+        if (destinationNumber == null || !destinationNumber.startsWith(prefix)) return null;
+        try {
+            return Long.valueOf(destinationNumber.substring(prefix.length()));
         } catch (NumberFormatException exception) {
             return null;
         }

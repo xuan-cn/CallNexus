@@ -1,8 +1,11 @@
 package org.dromara.ivr.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.ivr.domain.IvrFlow;
 import org.dromara.ivr.domain.IvrFlowRequest;
 import org.dromara.ivr.domain.IvrFlowResponse;
@@ -45,6 +48,12 @@ public class IvrFlowService {
             .stream()
             .map(this::response)
             .toList();
+    }
+
+    public TableDataInfo<IvrFlowResponse> page(PageQuery pageQuery) {
+        Page<IvrFlow> page = flowMapper.selectPage(pageQuery.build(),
+            new LambdaQueryWrapper<IvrFlow>().orderByDesc(IvrFlow::getCreateTime));
+        return new TableDataInfo<>(page.getRecords().stream().map(this::response).toList(), page.getTotal());
     }
 
     public IvrFlowResponse get(Long id) {

@@ -27,5 +27,7 @@ public interface CustomerApplicationService {
     void setPrimaryPhone(Long customerId, Long phoneId);
     void deletePhone(Long customerId, Long phoneId);
     List<CustomerFollowUpResponse> listFollowUps(Long customerId);
+    TableDataInfo<CustomerFollowUpResponse> pageFollowUps(Long customerId, PageQuery pageQuery);
     Long addFollowUp(Long customerId, String content);
+    void recordOutboundResult(Long customerId, Long attemptId, String content, String tag);
 }
