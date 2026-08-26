@@ -131,6 +131,26 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public void resolveDirectly(Long id) {
+        Ticket ticket = requireTicket(id);
+        if (ticket.getTicketStatus() != TicketStatus.OPEN) {
+            throw new ServiceException("只有待处理工单可以直接办结");
+        }
+        if (ticket.getFlowInstanceId() != null) {
+            throw new ServiceException("工单已进入流程，不能直接办结");
+        }
+        WorkflowService workflowService = workflowServiceProvider.getIfAvailable();
+        if (workflowService != null && workflowService.getInstanceIdByBusinessId(ticket.getId().toString()) != null) {
+            throw new ServiceException("工单已存在流程实例，不能直接办结");
+        }
+        ticket.setTicketStatus(TicketStatus.RESOLVED);
+        ticket.setProcessStatus(BusinessStatusEnum.FINISH.getStatus());
+        ticket.setResolvedAt(new Date());
+        ticketMapper.updateById(ticket);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public void close(Long id) {
         Ticket ticket = requireTicket(id);
         if (ticket.getTicketStatus() != TicketStatus.RESOLVED) {

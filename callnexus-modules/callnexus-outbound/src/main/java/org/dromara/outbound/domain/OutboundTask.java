@@ -17,7 +17,9 @@ public class OutboundTask extends TenantEntity {
     private String taskType;
     private String status;
     private String description;
+    private Long nodeId;
     private Long callerNumberId;
+    private Long outboundLinePolicyId;
     private String dialMode;
     private String targetType;
     private Long targetId;
@@ -42,6 +44,8 @@ public class OutboundTask extends TenantEntity {
     private String schedulerOwner;
     private LocalDateTime schedulerLeaseUntil;
     private LocalDateTime schedulerHeartbeatAt;
+    private Integer executionRound;
+    private LocalDateTime executionStartedAt;
     @Version private Integer version;
     @TableLogic private Boolean deleted;
 }

@@ -123,6 +123,7 @@ security:
     - /error
     - /api/internal/freeswitch/**
     - /api/internal/ai/realtime/**
+    - /api/internal/asr/realtime/**
     - /openapi/oauth/**
     - /openapi/v1/**
     - /*/api-docs
@@ -292,6 +293,8 @@ ai:
   realtime-transport: ${CALLNEXUS_AI_REALTIME_TRANSPORT:UNIMRCP}
   call-realtime-asr-enabled: ${CALLNEXUS_AI_CALL_REALTIME_ASR_ENABLED:true}
   call-realtime-asr-legs: ${CALLNEXUS_AI_CALL_REALTIME_ASR_LEGS:BOTH}
+  call-realtime-asr-transport: ${CALLNEXUS_AI_CALL_REALTIME_ASR_TRANSPORT:UNIMRCP}
+  call-realtime-asr-websocket-url: ${CALLNEXUS_AI_CALL_REALTIME_ASR_WEBSOCKET_URL:ws://127.0.0.1:8080/api/internal/asr/realtime/audio}
   unimrcp:
     speak-command-template: "${CALLNEXUS_AI_UNIMRCP_SPEAK_COMMAND_TEMPLATE:api uuid_broadcast {uuid} speak::{profile}:callnexus-mrcp-v2:{uuid}|{voice}|{text} both}"
     recognize-command-template: "${CALLNEXUS_AI_UNIMRCP_RECOGNIZE_COMMAND_TEMPLATE:api luarun {detectScript} {uuid}}"

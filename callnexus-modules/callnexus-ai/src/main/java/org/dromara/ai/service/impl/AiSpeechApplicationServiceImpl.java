@@ -14,10 +14,18 @@ import org.dromara.ai.provider.*;
 import org.dromara.ai.service.AiGeneratedMediaQueryService;
 import org.dromara.ai.service.AiSpeechApplicationService;
 import org.dromara.ai.service.AiSpeechProviderSelector;
+import org.dromara.ai.speech.definition.CapabilityDefinition;
+import org.dromara.ai.speech.definition.EndpointMode;
+import org.dromara.ai.speech.definition.FieldDefinition;
+import org.dromara.ai.speech.definition.SpeechCapability;
+import org.dromara.ai.speech.definition.SpeechProviderDefinition;
+import org.dromara.ai.speech.definition.SpeechProviderDefinitionRegistry;
+import org.dromara.ai.speech.definition.VoiceDefinition;
 import org.dromara.ai.support.ByteArrayAudioMultipartFile;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.tenant.helper.TenantHelper;
@@ -40,6 +48,8 @@ import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.net.URI;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -55,6 +65,13 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.Date;
+import java.util.EnumMap;
+import java.util.LinkedHashSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -73,6 +90,10 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     private static final String SOURCE_RECORDING_ASR = "RECORDING_ASR";
     private static final String DEFAULT_AGENT_TEMPLATE = "工号{extension}为您服务";
     private static final Duration RECORDING_DOWNLOAD_TTL = Duration.ofHours(2);
+    private static final Duration PROVIDER_CATALOG_TTL = Duration.ofMinutes(10);
+    private static final String PROVIDER_CATALOG_VERSION = "2026.08.1";
+
+    private final Map<String, CachedProviderCatalog> providerCatalogCache = new ConcurrentHashMap<>();
 
     private final AiSpeechProviderMapper providerMapper;
     private final AiSpeechTemplateMapper templateMapper;
@@ -91,6 +112,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     private final StreamingAsrProviderRegistry streamingAsrProviderRegistry;
     private final StreamingTtsProviderRegistry streamingTtsProviderRegistry;
     private final AiSpeechProviderSelector providerSelector;
+    private final SpeechProviderDefinitionRegistry definitionRegistry;
     private final OssService ossService;
     private final ApplicationEventPublisher eventPublisher;
 
@@ -103,8 +125,8 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long createProvider(AiSpeechProviderRequest request) {
-        ensureProviderCodeUnique(request.getProviderCode(), null);
         AiSpeechProvider provider = new AiSpeechProvider();
+        provider.setProviderCode(generateProviderCode());
         fillProvider(provider, request, true);
         validateProvider(provider);
         clearOtherDefaults(provider, null);
@@ -115,8 +137,11 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void updateProvider(Long id, AiSpeechProviderRequest request) {
-        ensureProviderCodeUnique(request.getProviderCode(), id);
         AiSpeechProvider provider = requireProvider(id);
+        if (StringUtils.isNotBlank(request.getProviderType())
+            && !provider.getProviderType().equalsIgnoreCase(request.getProviderType())) {
+            throw new ServiceException("语音服务商类型创建后不能修改");
+        }
         validateDefaultMutation(provider, request);
         fillProvider(provider, request, false);
         validateProvider(provider);
@@ -125,6 +150,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         if (providerMapper.updateById(provider) != 1) {
             throw new ServiceException("语音服务商已被其他用户修改，请刷新后重试");
         }
+        providerCatalogCache.remove(providerCatalogKey(id));
     }
 
     @Override
@@ -136,28 +162,107 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         if (providerMapper.deleteById(id) != 1) {
             throw new ServiceException("语音服务商不存在");
         }
+        providerCatalogCache.remove(providerCatalogKey(id));
     }
 
     @Override
     public TtsTestResponse testProvider(Long id, TtsTestRequest request) {
         AiSpeechProvider provider = requireEnabledTtsProvider(id);
-        TtsGenerateResult result = generateAudio(provider, request.getText(), chooseVoice(provider, request.getVoice()), "TTS_TEST", Map.of());
-        if (result == null || result.audioBytes() == null || result.audioBytes().length == 0) {
-            throw new ServiceException("TTS 服务未返回音频内容");
+        try {
+            TtsGenerateResult result = generateAudio(provider, request.getText(), chooseVoice(provider, request.getVoice()), "TTS_TEST", Map.of());
+            if (result == null || result.audioBytes() == null || result.audioBytes().length == 0) {
+                throw new ServiceException("TTS 服务未返回音频内容");
+            }
+            String contentType = StringUtils.isBlank(result.contentType()) ? "audio/wav" : result.contentType();
+            String playbackUrl = "data:" + contentType + ";base64," + Base64.getEncoder().encodeToString(result.audioBytes());
+            recordTest(provider.getId(), STATUS_SUCCESS, "普通 TTS 合成测试成功");
+            return new TtsTestResponse(null, playbackUrl);
+        } catch (Exception exception) {
+            String message = userTestMessage("普通 TTS 测试失败", exception);
+            recordTest(provider.getId(), STATUS_FAILED, message);
+            if (exception instanceof ServiceException serviceException) {
+                throw serviceException;
+            }
+            throw new ServiceException(message);
         }
-        String contentType = StringUtils.isBlank(result.contentType()) ? "audio/wav" : result.contentType();
-        String playbackUrl = "data:" + contentType + ";base64," + Base64.getEncoder().encodeToString(result.audioBytes());
-        return new TtsTestResponse(null, playbackUrl);
     }
 
     @Override
     public List<String> providerVoices(Long id) {
-        AiSpeechProvider provider = requireEnabledTtsProvider(id);
-        TtsProvider ttsProvider = providerRegistry.get(provider.getProviderType());
-        if (!(ttsProvider instanceof TtsVoiceCatalogProvider catalogProvider)) {
-            throw new ServiceException("当前语音服务商不支持查询音色列表");
+        SpeechCapabilityCatalogResponse tts = providerCatalog(id, false).capabilities().get(SpeechCapability.TTS);
+        if (tts == null || tts.voices().isEmpty()) {
+            throw new ServiceException("当前语音服务商没有可用的音色目录，可直接输入厂商支持的音色名称");
         }
-        return catalogProvider.voices(provider);
+        return tts.voices().stream().map(VoiceDefinition::id).toList();
+    }
+
+    @Override
+    public SpeechProviderCatalogResponse providerCatalog(Long id, boolean refresh) {
+        String cacheKey = providerCatalogKey(id);
+        CachedProviderCatalog cached = providerCatalogCache.get(cacheKey);
+        if (!refresh && cached != null && !cached.expired()) {
+            return cached.response();
+        }
+
+        AiSpeechProvider provider = requireProvider(id);
+        SpeechProviderDefinition definition = definitionRegistry.get(provider.getProviderType());
+        Map<SpeechCapability, SpeechCapabilityCatalogResponse> capabilities = new EnumMap<>(SpeechCapability.class);
+        definition.capabilities().forEach((capability, item) -> {
+            if (!item.supported()) {
+                return;
+            }
+            LinkedHashSet<VoiceDefinition> voices = new LinkedHashSet<>();
+            item.models().forEach(model -> voices.addAll(model.voices()));
+            capabilities.put(capability, new SpeechCapabilityCatalogResponse(item.models(), List.copyOf(voices)));
+        });
+
+        String source = "BUILT_IN";
+        String message = "使用系统内置模型和音色目录";
+        try {
+            CapabilityDefinition ttsDefinition = definition.capabilities().get(SpeechCapability.TTS);
+            if (ttsDefinition != null && ttsDefinition.supported()
+                && providerRegistry.get(provider.getProviderType()) instanceof TtsVoiceCatalogProvider catalogProvider) {
+                List<VoiceDefinition> dynamicVoices = catalogProvider.voices(provider).stream()
+                    .filter(StringUtils::isNotBlank)
+                    .distinct()
+                    .map(value -> new VoiceDefinition(value, value, false))
+                    .toList();
+                if (!dynamicVoices.isEmpty()) {
+                    mergeDynamicVoices(capabilities, SpeechCapability.TTS, dynamicVoices);
+                    mergeDynamicVoices(capabilities, SpeechCapability.STREAMING_TTS, dynamicVoices);
+                    source = "DYNAMIC";
+                    message = "已从服务商刷新音色目录，模型目录由系统维护";
+                }
+            }
+        } catch (Exception exception) {
+            log.warn("刷新语音服务商目录失败，使用内置目录，providerId={}，providerType={}，error={}",
+                id, provider.getProviderType(), rootCauseMessage(exception));
+            message = "动态目录读取失败，已回退系统内置目录：" + rootCauseMessage(exception);
+        }
+
+        LocalDateTime refreshedAt = LocalDateTime.now();
+        SpeechProviderCatalogResponse response = new SpeechProviderCatalogResponse(id, provider.getProviderType(),
+            PROVIDER_CATALOG_VERSION, source, refreshedAt, capabilities, message);
+        providerCatalogCache.put(cacheKey, new CachedProviderCatalog(response, refreshedAt.plus(PROVIDER_CATALOG_TTL)));
+        return response;
+    }
+
+    private void mergeDynamicVoices(Map<SpeechCapability, SpeechCapabilityCatalogResponse> capabilities,
+                                    SpeechCapability capability, List<VoiceDefinition> voices) {
+        SpeechCapabilityCatalogResponse current = capabilities.get(capability);
+        if (current != null) {
+            capabilities.put(capability, new SpeechCapabilityCatalogResponse(current.models(), voices));
+        }
+    }
+
+    private String providerCatalogKey(Long providerId) {
+        return TenantHelper.getTenantId() + ':' + providerId;
+    }
+
+    private record CachedProviderCatalog(SpeechProviderCatalogResponse response, LocalDateTime expiresAt) {
+        private boolean expired() {
+            return expiresAt.isBefore(LocalDateTime.now());
+        }
     }
 
     @Override
@@ -169,11 +274,15 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             AsrTranscribeResult result = asrProviderRegistry.get(provider.getProviderType()).transcribe(provider,
                 new AsrTranscribeRequest(file.getBytes(), resolvedFormat, sampleRate, "ASR_TEST",
                     Map.of("fileName", StringUtils.blankToDefault(file.getOriginalFilename(), "unknown"))));
+            recordTest(provider.getId(), STATUS_SUCCESS, "录音 ASR 识别测试成功");
             return new AsrTestResponse(result.fullText(), result.segments());
-        } catch (ServiceException exception) {
-            throw exception;
         } catch (Exception exception) {
-            throw new ServiceException("读取 ASR 测试文件失败：" + exception.getMessage());
+            String message = userTestMessage("录音 ASR 测试失败", exception);
+            recordTest(provider.getId(), STATUS_FAILED, message);
+            if (exception instanceof ServiceException serviceException) {
+                throw serviceException;
+            }
+            throw new ServiceException(message);
         }
     }
 
@@ -889,9 +998,10 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     }
 
     private void fillProvider(AiSpeechProvider provider, AiSpeechProviderRequest request, boolean create) {
-        provider.setProviderCode(request.getProviderCode());
         provider.setProviderName(request.getProviderName());
-        provider.setProviderType(request.getProviderType().trim().toUpperCase());
+        if (create) {
+            provider.setProviderType(request.getProviderType().trim().toUpperCase());
+        }
         provider.setTtsEnabled(request.getTtsEnabled() == null ? (create || Boolean.TRUE.equals(provider.getTtsEnabled())) : request.getTtsEnabled());
         provider.setStreamingTtsEnabled(request.getStreamingTtsEnabled() == null
             ? (!create && Boolean.TRUE.equals(provider.getStreamingTtsEnabled())) : request.getStreamingTtsEnabled());
@@ -907,23 +1017,37 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             ? (!create && Boolean.TRUE.equals(provider.getDefaultRecordingAsr())) : request.getDefaultRecordingAsr());
         provider.setDefaultStreamingAsr(request.getDefaultStreamingAsr() == null
             ? (!create && Boolean.TRUE.equals(provider.getDefaultStreamingAsr())) : request.getDefaultStreamingAsr());
-        provider.setEndpointUrl(request.getEndpointUrl());
+        SpeechProviderDefinition definition = definitionRegistry.get(provider.getProviderType());
+        Map<String, Object> credentials = mergeCredentials(provider, request.getCredentials());
+        applyCredentials(provider, definition, credentials, request.getCredentials(), create);
+        provider.setCredentialJson(JsonUtils.toJsonString(nonSecretCredentials(definition, credentials)));
+        provider.setConfigurationSchemaVersion(2);
+        provider.setTtsModel(defaultModel(request.getTtsModel(), definition, SpeechCapability.TTS));
+        provider.setStreamingTtsModel(defaultModel(request.getStreamingTtsModel(), definition, SpeechCapability.STREAMING_TTS));
+        provider.setRecordingAsrModel(defaultModel(request.getRecordingAsrModel(), definition, SpeechCapability.RECORDING_ASR));
+        provider.setStreamingAsrModel(defaultModel(request.getStreamingAsrModel(), definition, SpeechCapability.STREAMING_ASR));
+        provider.setTtsVoice(StringUtils.blankToDefault(request.getTtsVoice(),
+            StringUtils.blankToDefault(request.getDefaultVoice(), "default")));
+        provider.setStreamingTtsVoice(StringUtils.blankToDefault(request.getStreamingTtsVoice(), provider.getTtsVoice()));
+        provider.setDefaultVoice(provider.getTtsVoice());
+        provider.setTtsEndpointMode(normalizeMode(request.getTtsEndpointMode()));
+        provider.setStreamingTtsEndpointMode(normalizeMode(request.getStreamingTtsEndpointMode()));
+        provider.setRecordingAsrEndpointMode(normalizeMode(request.getRecordingAsrEndpointMode()));
+        provider.setStreamingAsrEndpointMode(normalizeMode(request.getStreamingAsrEndpointMode()));
+        provider.setEndpointUrl(resolveEndpoint(definition, SpeechCapability.TTS, provider.getTtsEndpointMode(), request.getEndpointUrl(), credentials));
         provider.setHttpMethod(StringUtils.isBlank(request.getHttpMethod()) ? "POST" : request.getHttpMethod().trim().toUpperCase());
-        provider.setAuthType(StringUtils.isBlank(request.getAuthType()) ? "NONE" : request.getAuthType().trim().toUpperCase());
-        provider.setAuthHeaderName(request.getAuthHeaderName());
-        if (StringUtils.isNotBlank(request.getAuthToken())) {
-            provider.setAuthToken(request.getAuthToken());
-        } else if (create) {
-            provider.setAuthToken(null);
-        }
-        provider.setDefaultVoice(StringUtils.isBlank(request.getDefaultVoice()) ? "default" : request.getDefaultVoice());
+        if (StringUtils.isNotBlank(request.getAuthType())) provider.setAuthType(request.getAuthType().trim().toUpperCase());
+        if (StringUtils.isNotBlank(request.getAuthHeaderName())) provider.setAuthHeaderName(request.getAuthHeaderName());
         provider.setDefaultFormat(StringUtils.isBlank(request.getDefaultFormat()) ? "wav" : request.getDefaultFormat());
         provider.setDefaultSampleRate(request.getDefaultSampleRate() == null ? 8000 : request.getDefaultSampleRate());
         provider.setTimeoutSeconds(request.getTimeoutSeconds() == null ? 30 : request.getTimeoutSeconds());
-        if (create || request.getStreamingTtsEndpointUrl() != null) provider.setStreamingTtsEndpointUrl(request.getStreamingTtsEndpointUrl());
+        provider.setStreamingTtsEndpointUrl(resolveEndpoint(definition, SpeechCapability.STREAMING_TTS,
+            provider.getStreamingTtsEndpointMode(), request.getStreamingTtsEndpointUrl(), credentials));
         if (create || request.getStreamingTtsOptionsJson() != null) provider.setStreamingTtsOptionsJson(request.getStreamingTtsOptionsJson());
-        if (create || request.getRecordingAsrEndpointUrl() != null) provider.setRecordingAsrEndpointUrl(request.getRecordingAsrEndpointUrl());
-        if (create || request.getStreamingAsrEndpointUrl() != null) provider.setStreamingAsrEndpointUrl(request.getStreamingAsrEndpointUrl());
+        provider.setRecordingAsrEndpointUrl(resolveEndpoint(definition, SpeechCapability.RECORDING_ASR,
+            provider.getRecordingAsrEndpointMode(), request.getRecordingAsrEndpointUrl(), credentials));
+        provider.setStreamingAsrEndpointUrl(resolveEndpoint(definition, SpeechCapability.STREAMING_ASR,
+            provider.getStreamingAsrEndpointMode(), request.getStreamingAsrEndpointUrl(), credentials));
         provider.setAsrLanguage(request.getAsrLanguage() == null
             ? (create ? "zh-CN" : provider.getAsrLanguage()) : StringUtils.blankToDefault(request.getAsrLanguage(), "zh-CN"));
         provider.setAsrFormat(request.getAsrFormat() == null
@@ -945,6 +1069,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     }
 
     private void validateProvider(AiSpeechProvider provider) {
+        SpeechProviderDefinition definition = definitionRegistry.get(provider.getProviderType());
         if (!Boolean.TRUE.equals(provider.getTtsEnabled())
             && !Boolean.TRUE.equals(provider.getStreamingTtsEnabled())
             && !Boolean.TRUE.equals(provider.getRecordingAsrEnabled())
@@ -967,17 +1092,22 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             throw new ServiceException("默认流式 ASR 服务商必须启用流式 ASR 能力");
         }
         if (Boolean.TRUE.equals(provider.getTtsEnabled())) {
+            requireSupported(definition, SpeechCapability.TTS);
             providerRegistry.get(provider.getProviderType());
         }
         if (Boolean.TRUE.equals(provider.getStreamingTtsEnabled())) {
+            requireSupported(definition, SpeechCapability.STREAMING_TTS);
             streamingTtsProviderRegistry.get(provider.getProviderType());
         }
         if (Boolean.TRUE.equals(provider.getRecordingAsrEnabled())) {
+            requireSupported(definition, SpeechCapability.RECORDING_ASR);
             asrProviderRegistry.get(provider.getProviderType());
         }
         if (Boolean.TRUE.equals(provider.getStreamingAsrEnabled())) {
+            requireSupported(definition, SpeechCapability.STREAMING_ASR);
             streamingAsrProviderRegistry.get(provider.getProviderType());
         }
+        validateCredentials(provider, definition);
         if (Boolean.TRUE.equals(provider.getTtsEnabled())
             && !"ALIYUN_NLS".equals(provider.getProviderType())
             && StringUtils.isBlank(provider.getEndpointUrl())) {
@@ -1125,8 +1255,204 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         template.setRemark(request.getRemark());
     }
 
+    private Map<String, Object> mergeCredentials(AiSpeechProvider provider, Map<String, Object> submitted) {
+        Map<String, Object> merged = new LinkedHashMap<>(storedCredentials(provider));
+        if (submitted == null) {
+            return merged;
+        }
+        submitted.forEach((key, value) -> {
+            if (value != null && (!(value instanceof String text) || StringUtils.isNotBlank(text))) {
+                merged.put(key, value);
+            }
+        });
+        return merged;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> storedCredentials(AiSpeechProvider provider) {
+        if (StringUtils.isBlank(provider.getCredentialJson())) {
+            return new LinkedHashMap<>();
+        }
+        Map<String, Object> values = JsonUtils.parseObject(provider.getCredentialJson(), LinkedHashMap.class);
+        return values == null ? new LinkedHashMap<>() : new LinkedHashMap<>(values);
+    }
+
+    private Map<String, Object> nonSecretCredentials(SpeechProviderDefinition definition, Map<String, Object> credentials) {
+        Set<String> secretKeys = definition.credentialFields().stream()
+            .filter(FieldDefinition::secret).map(FieldDefinition::key).collect(Collectors.toSet());
+        Map<String, Object> result = new LinkedHashMap<>();
+        credentials.forEach((key, value) -> {
+            if (!secretKeys.contains(key)) {
+                result.put(key, value);
+            }
+        });
+        return result;
+    }
+
+    private void applyCredentials(AiSpeechProvider provider, SpeechProviderDefinition definition,
+                                  Map<String, Object> merged, Map<String, Object> submitted, boolean create) {
+        String secretKey = definition.credentialFields().stream()
+            .filter(FieldDefinition::secret).map(FieldDefinition::key).findFirst().orElse(null);
+        Object submittedSecret = submitted == null || secretKey == null ? null : submitted.get(secretKey);
+        if (submittedSecret instanceof String secret && StringUtils.isNotBlank(secret)) {
+            provider.setAuthToken(secret);
+        } else if (create) {
+            provider.setAuthToken(null);
+        }
+
+        if ("ALIYUN_NLS".equals(provider.getProviderType())) {
+            provider.setAuthType("HEADER");
+            provider.setAuthHeaderName(textValue(merged.get("accessKeyId")));
+        } else if (StringUtils.isNotBlank(provider.getAuthToken())) {
+            provider.setAuthType("BEARER");
+            provider.setAuthHeaderName("Authorization");
+        } else {
+            provider.setAuthType("NONE");
+            provider.setAuthHeaderName(null);
+        }
+    }
+
+    @Override
+    public SpeechProviderTestResponse validateProviderConfiguration(AiSpeechProviderRequest request) {
+        long started = System.nanoTime();
+        AiSpeechProvider provider = previewProvider(request);
+        validateProvider(provider);
+        return testResponse("VALIDATION", STATUS_SUCCESS, "配置校验通过", started);
+    }
+
+    @Override
+    public SpeechProviderTestResponse testProviderConnection(AiSpeechProviderRequest request) {
+        long started = System.nanoTime();
+        AiSpeechProvider provider = previewProvider(request);
+        validateProvider(provider);
+        List<String> endpoints = enabledEndpoints(provider).stream().distinct().toList();
+        if (endpoints.isEmpty()) {
+            throw new ServiceException("当前配置没有可检查的服务地址");
+        }
+        for (String endpoint : endpoints) {
+            testEndpointConnection(endpoint, provider.getTimeoutSeconds());
+        }
+        return testResponse("PREVIEW_CONNECTION", STATUS_SUCCESS,
+            "保存前检查通过，共检查 " + endpoints.size() + " 个服务地址", started);
+    }
+
+    @Override
+    public SpeechProviderTestResponse testProviderConnection(Long id) {
+        AiSpeechProvider provider = requireProvider(id);
+        long started = System.nanoTime();
+        try {
+            List<String> endpoints = enabledEndpoints(provider).stream().distinct().toList();
+            if (endpoints.isEmpty()) {
+                throw new ServiceException("当前配置没有可检查的服务地址");
+            }
+            for (String endpoint : endpoints) {
+                testEndpointConnection(endpoint, provider.getTimeoutSeconds());
+            }
+            String message = "连接检查通过，共检查 " + endpoints.size() + " 个服务地址";
+            recordTest(provider.getId(), STATUS_SUCCESS, message);
+            return testResponse("CONNECTION", STATUS_SUCCESS, message, started);
+        } catch (Exception exception) {
+            String message = userTestMessage("连接检查失败", exception);
+            recordTest(provider.getId(), STATUS_FAILED, message);
+            throw new ServiceException(message);
+        }
+    }
+
+    @Override
+    public SpeechProviderTestResponse testStreamingProvider(Long id, SpeechCapability capability) {
+        AiSpeechProvider provider = requireProvider(id);
+        if (!Boolean.TRUE.equals(provider.getEnabled())) {
+            throw new ServiceException("语音服务商未启用");
+        }
+        long started = System.nanoTime();
+        try {
+            if (capability == SpeechCapability.STREAMING_TTS) {
+                testStreamingTtsHandshake(provider);
+            } else if (capability == SpeechCapability.STREAMING_ASR) {
+                testStreamingAsrHandshake(provider);
+            } else {
+                throw new ServiceException("流式测试仅支持实时 TTS 或实时 ASR");
+            }
+            String message = capability == SpeechCapability.STREAMING_TTS
+                ? "实时 TTS WebSocket 握手成功" : "实时 ASR WebSocket 握手成功";
+            recordTest(provider.getId(), STATUS_SUCCESS, message);
+            return testResponse(capability.name(), STATUS_SUCCESS, message, started);
+        } catch (Exception exception) {
+            String message = userTestMessage("流式协议测试失败", exception);
+            recordTest(provider.getId(), STATUS_FAILED, message);
+            throw new ServiceException(message);
+        }
+    }
+
+    private void validateCredentials(AiSpeechProvider provider, SpeechProviderDefinition definition) {
+        Map<String, Object> values = storedCredentials(provider);
+        for (FieldDefinition field : definition.credentialFields()) {
+            if (!field.required()) {
+                continue;
+            }
+            boolean configured = field.secret()
+                ? StringUtils.isNotBlank(provider.getAuthToken())
+                : StringUtils.isNotBlank(textValue(values.get(field.key())));
+            if (!configured) {
+                throw new ServiceException(field.label() + "不能为空");
+            }
+        }
+    }
+
+    private Set<String> configuredSecretFields(AiSpeechProvider provider, SpeechProviderDefinition definition) {
+        if (StringUtils.isBlank(provider.getAuthToken())) {
+            return Set.of();
+        }
+        return definition.credentialFields().stream().filter(FieldDefinition::secret)
+            .map(FieldDefinition::key).collect(Collectors.toUnmodifiableSet());
+    }
+
+    private String defaultModel(String requested, SpeechProviderDefinition definition, SpeechCapability capability) {
+        if (StringUtils.isNotBlank(requested)) {
+            return requested.trim();
+        }
+        CapabilityDefinition capabilityDefinition = definition.capabilities().get(capability);
+        return capabilityDefinition == null || !capabilityDefinition.supported() ? null : capabilityDefinition.defaultModel();
+    }
+
+    private String normalizeMode(String mode) {
+        try {
+            return EndpointMode.from(mode).name();
+        } catch (IllegalArgumentException exception) {
+            throw new ServiceException("Endpoint 模式只能是 AUTO 或 CUSTOM");
+        }
+    }
+
+    private String resolveEndpoint(SpeechProviderDefinition definition, SpeechCapability capability,
+                                   String mode, String customEndpoint, Map<String, Object> credentials) {
+        if (EndpointMode.CUSTOM.name().equals(mode)) {
+            return StringUtils.trimToNull(customEndpoint);
+        }
+        return definition.resolveEndpoint(capability, credentials);
+    }
+
+    private void requireSupported(SpeechProviderDefinition definition, SpeechCapability capability) {
+        CapabilityDefinition configured = definition.capabilities().get(capability);
+        if (configured == null || !configured.supported()) {
+            throw new ServiceException(definition.label() + "不支持" + capabilityLabel(capability));
+        }
+    }
+
+    private String capabilityLabel(SpeechCapability capability) {
+        return switch (capability) {
+            case TTS -> "语音合成";
+            case STREAMING_TTS -> "实时语音合成";
+            case RECORDING_ASR -> "录音识别";
+            case STREAMING_ASR -> "实时语音识别";
+        };
+    }
+
+    private String textValue(Object value) {
+        return value == null ? null : String.valueOf(value).trim();
+    }
+
     private String chooseVoice(AiSpeechProvider provider, String voice) {
-        return StringUtils.isBlank(voice) ? provider.getDefaultVoice() : voice;
+        return StringUtils.isBlank(voice) ? StringUtils.blankToDefault(provider.getTtsVoice(), provider.getDefaultVoice()) : voice;
     }
 
     private void taskSanity(String text) {
@@ -1139,6 +1465,119 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         AiSpeechProvider provider = providerMapper.selectById(id);
         if (provider == null) throw new ServiceException("语音服务商不存在");
         return provider;
+    }
+
+    private AiSpeechProvider previewProvider(AiSpeechProviderRequest request) {
+        AiSpeechProvider provider = request.getId() == null ? new AiSpeechProvider() : requireProvider(request.getId());
+        if (request.getId() == null) {
+            provider.setProviderCode(generateProviderCode());
+        } else if (StringUtils.isNotBlank(request.getProviderType())
+            && !provider.getProviderType().equalsIgnoreCase(request.getProviderType())) {
+            throw new ServiceException("语音服务商类型创建后不能修改");
+        }
+        fillProvider(provider, request, request.getId() == null);
+        return provider;
+    }
+
+    private void testStreamingTtsHandshake(AiSpeechProvider provider) {
+        if (!Boolean.TRUE.equals(provider.getStreamingTtsEnabled())) {
+            throw new ServiceException("语音服务商未启用实时 TTS 能力");
+        }
+        StreamingTtsListener listener = new StreamingTtsListener() {
+            @Override public void onStarted() { }
+            @Override public void onAudio(byte[] audioBytes) { }
+            @Override public void onCompleted() { }
+            @Override public void onError(String message) { log.warn("实时 TTS 握手测试回调：{}", message); }
+        };
+        try (StreamingTtsSession ignored = streamingTtsProviderRegistry.get(provider.getProviderType()).open(provider,
+            new StreamingTtsRequest(provider.getStreamingTtsVoice(), "pcm", provider.getDefaultSampleRate(), Map.of("test", true)), listener)) {
+            // Opening the session verifies authentication, model selection and session.update acknowledgement.
+        }
+    }
+
+    private void testStreamingAsrHandshake(AiSpeechProvider provider) {
+        if (!Boolean.TRUE.equals(provider.getStreamingAsrEnabled())) {
+            throw new ServiceException("语音服务商未启用实时 ASR 能力");
+        }
+        StreamingAsrListener listener = new StreamingAsrListener() {
+            @Override public void onResult(AsrSegment segment) { }
+            @Override public void onCompleted(AsrTranscribeResult result) { }
+            @Override public void onError(String message) { log.warn("实时 ASR 握手测试回调：{}", message); }
+        };
+        try (StreamingAsrSession ignored = streamingAsrProviderRegistry.get(provider.getProviderType()).open(provider,
+            new StreamingAsrRequest("pcm", provider.getAsrSampleRate(), provider.getAsrLanguage(), Map.of("test", true)), listener)) {
+            // The handshake test intentionally sends no audio; content recognition is tested separately.
+        }
+    }
+
+    private List<String> enabledEndpoints(AiSpeechProvider provider) {
+        List<String> endpoints = new ArrayList<>();
+        if (Boolean.TRUE.equals(provider.getTtsEnabled()) && StringUtils.isNotBlank(provider.getEndpointUrl())) {
+            endpoints.add(provider.getEndpointUrl());
+        }
+        if (Boolean.TRUE.equals(provider.getStreamingTtsEnabled()) && StringUtils.isNotBlank(provider.getStreamingTtsEndpointUrl())) {
+            endpoints.add(provider.getStreamingTtsEndpointUrl());
+        }
+        if (Boolean.TRUE.equals(provider.getRecordingAsrEnabled()) && StringUtils.isNotBlank(provider.getRecordingAsrEndpointUrl())) {
+            endpoints.add(provider.getRecordingAsrEndpointUrl());
+        }
+        if (Boolean.TRUE.equals(provider.getStreamingAsrEnabled()) && StringUtils.isNotBlank(provider.getStreamingAsrEndpointUrl())) {
+            endpoints.add(provider.getStreamingAsrEndpointUrl());
+        }
+        return endpoints;
+    }
+
+    private void testEndpointConnection(String endpoint, Integer configuredTimeoutSeconds) {
+        URI uri;
+        try {
+            uri = URI.create(endpoint);
+        } catch (Exception exception) {
+            throw new ServiceException("服务地址格式错误：" + endpoint);
+        }
+        String host = uri.getHost();
+        if (StringUtils.isBlank(host)) {
+            throw new ServiceException("服务地址缺少主机名：" + endpoint);
+        }
+        int port = uri.getPort();
+        if (port <= 0) {
+            port = "https".equalsIgnoreCase(uri.getScheme()) || "wss".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+        }
+        int timeoutMs = Math.max(1000, Math.min(10000,
+            (configuredTimeoutSeconds == null ? 5 : configuredTimeoutSeconds) * 1000));
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), timeoutMs);
+        } catch (Exception exception) {
+            throw new ServiceException("无法连接 " + host + ":" + port + "，" + rootCauseMessage(exception));
+        }
+    }
+
+    private SpeechProviderTestResponse testResponse(String testType, String status, String message, long startedNanos) {
+        return new SpeechProviderTestResponse(testType, status, message,
+            Duration.ofNanos(System.nanoTime() - startedNanos).toMillis());
+    }
+
+    private void recordTest(Long providerId, String status, String message) {
+        String summary = StringUtils.blankToDefault(message, status);
+        if (summary.length() > 500) {
+            summary = summary.substring(0, 500);
+        }
+        providerMapper.update(null, new LambdaUpdateWrapper<AiSpeechProvider>()
+            .set(AiSpeechProvider::getLastTestStatus, status)
+            .set(AiSpeechProvider::getLastTestMessage, summary)
+            .set(AiSpeechProvider::getLastTestTime, new Date())
+            .eq(AiSpeechProvider::getId, providerId));
+    }
+
+    private String userTestMessage(String prefix, Throwable exception) {
+        return prefix + "：" + rootCauseMessage(exception);
+    }
+
+    private String rootCauseMessage(Throwable exception) {
+        Throwable current = exception;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return StringUtils.blankToDefault(current.getMessage(), current.getClass().getSimpleName());
     }
 
     private AiSpeechProvider requireEnabledTtsProvider(Long id) {
@@ -1154,11 +1593,8 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         return template;
     }
 
-    private void ensureProviderCodeUnique(String code, Long excludedId) {
-        boolean exists = providerMapper.exists(new LambdaQueryWrapper<AiSpeechProvider>()
-            .eq(AiSpeechProvider::getProviderCode, code)
-            .ne(excludedId != null, AiSpeechProvider::getId, excludedId));
-        if (exists) throw new ServiceException("语音服务商编码已存在");
+    private String generateProviderCode() {
+        return "SP_" + UUID.randomUUID().toString().replace("-", "").toUpperCase();
     }
 
     private void ensureTemplateCodeUnique(String code, Long excludedId) {
@@ -1191,6 +1627,19 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         response.setDefaultStreamingTts(provider.getDefaultStreamingTts());
         response.setDefaultRecordingAsr(provider.getDefaultRecordingAsr());
         response.setDefaultStreamingAsr(provider.getDefaultStreamingAsr());
+        response.setTtsModel(provider.getTtsModel());
+        response.setStreamingTtsModel(provider.getStreamingTtsModel());
+        response.setRecordingAsrModel(provider.getRecordingAsrModel());
+        response.setStreamingAsrModel(provider.getStreamingAsrModel());
+        response.setTtsVoice(provider.getTtsVoice());
+        response.setStreamingTtsVoice(provider.getStreamingTtsVoice());
+        response.setTtsEndpointMode(provider.getTtsEndpointMode());
+        response.setStreamingTtsEndpointMode(provider.getStreamingTtsEndpointMode());
+        response.setRecordingAsrEndpointMode(provider.getRecordingAsrEndpointMode());
+        response.setStreamingAsrEndpointMode(provider.getStreamingAsrEndpointMode());
+        SpeechProviderDefinition definition = definitionRegistry.get(provider.getProviderType());
+        response.setCredentialValues(nonSecretCredentials(definition, storedCredentials(provider)));
+        response.setConfiguredSecretFields(configuredSecretFields(provider, definition));
         response.setEndpointUrl(provider.getEndpointUrl());
         response.setHttpMethod(provider.getHttpMethod());
         response.setAuthType(provider.getAuthType());
@@ -1214,6 +1663,9 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         response.setAsrMaxSentenceMs(provider.getAsrMaxSentenceMs());
         response.setAsrOptionsJson(provider.getAsrOptionsJson());
         response.setEnabled(provider.getEnabled());
+        response.setLastTestStatus(provider.getLastTestStatus());
+        response.setLastTestMessage(provider.getLastTestMessage());
+        response.setLastTestTime(provider.getLastTestTime());
         response.setRemark(provider.getRemark());
         response.setVersion(provider.getVersion());
         response.setCreateTime(provider.getCreateTime());

@@ -24,6 +24,8 @@ public class AiKnowledgeProperties {
     private String realtimeTransport = "UNIMRCP";
     private Boolean callRealtimeAsrEnabled = false;
     private String callRealtimeAsrLegs = "BOTH";
+    private String callRealtimeAsrTransport = "UNIMRCP";
+    private String callRealtimeAsrWebsocketUrl = "ws://127.0.0.1:8080/api/internal/asr/realtime/audio";
     private UniMrcp unimrcp = new UniMrcp();
 
     @Data

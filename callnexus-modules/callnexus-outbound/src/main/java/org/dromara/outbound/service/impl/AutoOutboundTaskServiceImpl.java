@@ -40,6 +40,11 @@ import org.dromara.outbound.service.AutoOutboundTaskService;
 import org.dromara.outbound.service.OutboundBlacklistChecker;
 import org.dromara.outbound.service.PhoneNumberNormalizer;
 import org.dromara.outbound.service.OutboundResultSuggestionService;
+import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
+import org.dromara.resource.outboundline.domain.response.OutboundLinePolicyResponse;
+import org.dromara.resource.outboundline.service.OutboundLinePolicyService;
+import org.dromara.resource.phone.domain.response.PhoneNumberResponse;
+import org.dromara.resource.phone.service.PhoneNumberApplicationService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -76,6 +81,9 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     private final AutoOutboundDispatchMapper dispatchMapper;
     private final OutboundAttemptMapper attemptMapper;
     private final OutboundResultSuggestionService resultSuggestionService;
+    private final FreeSwitchNodeQueryService nodeQueryService;
+    private final PhoneNumberApplicationService phoneNumberService;
+    private final OutboundLinePolicyService outboundLinePolicyService;
 
     @Override
     public List<AutoOutboundTaskResponse> list() {
@@ -98,6 +106,7 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
         apply(task, request);
         task.setTaskType(TASK_TYPE);
         task.setStatus("DRAFT");
+        task.setExecutionRound(1);
         task.setAutoRetryEnabled(false);
         task.setAutoAssignDueRetry(false);
         try {
@@ -136,9 +145,16 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
         if ("RUNNING".equals(task.getStatus())) {
             throw new ServiceException("执行中的自动外呼任务不能删除");
         }
-        if (countMembers(id, null) > 0) {
-            throw new ServiceException("任务已有外呼名单，不能删除，请停止后保留任务记录");
+        cancelReadyDispatches(id, "任务删除，取消尚未拨出的调度单");
+        if (hasActiveCalls(id)) {
+            throw new ServiceException("任务仍有活动拨号，暂时不能删除");
         }
+        dispatchMapper.delete(new LambdaQueryWrapper<AutoOutboundDispatch>()
+            .eq(AutoOutboundDispatch::getTaskId, id));
+        attemptMapper.delete(new LambdaQueryWrapper<OutboundAttempt>()
+            .eq(OutboundAttempt::getTaskId, id));
+        memberMapper.delete(new LambdaQueryWrapper<OutboundMember>()
+            .eq(OutboundMember::getTaskId, id));
         callWindowMapper.delete(new LambdaQueryWrapper<OutboundTaskCallWindow>()
             .eq(OutboundTaskCallWindow::getTaskId, id));
         retryRuleMapper.delete(new LambdaQueryWrapper<OutboundTaskRetryRule>()
@@ -157,7 +173,11 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
         if (countMembers(id, List.of("PENDING", "RETRY", "SCHEDULED")) == 0) {
             throw new ServiceException("自动外呼任务没有待处理名单，请先配置资料来源并生成名单");
         }
-        updateStatus(id, "RUNNING");
+        taskMapper.update(null, new LambdaUpdateWrapper<OutboundTask>()
+            .eq(OutboundTask::getId, id)
+            .eq(OutboundTask::getTaskType, TASK_TYPE)
+            .set(OutboundTask::getStatus, "RUNNING")
+            .set(task.getExecutionStartedAt() == null, OutboundTask::getExecutionStartedAt, LocalDateTime.now()));
     }
 
     @Override
@@ -188,6 +208,56 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
             throw new ServiceException("任务已经结束");
         }
         updateStatus(id, "STOPPED");
+        cancelReadyDispatches(id, "任务已停止");
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void rerun(Long id) {
+        OutboundTask task = requireTask(id);
+        if (!Set.of("COMPLETED", "STOPPED").contains(task.getStatus())) {
+            throw new ServiceException("只有已完成或已停止的任务可以重新执行");
+        }
+        cancelReadyDispatches(id, "任务重新执行，取消上一轮待拨调度单");
+        if (hasActiveCalls(id)) {
+            throw new ServiceException("任务仍有活动拨号，请等待通话结束后重新执行");
+        }
+        long executable = memberMapper.selectCount(new LambdaQueryWrapper<OutboundMember>()
+            .eq(OutboundMember::getTaskId, id)
+            .ne(OutboundMember::getStatus, "BLOCKED"));
+        if (executable == 0) {
+            throw new ServiceException("当前任务没有可重新执行的客户名单");
+        }
+        memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
+            .eq(OutboundMember::getTaskId, id)
+            .ne(OutboundMember::getStatus, "BLOCKED")
+            .set(OutboundMember::getStatus, "PENDING")
+            .set(OutboundMember::getClaimedAgentId, null)
+            .set(OutboundMember::getClaimedUserId, null)
+            .set(OutboundMember::getClaimedAt, null)
+            .set(OutboundMember::getLeaseExpiresAt, null)
+            .set(OutboundMember::getScheduleKey, null)
+            .set(OutboundMember::getScheduledAt, null)
+            .set(OutboundMember::getBusinessCallId, null)
+            .set(OutboundMember::getAttemptCount, 0)
+            .set(OutboundMember::getResultCode, null)
+            .set(OutboundMember::getResultRemark, null)
+            .set(OutboundMember::getNextFollowUpAt, null)
+            .set(OutboundMember::getCompletedAt, null)
+            .set(OutboundMember::getCompletionReason, null));
+        LocalDateTime now = LocalDateTime.now();
+        taskMapper.update(null, new LambdaUpdateWrapper<OutboundTask>()
+            .eq(OutboundTask::getId, id)
+            .eq(OutboundTask::getTaskType, TASK_TYPE)
+            .in(OutboundTask::getStatus, "COMPLETED", "STOPPED")
+            .set(OutboundTask::getStatus, "RUNNING")
+            .set(OutboundTask::getExecutionRound, (task.getExecutionRound() == null ? 1 : task.getExecutionRound()) + 1)
+            .set(OutboundTask::getExecutionStartedAt, now)
+            .set(OutboundTask::getLastScheduledAt, null)
+            .set(OutboundTask::getLastScheduleSummary, "已重新执行，等待调度")
+            .set(OutboundTask::getSchedulerOwner, null)
+            .set(OutboundTask::getSchedulerLeaseUntil, null)
+            .set(OutboundTask::getSchedulerHeartbeatAt, null));
     }
 
     @Override
@@ -306,6 +376,7 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
         LocalDateTime tomorrowStart = todayStart.plusDays(1);
         List<OutboundAttempt> todayAttempts = attemptMapper.selectList(new LambdaQueryWrapper<OutboundAttempt>()
             .eq(OutboundAttempt::getTaskId, taskId)
+            .ge(task.getExecutionStartedAt() != null, OutboundAttempt::getStartedAt, task.getExecutionStartedAt())
             .ge(OutboundAttempt::getStartedAt, todayStart)
             .lt(OutboundAttempt::getStartedAt, tomorrowStart));
         long answered = todayAttempts.stream().filter(item -> item.getAnsweredAt() != null).count();
@@ -506,6 +577,24 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     }
 
     private void validate(AutoOutboundTaskRequest request) {
+        nodeQueryService.getEnabledConnection(request.getNodeId());
+        if (request.getCallerNumberId() != null && request.getOutboundLinePolicyId() != null) {
+            throw new ServiceException("指定外显号码与指定外呼策略不能同时配置");
+        }
+        if (request.getCallerNumberId() != null) {
+            PhoneNumberResponse callerNumber = phoneNumberService.get(request.getCallerNumberId());
+            if (callerNumber == null || !Boolean.TRUE.equals(callerNumber.getEnabled())
+                || !request.getNodeId().equals(callerNumber.getNodeId())) {
+                throw new ServiceException("指定外显号码不可用或不属于执行节点");
+            }
+        }
+        if (request.getOutboundLinePolicyId() != null) {
+            OutboundLinePolicyResponse policy = outboundLinePolicyService.get(request.getOutboundLinePolicyId());
+            if (policy == null || !Boolean.TRUE.equals(policy.getEnabled())
+                || !request.getNodeId().equals(policy.getNodeId())) {
+                throw new ServiceException("指定外呼策略不可用或不属于执行节点");
+            }
+        }
         try {
             ZoneId.of(request.getScheduleTimezone());
         } catch (DateTimeException exception) {
@@ -561,7 +650,9 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
         task.setTaskCode(request.getTaskCode().trim());
         task.setTaskName(request.getTaskName().trim());
         task.setDescription(trim(request.getDescription()));
+        task.setNodeId(request.getNodeId());
         task.setCallerNumberId(request.getCallerNumberId());
+        task.setOutboundLinePolicyId(request.getOutboundLinePolicyId());
         task.setDialMode(request.getDialMode());
         task.setTargetType(request.getTargetType());
         task.setTargetId(request.getTargetId());
@@ -615,7 +706,9 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
         response.setTaskType(task.getTaskType());
         response.setStatus(task.getStatus());
         response.setDescription(task.getDescription());
+        response.setNodeId(task.getNodeId());
         response.setCallerNumberId(task.getCallerNumberId());
+        response.setOutboundLinePolicyId(task.getOutboundLinePolicyId());
         response.setDialMode(task.getDialMode());
         response.setTargetType(task.getTargetType());
         response.setTargetId(task.getTargetId());
@@ -687,6 +780,32 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
             query.in(OutboundMember::getStatus, statuses);
         }
         return memberMapper.selectCount(query);
+    }
+
+    private boolean hasActiveCalls(Long taskId) {
+        return dispatchMapper.selectCount(new LambdaQueryWrapper<AutoOutboundDispatch>()
+            .eq(AutoOutboundDispatch::getTaskId, taskId)
+            .in(AutoOutboundDispatch::getStatus, "READY", "PROCESSING")) > 0
+            || countMembers(taskId, List.of("SCHEDULED", "DIALING")) > 0;
+    }
+
+    private void cancelReadyDispatches(Long taskId, String reason) {
+        LocalDateTime now = LocalDateTime.now();
+        dispatchMapper.update(null, new LambdaUpdateWrapper<AutoOutboundDispatch>()
+            .eq(AutoOutboundDispatch::getTaskId, taskId)
+            .eq(AutoOutboundDispatch::getStatus, "READY")
+            .set(AutoOutboundDispatch::getStatus, "CANCELLED")
+            .set(AutoOutboundDispatch::getCompletedAt, now)
+            .set(AutoOutboundDispatch::getFailureReason, reason)
+            .set(AutoOutboundDispatch::getLeaseOwner, null)
+            .set(AutoOutboundDispatch::getLeaseExpiresAt, null));
+        memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
+            .eq(OutboundMember::getTaskId, taskId)
+            .eq(OutboundMember::getStatus, "SCHEDULED")
+            .set(OutboundMember::getStatus, "PENDING")
+            .set(OutboundMember::getScheduleKey, null)
+            .set(OutboundMember::getScheduledAt, null)
+            .set(OutboundMember::getLeaseExpiresAt, null));
     }
 
     private void updateStatus(Long id, String status) {

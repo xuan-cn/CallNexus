@@ -2,6 +2,7 @@ package org.dromara.ai.service;
 
 import org.dromara.ai.domain.request.*;
 import org.dromara.ai.domain.response.*;
+import org.dromara.ai.speech.definition.SpeechCapability;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.springframework.web.multipart.MultipartFile;
@@ -13,7 +14,12 @@ public interface AiSpeechApplicationService {
     Long createProvider(AiSpeechProviderRequest request);
     void updateProvider(Long id, AiSpeechProviderRequest request);
     void deleteProvider(Long id);
+    SpeechProviderTestResponse validateProviderConfiguration(AiSpeechProviderRequest request);
+    SpeechProviderTestResponse testProviderConnection(AiSpeechProviderRequest request);
+    SpeechProviderTestResponse testProviderConnection(Long id);
+    SpeechProviderTestResponse testStreamingProvider(Long id, SpeechCapability capability);
     TtsTestResponse testProvider(Long id, TtsTestRequest request);
+    SpeechProviderCatalogResponse providerCatalog(Long id, boolean refresh);
     List<String> providerVoices(Long id);
     AsrTestResponse testAsrProvider(Long id, MultipartFile file, String format, Integer sampleRate);
 

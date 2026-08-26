@@ -47,6 +47,13 @@ public class TicketController {
         return R.ok();
     }
 
+    @PostMapping("/{id}/resolve")
+    @SaCheckPermission("callcenter:ticket:create")
+    public R<Void> resolveDirectly(@PathVariable Long id) {
+        applicationService.resolveDirectly(id);
+        return R.ok();
+    }
+
     @PostMapping("/{id}/close")
     public R<Void> close(@PathVariable Long id) {
         applicationService.close(id);

@@ -318,7 +318,7 @@ public class KokoroLocalTtsProvider implements TtsProvider, StreamingTtsProvider
         if (StringUtils.isNotBlank(requested) && !"default".equalsIgnoreCase(requested.trim())) {
             return requested.trim();
         }
-        return StringUtils.blankToDefault(provider.getDefaultVoice(), "zf_001");
+        return StringUtils.blankToDefault(provider.getTtsVoice(), "zf_001");
     }
 
     private String normalizeFormat(String requested, String configured) {

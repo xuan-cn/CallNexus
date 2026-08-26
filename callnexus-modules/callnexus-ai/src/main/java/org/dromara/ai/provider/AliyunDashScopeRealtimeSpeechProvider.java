@@ -129,7 +129,7 @@ public class AliyunDashScopeRealtimeSpeechProvider
                     .connectTimeout(Duration.ofSeconds(timeout(provider)))
                     .header("Authorization", "Bearer " + provider.getAuthToken())
                     .header("OpenAI-Beta", "realtime=v1");
-                String workspaceId = option(provider.getRemark(), "workspaceId");
+                String workspaceId = option(provider.getCredentialJson(), "workspaceId");
                 if (StringUtils.isNotBlank(workspaceId)) {
                     builder.header("X-DashScope-WorkSpace", workspaceId);
                 }
@@ -345,7 +345,7 @@ public class AliyunDashScopeRealtimeSpeechProvider
 
         private void connect() {
             String endpoint = StringUtils.blankToDefault(provider.getStreamingTtsEndpointUrl(), DEFAULT_REALTIME_ENDPOINT);
-            String model = option(provider.getStreamingTtsOptionsJson(), "model");
+            String model = provider.getStreamingTtsModel();
             connect(endpoint, StringUtils.blankToDefault(model, DEFAULT_TTS_MODEL));
             log.info("已连接百炼实时 TTS，providerCode={}，model={}，voice={}，sampleRate={}",
                 provider.getProviderCode(), StringUtils.blankToDefault(model, DEFAULT_TTS_MODEL), voice(), sampleRate());
@@ -425,7 +425,7 @@ public class AliyunDashScopeRealtimeSpeechProvider
             if (StringUtils.isNotBlank(requestVoice) && !"default".equalsIgnoreCase(requestVoice.trim())) {
                 return requestVoice.trim();
             }
-            return StringUtils.blankToDefault(provider.getDefaultVoice(), "Cherry");
+            return StringUtils.blankToDefault(provider.getStreamingTtsVoice(), "Cherry");
         }
 
         private int sampleRate() {
@@ -489,23 +489,11 @@ public class AliyunDashScopeRealtimeSpeechProvider
     }
 
     static String fileAsrModel(AiSpeechProvider provider) {
-        String configured = option(provider.getAsrOptionsJson(), "fileModel");
-        if (StringUtils.isNotBlank(configured)) {
-            return configured;
-        }
-        String legacy = option(provider.getAsrOptionsJson(), "model");
-        return StringUtils.isNotBlank(legacy) && !legacy.toLowerCase().contains("realtime")
-            ? legacy : DEFAULT_FILE_ASR_MODEL;
+        return StringUtils.blankToDefault(provider.getRecordingAsrModel(), DEFAULT_FILE_ASR_MODEL);
     }
 
     static String realtimeAsrModel(AiSpeechProvider provider) {
-        String configured = option(provider.getAsrOptionsJson(), "realtimeModel");
-        if (StringUtils.isNotBlank(configured)) {
-            return configured;
-        }
-        String legacy = option(provider.getAsrOptionsJson(), "model");
-        return StringUtils.isNotBlank(legacy) && legacy.toLowerCase().contains("realtime")
-            ? legacy : DEFAULT_REALTIME_ASR_MODEL;
+        return StringUtils.blankToDefault(provider.getStreamingAsrModel(), DEFAULT_REALTIME_ASR_MODEL);
     }
 
     private static boolean isAsrConfigOnlyOption(String key) {
@@ -517,9 +505,9 @@ public class AliyunDashScopeRealtimeSpeechProvider
 
     private static String fileAsrEndpoint(AiSpeechProvider provider) {
         String endpoint = StringUtils.blankToDefault(provider.getRecordingAsrEndpointUrl(), DEFAULT_ASR_ENDPOINT_TEMPLATE).trim();
-        String workspaceId = option(provider.getRemark(), "workspaceId");
+        String workspaceId = option(provider.getCredentialJson(), "workspaceId");
         if (StringUtils.isBlank(workspaceId)) {
-            workspaceId = option(provider.getRemark(), "workspace_id");
+            workspaceId = option(provider.getCredentialJson(), "workspace_id");
         }
         if (endpoint.contains("{workspaceId}") || endpoint.contains("{WorkspaceId}")) {
             if (StringUtils.isBlank(workspaceId)) {

@@ -716,7 +716,9 @@ public class CallStateRuntimeServiceImpl implements CallStateRuntimeService {
     }
 
     private String originalCaller(TelephonyEvent event) {
-        String caller = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER);
+        String caller = firstNotBlank(
+            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CUSTOMER_PHONE),
+            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER));
         return StringUtils.isNotBlank(caller) ? caller : event.callerNumber();
     }
 

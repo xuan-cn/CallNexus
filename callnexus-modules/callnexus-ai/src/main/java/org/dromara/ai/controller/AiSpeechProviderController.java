@@ -9,6 +9,7 @@ import org.dromara.ai.domain.response.AiSpeechProviderResponse;
 import org.dromara.ai.domain.response.AsrTestResponse;
 import org.dromara.ai.domain.response.TtsTestResponse;
 import org.dromara.ai.service.AiSpeechApplicationService;
+import org.dromara.ai.speech.definition.SpeechCapability;
 import org.dromara.common.core.domain.R;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -56,7 +57,34 @@ public class AiSpeechProviderController {
         return R.ok();
     }
 
-    @PostMapping("/{id}/test")
+    @PostMapping("/preview/validate")
+    @SaCheckPermission("callcenter:ai-speech:test")
+    public R<org.dromara.ai.domain.response.SpeechProviderTestResponse> validate(
+        @Valid @RequestBody AiSpeechProviderRequest request) {
+        return R.ok(service.validateProviderConfiguration(request));
+    }
+
+    @PostMapping("/preview/connection-test")
+    @SaCheckPermission("callcenter:ai-speech:test")
+    public R<org.dromara.ai.domain.response.SpeechProviderTestResponse> previewConnectionTest(
+        @Valid @RequestBody AiSpeechProviderRequest request) {
+        return R.ok(service.testProviderConnection(request));
+    }
+
+    @PostMapping("/{id}/connection-test")
+    @SaCheckPermission("callcenter:ai-speech:test")
+    public R<org.dromara.ai.domain.response.SpeechProviderTestResponse> connectionTest(@PathVariable Long id) {
+        return R.ok(service.testProviderConnection(id));
+    }
+
+    @PostMapping("/{id}/streaming-test")
+    @SaCheckPermission("callcenter:ai-speech:test")
+    public R<org.dromara.ai.domain.response.SpeechProviderTestResponse> streamingTest(
+        @PathVariable Long id, @RequestParam SpeechCapability capability) {
+        return R.ok(service.testStreamingProvider(id, capability));
+    }
+
+    @PostMapping({"/{id}/test", "/{id}/tts/test"})
     @SaCheckPermission("callcenter:ai-speech:test")
     public R<TtsTestResponse> testTts(@PathVariable Long id, @Valid @RequestBody TtsTestRequest request) {
         return R.ok(service.testProvider(id, request));
@@ -68,7 +96,14 @@ public class AiSpeechProviderController {
         return R.ok(service.providerVoices(id));
     }
 
-    @PostMapping(value = "/{id}/asr/test", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @GetMapping("/{id}/catalog")
+    @SaCheckPermission("callcenter:ai-speech:list")
+    public R<org.dromara.ai.domain.response.SpeechProviderCatalogResponse> catalog(
+        @PathVariable Long id, @RequestParam(defaultValue = "false") boolean refresh) {
+        return R.ok(service.providerCatalog(id, refresh));
+    }
+
+    @PostMapping(value = {"/{id}/asr/test", "/{id}/recording-asr/test"}, consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @SaCheckPermission("callcenter:ai-speech:test")
     public R<AsrTestResponse> testAsr(@PathVariable Long id,
                                      @RequestParam("file") MultipartFile file,

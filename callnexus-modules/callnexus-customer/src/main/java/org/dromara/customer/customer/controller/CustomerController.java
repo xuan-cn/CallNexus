@@ -9,6 +9,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.customer.customer.domain.request.CreateCustomerRequest;
 import org.dromara.customer.customer.domain.request.CustomerAssignmentRequest;
+import org.dromara.customer.customer.domain.request.ClaimCustomerRequest;
 import org.dromara.customer.customer.domain.request.CustomerPageQuery;
 import org.dromara.customer.customer.domain.request.AddCustomerFollowUpRequest;
 import org.dromara.customer.customer.domain.request.UpdateCustomerRequest;
@@ -66,6 +67,12 @@ public class CustomerController {
     @PutMapping("/{id}")
     public R<Void> update(@PathVariable Long id, @Valid @RequestBody UpdateCustomerRequest request) {
         applicationService.update(id, request);
+        return R.ok();
+    }
+
+    @PostMapping("/{id}/claim-current-agent")
+    public R<Void> claimCurrentAgent(@PathVariable Long id, @Valid @RequestBody ClaimCustomerRequest request) {
+        applicationService.claimCurrentAgent(id, request.getBusinessCallId());
         return R.ok();
     }
 

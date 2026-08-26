@@ -50,7 +50,7 @@ public class OpenAiCompatibleSpeechProvider implements TtsProvider, AsrProvider 
         String format = format(request.format(), provider.getDefaultFormat());
 
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("model", firstText(config, "ttsModel", "model", DEFAULT_TTS_MODEL));
+        payload.put("model", StringUtils.blankToDefault(provider.getTtsModel(), DEFAULT_TTS_MODEL));
         payload.put("input", request.text());
         payload.put("voice", voice(provider, request, config));
         payload.put("response_format", format);
@@ -86,7 +86,7 @@ public class OpenAiCompatibleSpeechProvider implements TtsProvider, AsrProvider 
         String format = format(request.format(), provider.getAsrFormat());
         String boundary = "----callnexus-" + UUID.randomUUID().toString().replace("-", "");
         byte[] body = multipartBody(boundary, Map.of(
-            "model", firstText(config, "asrModel", DEFAULT_ASR_MODEL),
+            "model", StringUtils.blankToDefault(provider.getRecordingAsrModel(), DEFAULT_ASR_MODEL),
             "response_format", firstText(config, "asrResponseFormat", "json")
         ), "file", "audio." + format, request.audioBytes(), audioMimeType(format), mapAt(config, "asrParameters"));
 
@@ -211,11 +211,7 @@ public class OpenAiCompatibleSpeechProvider implements TtsProvider, AsrProvider 
         if (StringUtils.isNotBlank(request.voice())) {
             return request.voice();
         }
-        String configured = textAt(config, "voice");
-        if (StringUtils.isNotBlank(configured)) {
-            return configured;
-        }
-        return StringUtils.blankToDefault(provider.getDefaultVoice(), "alloy");
+        return StringUtils.blankToDefault(provider.getTtsVoice(), "alloy");
     }
 
     private String format(String requestFormat, String providerFormat) {

@@ -3,10 +3,11 @@ package org.dromara.ai.domain.request;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
+import java.util.Map;
+
 @Data
 public class AiSpeechProviderRequest {
     private Long id;
-    @NotBlank
     private String providerCode;
     @NotBlank
     private String providerName;
@@ -20,6 +21,17 @@ public class AiSpeechProviderRequest {
     private Boolean defaultStreamingTts;
     private Boolean defaultRecordingAsr;
     private Boolean defaultStreamingAsr;
+    private String ttsModel;
+    private String streamingTtsModel;
+    private String recordingAsrModel;
+    private String streamingAsrModel;
+    private String ttsVoice;
+    private String streamingTtsVoice;
+    private String ttsEndpointMode;
+    private String streamingTtsEndpointMode;
+    private String recordingAsrEndpointMode;
+    private String streamingAsrEndpointMode;
+    private Map<String, Object> credentials;
     private String endpointUrl;
     private String httpMethod;
     private String authType;

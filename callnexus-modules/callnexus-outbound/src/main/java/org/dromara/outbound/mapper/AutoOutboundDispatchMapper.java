@@ -49,9 +49,8 @@ public interface AutoOutboundDispatchMapper extends BaseMapperPlus<AutoOutboundD
         SELECT COUNT(*)
         FROM cc_auto_outbound_dispatch d
         JOIN cc_outbound_task t ON t.id = d.task_id AND t.tenant_id = d.tenant_id AND t.deleted = 0
-        JOIN cc_phone_number p ON p.id = t.caller_number_id AND p.tenant_id = t.tenant_id AND p.deleted = 0
         WHERE d.tenant_id = #{tenantId} AND d.deleted = 0 AND d.status IN ('READY', 'PROCESSING')
-          AND p.node_id = #{nodeId}
+          AND t.node_id = #{nodeId}
         """)
     long countNodeActive(@Param("tenantId") String tenantId, @Param("nodeId") Long nodeId);
 

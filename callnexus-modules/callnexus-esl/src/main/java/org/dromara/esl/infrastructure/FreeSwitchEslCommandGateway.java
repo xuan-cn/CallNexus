@@ -14,6 +14,7 @@ import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
@@ -241,6 +242,25 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         requireCallId(callId);
         sendCommand(endpoint, "api uuid_detect_speech " + callId + " stop");
         log.info("FreeSWITCH speech recognition stop command accepted, callId={}", callId);
+    }
+
+    @Override
+    public void startAudioStream(EslEndpoint endpoint, String callId, String websocketUrl, int sampleRate) {
+        requireCallId(callId);
+        requireAudioStreamUrl(websocketUrl);
+        if (sampleRate != 8000 && sampleRate != 16000) {
+            throw new ServiceException("FreeSWITCH audio stream sample rate invalid");
+        }
+        sendCommand(endpoint, "api uuid_audio_stream " + callId + " start " + websocketUrl
+            + " mono " + (sampleRate / 1000) + "k");
+        log.info("FreeSWITCH audio stream start command accepted, callId={}, sampleRate={}", callId, sampleRate);
+    }
+
+    @Override
+    public void stopAudioStream(EslEndpoint endpoint, String callId) {
+        requireCallId(callId);
+        sendCommand(endpoint, "api uuid_audio_stream " + callId + " stop");
+        log.info("FreeSWITCH audio stream stop command accepted, callId={}", callId);
     }
 
     @Override
@@ -709,6 +729,21 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         if (value == null || value.isBlank() || value.contains("\r") || value.contains("\n")
             || value.contains(";") || value.contains("&") || value.contains("|")) {
             throw new ServiceException("FreeSWITCH speech parameter invalid: " + field);
+        }
+    }
+
+    private void requireAudioStreamUrl(String value) {
+        if (value == null || value.isBlank() || value.contains("\r") || value.contains("\n") || value.contains(" ")) {
+            throw new ServiceException("FreeSWITCH audio stream URL invalid");
+        }
+        try {
+            URI uri = URI.create(value);
+            if (!("ws".equalsIgnoreCase(uri.getScheme()) || "wss".equalsIgnoreCase(uri.getScheme()))
+                || uri.getHost() == null) {
+                throw new ServiceException("FreeSWITCH audio stream URL invalid");
+            }
+        } catch (IllegalArgumentException exception) {
+            throw new ServiceException("FreeSWITCH audio stream URL invalid");
         }
     }
 

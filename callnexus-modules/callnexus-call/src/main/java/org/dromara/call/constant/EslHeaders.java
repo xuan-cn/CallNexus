@@ -38,6 +38,7 @@ public final class EslHeaders {
     public static final String VARIABLE_CALLNEXUS_TARGET_AGENT_EXTENSION = "variable_callnexus_target_agent_extension";
     public static final String VARIABLE_CALLNEXUS_MONITOR_TARGET_LEG_UUID = "variable_callnexus_monitor_target_leg_uuid";
     public static final String VARIABLE_CALLNEXUS_CUSTOMER_ID = "variable_callnexus_customer_id";
+    public static final String VARIABLE_CALLNEXUS_CUSTOMER_PHONE = "variable_callnexus_customer_phone";
     public static final String VARIABLE_CALLNEXUS_OUTBOUND_TASK_ID = "variable_callnexus_outbound_task_id";
     public static final String VARIABLE_CALLNEXUS_OUTBOUND_MEMBER_ID = "variable_callnexus_outbound_member_id";
     public static final String VARIABLE_CALLNEXUS_DISPATCH_TASK_ID = "variable_callnexus_dispatch_task_id";

@@ -25,11 +25,23 @@ public class AiSpeechProvider extends TenantEntity {
     private Boolean defaultStreamingTts;
     private Boolean defaultRecordingAsr;
     private Boolean defaultStreamingAsr;
+    private String ttsModel;
+    private String streamingTtsModel;
+    private String recordingAsrModel;
+    private String streamingAsrModel;
+    private String ttsVoice;
+    private String streamingTtsVoice;
+    private String ttsEndpointMode;
+    private String streamingTtsEndpointMode;
+    private String recordingAsrEndpointMode;
+    private String streamingAsrEndpointMode;
     private String endpointUrl;
     private String httpMethod;
     private String authType;
     private String authHeaderName;
     private String authToken;
+    private String credentialJson;
+    private Integer configurationSchemaVersion;
     private String defaultVoice;
     private String defaultFormat;
     private Integer defaultSampleRate;
@@ -48,6 +60,9 @@ public class AiSpeechProvider extends TenantEntity {
     private Integer asrMaxSentenceMs;
     private String asrOptionsJson;
     private Boolean enabled;
+    private String lastTestStatus;
+    private String lastTestMessage;
+    private java.util.Date lastTestTime;
     private String remark;
     @Version
     private Integer version;

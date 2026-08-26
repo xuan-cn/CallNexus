@@ -168,11 +168,12 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         List<Long> customerIds = request.getCustomerIds() == null ? List.of() : request.getCustomerIds().stream()
             .filter(Objects::nonNull)
             .distinct()
+            .sorted()
             .toList();
         if (customerIds.isEmpty()) {
             throw new ServiceException("请选择需要分配的客户");
         }
-        validateAssignmentTarget(request);
+        List<Long> allocationAgentIds = validateAssignmentTarget(request);
         customerIds.forEach(this::requireCustomer);
         Map<Long, CustomerAssignment> previousAssignments = new HashMap<>();
         for (int start = 0; start < customerIds.size(); start += 500) {
@@ -187,7 +188,8 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
                 .in(CustomerAssignment::getCustomerId, part)
                 .eq(CustomerAssignment::getEnabled, true));
         }
-        for (Long customerId : customerIds) {
+        for (int index = 0; index < customerIds.size(); index++) {
+            Long customerId = customerIds.get(index);
             CustomerAssignment previous = previousAssignments.get(customerId);
             CustomerAssignment assignment = new CustomerAssignment();
             assignment.setCustomerId(customerId);
@@ -195,7 +197,9 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
             assignment.setSourceChannel(preferRequestValue(request.getSourceChannel(), previous == null ? null : previous.getSourceChannel()));
             assignment.setTags(preferRequestValue(request.getTags(), previous == null ? null : previous.getTags()));
             assignment.setSkillGroupId(request.getSkillGroupId());
-            assignment.setAgentId(request.getAgentId());
+            assignment.setAgentId(allocationAgentIds.isEmpty()
+                ? request.getAgentId()
+                : allocationAgentIds.get(index % allocationAgentIds.size()));
             assignment.setAssignmentSource("MANUAL");
             assignment.setRemark(preferRequestValue(request.getRemark(), previous == null ? null : previous.getRemark()));
             assignment.setEnabled(true);
@@ -208,7 +212,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         return cleaned == null ? cleanText(current) : cleaned;
     }
 
-    private void validateAssignmentTarget(CustomerAssignmentRequest request) {
+    private List<Long> validateAssignmentTarget(CustomerAssignmentRequest request) {
         if (request.getSkillGroupId() == null) {
             throw new ServiceException("请选择归属技能组");
         }
@@ -216,8 +220,35 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         if (group == null || !Boolean.TRUE.equals(group.getEnabled())) {
             throw new ServiceException("归属技能组不存在或已停用");
         }
+        if ("EVEN".equalsIgnoreCase(request.getAllocationMode())) {
+            List<Long> memberAgentIds = skillGroupMemberMapper.selectList(new LambdaQueryWrapper<SkillGroupMember>()
+                    .eq(SkillGroupMember::getSkillGroupId, request.getSkillGroupId())
+                    .orderByAsc(SkillGroupMember::getPriority)
+                    .orderByAsc(SkillGroupMember::getId))
+                .stream()
+                .map(SkillGroupMember::getAgentId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+            if (memberAgentIds.isEmpty()) {
+                throw new ServiceException("所选技能组没有可分配的坐席");
+            }
+            Set<Long> enabledAgentIds = agentMapper.selectList(new LambdaQueryWrapper<Agent>()
+                    .in(Agent::getId, memberAgentIds)
+                    .eq(Agent::getEnabled, true))
+                .stream()
+                .map(Agent::getId)
+                .collect(Collectors.toSet());
+            List<Long> availableAgentIds = memberAgentIds.stream()
+                .filter(enabledAgentIds::contains)
+                .toList();
+            if (availableAgentIds.isEmpty()) {
+                throw new ServiceException("所选技能组没有启用的坐席");
+            }
+            return availableAgentIds;
+        }
         if (request.getAgentId() == null) {
-            return;
+            return List.of();
         }
         Agent agent = agentMapper.selectById(request.getAgentId());
         if (agent == null || !Boolean.TRUE.equals(agent.getEnabled())) {
@@ -229,6 +260,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         if (memberCount == null || memberCount == 0) {
             throw new ServiceException("所选坐席不属于当前技能组");
         }
+        return List.of(request.getAgentId());
     }
 
     @Override
@@ -272,6 +304,57 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         customerMapper.updateById(customer);
         formSubmissionService.validateAndSave(request.getTemplateId(), FormBusinessType.CUSTOMER, id, request.getFormData());
         callBusinessAssociationService.associateCustomer(request.getSourceCallId(), id);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void claimCurrentAgent(Long id, String businessCallId) {
+        requireCustomer(id);
+        Long handlingAgentId = callBusinessAssociationService.findHandlingAgentId(businessCallId);
+        if (handlingAgentId == null) {
+            throw new ServiceException("当前通话尚未确认接听坐席，无法归属客户");
+        }
+        Long userId = LoginHelper.getUserId();
+        Agent agent = agentMapper.selectOne(new LambdaQueryWrapper<Agent>()
+            .eq(Agent::getId, handlingAgentId)
+            .eq(Agent::getUserId, userId)
+            .eq(Agent::getEnabled, true)
+            .last("limit 1"));
+        if (agent == null) {
+            throw new ServiceException("当前通话接听坐席与登录账号不一致，无法归属客户");
+        }
+        CustomerAssignment previous = loadActiveAssignment(id);
+        customerAssignmentMapper.update(null, new LambdaUpdateWrapper<CustomerAssignment>()
+            .set(CustomerAssignment::getEnabled, false)
+            .eq(CustomerAssignment::getCustomerId, id)
+            .eq(CustomerAssignment::getEnabled, true));
+
+        List<Long> skillGroupIds = skillGroupMemberMapper.selectList(new LambdaQueryWrapper<SkillGroupMember>()
+                .eq(SkillGroupMember::getAgentId, agent.getId())
+                .orderByAsc(SkillGroupMember::getPriority)
+                .orderByAsc(SkillGroupMember::getId))
+            .stream()
+            .map(SkillGroupMember::getSkillGroupId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        Long skillGroupId = previous != null && previous.getSkillGroupId() != null
+            ? previous.getSkillGroupId()
+            : (skillGroupIds.size() == 1 ? skillGroupIds.get(0) : null);
+
+        CustomerAssignment assignment = new CustomerAssignment();
+        assignment.setCustomerId(id);
+        assignment.setCustomerType(previous == null ? null : previous.getCustomerType());
+        assignment.setSourceChannel(previous == null ? null : previous.getSourceChannel());
+        assignment.setTags(previous == null ? null : previous.getTags());
+        assignment.setSkillGroupId(skillGroupId);
+        assignment.setAgentId(agent.getId());
+        assignment.setAssignmentSource("CALL_WORKSPACE");
+        assignment.setImportBatchId(previous == null ? null : previous.getImportBatchId());
+        assignment.setRemark(previous == null ? null : previous.getRemark());
+        assignment.setEnabled(true);
+        customerAssignmentMapper.insert(assignment);
+        callBusinessAssociationService.associateCustomer(businessCallId, id);
     }
 
     @Override
@@ -620,7 +703,9 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         wrapper.and(scope -> {
             scope.in(CustomerAssignment::getAgentId, agentIds);
             if (!skillGroupIds.isEmpty()) {
-                scope.or().in(CustomerAssignment::getSkillGroupId, skillGroupIds);
+                scope.or(groupOwned -> groupOwned
+                    .in(CustomerAssignment::getSkillGroupId, skillGroupIds)
+                    .isNull(CustomerAssignment::getAgentId));
             }
         });
         return true;

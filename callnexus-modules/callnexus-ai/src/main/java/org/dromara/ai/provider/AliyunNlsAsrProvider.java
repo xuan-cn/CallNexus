@@ -318,7 +318,7 @@ public class AliyunNlsAsrProvider implements AsrProvider, StreamingAsrProvider {
     }
 
     private Dict commonConfig(AiSpeechProvider provider) {
-        return StringUtils.isBlank(provider.getRemark()) ? null : JsonUtils.parseObject(provider.getRemark(), Dict.class);
+        return StringUtils.isBlank(provider.getCredentialJson()) ? null : JsonUtils.parseObject(provider.getCredentialJson(), Dict.class);
     }
 
     private void applyOptions(SpeechTranscriber transcriber, String optionsJson) {

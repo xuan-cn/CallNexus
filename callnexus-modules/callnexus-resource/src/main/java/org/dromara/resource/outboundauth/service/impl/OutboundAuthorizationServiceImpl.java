@@ -61,6 +61,12 @@ public class OutboundAuthorizationServiceImpl implements OutboundAuthorizationSe
                     command.callerExtension(), normalizedCallee, command.tenantId());
                 return OutboundAuthorizationResult.reject("OUTBOUND_CALLER_NUMBER_UNAVAILABLE", "指定外呼主叫号码不可用或未绑定可用网关", normalizedCallee);
             }
+            if (command.outboundLinePolicyId() != null) {
+                log.warn("外呼授权拒绝：指定外呼线路策略不可用，sourceType={}，nodeId={}，policyId={}，caller={}，callee={}，tenantId={}",
+                    command.sourceType(), command.nodeId(), command.outboundLinePolicyId(),
+                    command.callerExtension(), normalizedCallee, command.tenantId());
+                return OutboundAuthorizationResult.reject("OUTBOUND_POLICY_UNAVAILABLE", "指定外呼线路策略不可用或没有可用线路", normalizedCallee);
+            }
             log.warn("外呼授权拒绝：未配置可用默认外呼号码路由，sourceType={}，nodeId={}，sipDomain={}，switchIpv4={}，caller={}，callee={}，tenantId={}",
                 command.sourceType(), command.nodeId(), command.sipDomain(), command.switchIpv4(),
                 command.callerExtension(), normalizedCallee, command.tenantId());
@@ -76,6 +82,13 @@ public class OutboundAuthorizationServiceImpl implements OutboundAuthorizationSe
     private PhoneNumberOutboundRouteResponse resolveOutboundRoute(OutboundAuthorizationCommand command) {
         if (command.callerNumberId() != null) {
             return phoneNumberQueryService.findOutboundRouteByNumberId(command.tenantId(), command.nodeId(), command.callerNumberId());
+        }
+        if (command.outboundLinePolicyId() != null) {
+            if (command.nodeId() == null) {
+                return null;
+            }
+            return outboundLinePolicyService.selectRouteByPolicy(
+                command.tenantId(), command.nodeId(), command.outboundLinePolicyId());
         }
         if (command.nodeId() != null) {
             PhoneNumberOutboundRouteResponse policyRoute = outboundLinePolicyService.selectRoute(

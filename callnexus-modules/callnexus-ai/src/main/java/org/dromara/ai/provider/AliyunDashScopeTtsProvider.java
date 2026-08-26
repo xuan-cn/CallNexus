@@ -32,7 +32,7 @@ import java.util.Map;
 public class AliyunDashScopeTtsProvider implements TtsProvider {
 
     private static final String TYPE = "ALIYUN_DASHSCOPE";
-    private static final String DEFAULT_ENDPOINT_TEMPLATE = "https://{workspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+    private static final String DEFAULT_ENDPOINT_TEMPLATE = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
     private static final String DEFAULT_OPENAI_MODEL = "qwen-tts";
     private static final String DEFAULT_OPENAI_VOICE = "Cherry";
     private static final String DEFAULT_GENERATION_MODEL = "cosyvoice-v1";
@@ -244,10 +244,8 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
     }
 
     private String model(AiSpeechProvider provider, boolean openAiCompatible, Dict config) {
-        String model = firstText(config, List.of("model"));
-        if (StringUtils.isNotBlank(model)) {
-            return model;
-        }
+        String model = provider.getTtsModel();
+        if (StringUtils.isNotBlank(model)) return model;
         return openAiCompatible ? DEFAULT_OPENAI_MODEL : DEFAULT_GENERATION_MODEL;
     }
 
@@ -255,12 +253,8 @@ public class AliyunDashScopeTtsProvider implements TtsProvider {
         if (StringUtils.isNotBlank(request.voice())) {
             return request.voice();
         }
-        String remarkVoice = firstText(config, List.of("voice"));
-        if (StringUtils.isNotBlank(remarkVoice)) {
-            return remarkVoice;
-        }
-        if (StringUtils.isNotBlank(provider.getDefaultVoice())) {
-            return provider.getDefaultVoice();
+        if (StringUtils.isNotBlank(provider.getTtsVoice())) {
+            return provider.getTtsVoice();
         }
         return openAiCompatible ? DEFAULT_OPENAI_VOICE : DEFAULT_GENERATION_VOICE;
     }

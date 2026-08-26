@@ -98,6 +98,13 @@ public class AutoOutboundTaskController {
         return R.ok();
     }
 
+    @PostMapping("/{id}/rerun")
+    @SaCheckPermission("callcenter:auto-outbound-task:execute")
+    public R<Void> rerun(@PathVariable Long id) {
+        service.rerun(id);
+        return R.ok();
+    }
+
     @GetMapping("/{id}/sources")
     @SaCheckPermission("callcenter:auto-outbound-task:query")
     public R<List<AutoOutboundSourceResponse>> sources(@PathVariable Long id) {

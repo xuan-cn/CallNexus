@@ -11,5 +11,6 @@ public interface TicketApplicationService {
     TicketResponse get(Long id);
     Long create(CreateTicketRequest request);
     void submit(Long id);
+    void resolveDirectly(Long id);
     void close(Long id);
 }

@@ -61,6 +61,9 @@ public class QueueNodeCompiler implements IvrNodeCompiler {
         context.xml().append("      <action application=\"set\" data=\"callnexus_node_id=")
             .append(context.freeSwitchNodeId())
             .append("\"/>\n");
+        context.xml().append("      <action application=\"set\" data=\"effective_caller_id_number=${cond('${callnexus_customer_phone}' != '' ? ${callnexus_customer_phone} : ${effective_caller_id_number})}\"/>\n");
+        context.xml().append("      <action application=\"set\" data=\"effective_caller_id_name=${cond('${callnexus_customer_phone}' != '' ? ${callnexus_customer_phone} : ${effective_caller_id_name})}\"/>\n");
+        context.xml().append("      <action application=\"export\" data=\"callnexus_customer_phone=${callnexus_customer_phone}\"/>\n");
         if (Boolean.TRUE.equals(queue.getMaskCallerNumber())) {
             context.xml().append("      <action application=\"set\" data=\"effective_caller_id_number=anonymous\"/>\n");
             context.xml().append("      <action application=\"set\" data=\"effective_caller_id_name=匿名来电\"/>\n");

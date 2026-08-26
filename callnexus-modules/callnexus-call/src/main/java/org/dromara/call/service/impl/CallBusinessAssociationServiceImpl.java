@@ -1,5 +1,6 @@
 package org.dromara.call.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.call.domain.CallSession;
@@ -13,6 +14,17 @@ import org.springframework.stereotype.Service;
 public class CallBusinessAssociationServiceImpl implements CallBusinessAssociationService {
 
     private final CallSessionMapper sessionMapper;
+
+    @Override
+    public Long findHandlingAgentId(String businessCallId) {
+        if (StringUtils.isBlank(businessCallId)) return null;
+        CallSession session = sessionMapper.selectOne(new LambdaQueryWrapper<CallSession>()
+            .eq(CallSession::getBusinessCallId, businessCallId)
+            .orderByDesc(CallSession::getCreateTime)
+            .last("limit 1"));
+        if (session == null) return null;
+        return session.getOwnerAgentId() != null ? session.getOwnerAgentId() : session.getAgentId();
+    }
 
     @Override
     public void associateCustomer(String businessCallId, Long customerId) {

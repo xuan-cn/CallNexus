@@ -957,6 +957,10 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private RealtimeNumbers resolveRealtimeNumbers(TelephonyEvent event, AgentRealtimeTargetResponse target,
                                                    String originalCaller, String originalCalled) {
         String targetExtension = normalizeExtension(target.getExtension());
+        String customerPhone = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CUSTOMER_PHONE);
+        if (customerPhone != null && !customerPhone.isBlank()) {
+            return new RealtimeNumbers(customerPhone, target.getExtension());
+        }
         AgentActiveCall activeCall = RedisUtils.getCacheObject(activeCallKey(target));
         if (activeCall != null && activeCall.getDestination() != null && !activeCall.getDestination().isBlank()) {
             String peerNumber = activeCall.getDestination();

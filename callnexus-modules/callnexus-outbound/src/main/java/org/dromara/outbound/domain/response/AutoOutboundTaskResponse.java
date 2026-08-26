@@ -16,7 +16,9 @@ public class AutoOutboundTaskResponse {
     private String taskType;
     private String status;
     private String description;
+    private Long nodeId;
     private Long callerNumberId;
+    private Long outboundLinePolicyId;
     private String dialMode;
     private String targetType;
     private Long targetId;

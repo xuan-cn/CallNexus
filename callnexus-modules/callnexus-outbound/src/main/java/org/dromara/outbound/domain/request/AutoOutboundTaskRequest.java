@@ -24,7 +24,10 @@ public class AutoOutboundTaskRequest {
     private String taskName;
     @Size(max = 500, message = "任务说明不能超过500个字符")
     private String description;
+    @NotNull(message = "请选择执行节点")
+    private Long nodeId;
     private Long callerNumberId;
+    private Long outboundLinePolicyId;
     @NotBlank(message = "请选择拨打模式")
     @Pattern(regexp = "AGENTLESS_AI|AGENTLESS_IVR|PROGRESSIVE", message = "拨打模式不正确")
     private String dialMode;

@@ -149,7 +149,7 @@ public class AliyunNlsTtsProvider implements TtsProvider {
     }
 
     private Dict config(AiSpeechProvider provider) {
-        return StringUtils.isBlank(provider.getRemark()) ? null : JsonUtils.parseObject(provider.getRemark(), Dict.class);
+        return StringUtils.isBlank(provider.getCredentialJson()) ? null : JsonUtils.parseObject(provider.getCredentialJson(), Dict.class);
     }
 
     private String voice(AiSpeechProvider provider, TtsGenerateRequest request, Dict config) {

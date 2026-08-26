@@ -523,7 +523,9 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private void applySessionMetadata(CallSession session, TelephonyEvent event) {
         boolean changed = false;
         String direction = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_DIRECTION);
-        String caller = businessNumber(event, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER));
+        String caller = businessNumber(event, firstNotBlank(
+            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CUSTOMER_PHONE),
+            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER)));
         String called = businessNumber(event, event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLED));
         Long customerId = parseLong(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CUSTOMER_ID));
         Long outboundTaskId = parseLong(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_OUTBOUND_TASK_ID));
@@ -643,7 +645,9 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     }
 
     private String originalCaller(TelephonyEvent event) {
-        String caller = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER);
+        String caller = firstNotBlank(
+            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_CUSTOMER_PHONE),
+            event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_ORIGINAL_CALLER));
         return StringUtils.isNotBlank(caller) ? caller : event.callerNumber();
     }
 

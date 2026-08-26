@@ -21,6 +21,7 @@ public interface CustomerApplicationService {
     void assign(CustomerAssignmentRequest request);
     Long importCustomer(CustomerImportData data);
     void update(Long id, UpdateCustomerRequest request);
+    void claimCurrentAgent(Long id, String businessCallId);
     List<CustomerPhoneResponse> listPhones(Long customerId);
     Long addPhone(Long customerId, CustomerPhoneRequest request);
     void updatePhone(Long customerId, Long phoneId, CustomerPhoneRequest request);

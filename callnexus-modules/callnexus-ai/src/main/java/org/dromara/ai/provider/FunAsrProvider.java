@@ -44,7 +44,7 @@ public class FunAsrProvider implements AsrProvider {
         if (StringUtils.isBlank(wavName)) {
             wavName = "callnexus-" + UUID.randomUUID().toString().replace("-", "");
         }
-        String model = String.valueOf(options.getOrDefault("model", "sensevoice"));
+        String model = StringUtils.blankToDefault(provider.getRecordingAsrModel(), "sensevoice");
         Map<String, Object> parameters = mapOption(options.get("parameters"));
 
         long start = System.nanoTime();

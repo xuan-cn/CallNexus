@@ -7,6 +7,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.dromara.ai.config.AiKnowledgeProperties;
 import org.dromara.ai.domain.AiRealtimeCallSession;
 import org.dromara.ai.mapper.AiRealtimeCallSessionMapper;
+import org.dromara.ai.realtime.StreamingAsrTokenService;
 import org.dromara.call.constant.EslEventNames;
 import org.dromara.call.constant.EslHeaders;
 import org.dromara.call.domain.CallLeg;
@@ -20,6 +21,7 @@ import org.dromara.resource.node.domain.response.FreeSwitchNodeConnectionRespons
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
@@ -50,6 +52,7 @@ public class CallRealtimeAsrControlService {
     private final TelephonyCommandGateway telephonyCommandGateway;
     private final CallLegMapper callLegMapper;
     private final AiRealtimeCallSessionMapper realtimeCallSessionMapper;
+    private final StreamingAsrTokenService streamingAsrTokenService;
 
     public void handle(TelephonyEvent event) {
         if (!Boolean.TRUE.equals(properties.getCallRealtimeAsrEnabled())) {
@@ -57,7 +60,7 @@ public class CallRealtimeAsrControlService {
         }
         if (EslEventNames.CHANNEL_BRIDGE.equals(event.eventName())) {
             startForBridge(event);
-        } else if (EslEventNames.DETECTED_SPEECH.equals(event.eventName())) {
+        } else if (!isWebSocketTransport() && EslEventNames.DETECTED_SPEECH.equals(event.eventName())) {
             restartAfterSpeech(event);
         } else if (EslEventNames.CHANNEL_HANGUP_COMPLETE.equals(event.eventName())
             || EslEventNames.CHANNEL_DESTROY.equals(event.eventName())) {
@@ -135,12 +138,19 @@ public class CallRealtimeAsrControlService {
             return;
         }
         try {
-            AiKnowledgeProperties.UniMrcp unimrcp = properties.getUnimrcp();
-            telephonyCommandGateway.startSpeechRecognition(endpoint, legUuid,
-                unimrcp.getProfile(), unimrcp.getGrammar(), unimrcp.getDetectScript());
-            RedisUtils.setCacheObject(key, leg.getBusinessCallId(), ACTIVE_TTL);
-            recognitionWatches.put(watchKey(nodeId, legUuid),
-                new RecognitionWatch(nodeId, legUuid, System.currentTimeMillis()));
+            String transport = normalizedTransport();
+            if (isWebSocketTransport()) {
+                telephonyCommandGateway.startAudioStream(endpoint, legUuid,
+                    streamingAsrUrl(leg, nodeId), 16000);
+                recognitionWatches.remove(watchKey(nodeId, legUuid));
+            } else {
+                AiKnowledgeProperties.UniMrcp unimrcp = properties.getUnimrcp();
+                telephonyCommandGateway.startSpeechRecognition(endpoint, legUuid,
+                    unimrcp.getProfile(), unimrcp.getGrammar(), unimrcp.getDetectScript());
+                recognitionWatches.put(watchKey(nodeId, legUuid),
+                    new RecognitionWatch(nodeId, legUuid, System.currentTimeMillis()));
+            }
+            RedisUtils.setCacheObject(key, transport, ACTIVE_TTL);
             log.info("Realtime call ASR {}, businessCallId={}, legUuid={}, legRole={}",
                 forceRestart ? "restarted" : "started", leg.getBusinessCallId(), legUuid, leg.getLegRole());
         } catch (Exception exception) {
@@ -188,7 +198,12 @@ public class CallRealtimeAsrControlService {
             return;
         }
         try {
-            telephonyCommandGateway.stopSpeechRecognition(endpoint(event.nodeId()), event.uuid());
+            String activeTransport = RedisUtils.getCacheObject(key);
+            if ("WEBSOCKET".equalsIgnoreCase(activeTransport)) {
+                telephonyCommandGateway.stopAudioStream(endpoint(event.nodeId()), event.uuid());
+            } else {
+                telephonyCommandGateway.stopSpeechRecognition(endpoint(event.nodeId()), event.uuid());
+            }
         } catch (Exception exception) {
             log.debug("Realtime call ASR stop ignored, nodeId={}, uuid={}, error={}",
                 event.nodeId(), event.uuid(), exception.getMessage());
@@ -201,6 +216,10 @@ public class CallRealtimeAsrControlService {
     @Scheduled(fixedDelayString = "${ai.unimrcp.channel-probe-interval-ms:2000}")
     public void restartStalledRecognitions() {
         if (!Boolean.TRUE.equals(properties.getCallRealtimeAsrEnabled())) {
+            recognitionWatches.clear();
+            return;
+        }
+        if (isWebSocketTransport()) {
             recognitionWatches.clear();
             return;
         }
@@ -334,6 +353,29 @@ public class CallRealtimeAsrControlService {
 
     private String activeKey(String uuid) {
         return ACTIVE_KEY_PREFIX + uuid;
+    }
+
+    private String streamingAsrUrl(CallLeg leg, Long nodeId) {
+        String baseUrl = StringUtils.trim(properties.getCallRealtimeAsrWebsocketUrl());
+        if (StringUtils.isBlank(baseUrl)) {
+            throw new IllegalStateException("CALLNEXUS_AI_CALL_REALTIME_ASR_WEBSOCKET_URL 未配置");
+        }
+        String speaker = LEG_AGENT.equals(leg.getLegRole()) || leg.getAgentId() != null ? LEG_AGENT : LEG_CUSTOMER;
+        String token = streamingAsrTokenService.issue(TenantHelper.getTenantId(), nodeId,
+            leg.getBusinessCallId(), leg.getLegUuid(), speaker);
+        return UriComponentsBuilder.fromUriString(baseUrl)
+            .queryParam("token", token)
+            .build(true)
+            .toUriString();
+    }
+
+    private boolean isWebSocketTransport() {
+        return "WEBSOCKET".equals(normalizedTransport());
+    }
+
+    private String normalizedTransport() {
+        return StringUtils.defaultIfBlank(properties.getCallRealtimeAsrTransport(), "WEBSOCKET")
+            .trim().toUpperCase();
     }
 
     private String watchKey(Long nodeId, String uuid) {

@@ -21,7 +21,9 @@ public class AutoOutboundDispatchClaimService {
     @Transactional(rollbackFor = Exception.class)
     public boolean claim(OutboundTask task, OutboundMember member, LocalDateTime now, int leaseMinutes) {
         int attemptNo = (member.getAttemptCount() == null ? 0 : member.getAttemptCount()) + 1;
-        String dispatchKey = task.getTenantId() + ":" + task.getId() + ":" + member.getId() + ":" + attemptNo;
+        int executionRound = task.getExecutionRound() == null ? 1 : task.getExecutionRound();
+        String dispatchKey = task.getTenantId() + ":" + task.getId() + ":" + member.getId()
+            + ":r" + executionRound + ":" + attemptNo;
         int updated = memberMapper.schedule(
             member.getId(), task.getId(), task.getTenantId(), dispatchKey, now, now.plusMinutes(leaseMinutes));
         if (updated == 0) {

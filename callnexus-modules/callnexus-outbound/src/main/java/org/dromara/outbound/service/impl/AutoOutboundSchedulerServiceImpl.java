@@ -17,8 +17,6 @@ import org.dromara.outbound.mapper.OutboundTaskCallWindowMapper;
 import org.dromara.outbound.mapper.OutboundTaskMapper;
 import org.dromara.outbound.service.AutoOutboundSchedulerService;
 import org.dromara.outbound.service.model.AutoOutboundSchedulerResult;
-import org.dromara.resource.phone.domain.response.PhoneNumberResponse;
-import org.dromara.resource.phone.service.PhoneNumberApplicationService;
 import org.dromara.system.callcenterconfig.service.CallCenterConfigService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -54,7 +52,6 @@ public class AutoOutboundSchedulerServiceImpl implements AutoOutboundSchedulerSe
     private final AutoOutboundDispatchMapper dispatchMapper;
     private final AutoOutboundDispatchClaimService claimService;
     private final CallCenterConfigService configService;
-    private final PhoneNumberApplicationService phoneNumberService;
 
     private final String schedulerOwner = ManagementFactory.getRuntimeMXBean().getName() + "-"
         + UUID.randomUUID().toString().substring(0, 8);
@@ -108,11 +105,9 @@ public class AutoOutboundSchedulerServiceImpl implements AutoOutboundSchedulerSe
         int callerSlots = task.getCallerNumberId() == null ? taskSlots : Math.max(0,
             configInt("autoOutbound.callerConcurrencyLimit", DEFAULT_CALLER_CONCURRENCY)
                 - Math.toIntExact(dispatchMapper.countCallerActive(task.getTenantId(), task.getCallerNumberId())));
-        PhoneNumberResponse callerNumber = task.getCallerNumberId() == null ? null
-            : phoneNumberService.get(task.getCallerNumberId());
-        int nodeSlots = callerNumber == null || callerNumber.getNodeId() == null ? taskSlots : Math.max(0,
+        int nodeSlots = task.getNodeId() == null ? taskSlots : Math.max(0,
             configInt("autoOutbound.nodeConcurrencyLimit", DEFAULT_NODE_CONCURRENCY)
-                - Math.toIntExact(dispatchMapper.countNodeActive(task.getTenantId(), callerNumber.getNodeId())));
+                - Math.toIntExact(dispatchMapper.countNodeActive(task.getTenantId(), task.getNodeId())));
         LocalDateTime minuteStart = now.truncatedTo(ChronoUnit.MINUTES);
         long minuteCount = dispatchMapper.selectCount(new LambdaQueryWrapper<AutoOutboundDispatch>()
             .eq(AutoOutboundDispatch::getTaskId, task.getId())
@@ -189,6 +184,7 @@ public class AutoOutboundSchedulerServiceImpl implements AutoOutboundSchedulerSe
         long todayAttempts = attemptMapper.selectCount(new LambdaQueryWrapper<OutboundAttempt>()
             .eq(OutboundAttempt::getTaskId, task.getId())
             .eq(OutboundAttempt::getMemberId, member.getId())
+            .ge(task.getExecutionStartedAt() != null, OutboundAttempt::getStartedAt, task.getExecutionStartedAt())
             .ge(OutboundAttempt::getStartedAt, dayStart)
             .lt(OutboundAttempt::getStartedAt, dayEnd));
         if (todayAttempts >= value(task.getMaxCallsPerDay(), 1)) {
@@ -197,6 +193,7 @@ public class AutoOutboundSchedulerServiceImpl implements AutoOutboundSchedulerSe
         OutboundAttempt lastAttempt = attemptMapper.selectOne(new LambdaQueryWrapper<OutboundAttempt>()
             .eq(OutboundAttempt::getTaskId, task.getId())
             .eq(OutboundAttempt::getMemberId, member.getId())
+            .ge(task.getExecutionStartedAt() != null, OutboundAttempt::getStartedAt, task.getExecutionStartedAt())
             .isNotNull(OutboundAttempt::getStartedAt)
             .orderByDesc(OutboundAttempt::getStartedAt)
             .last("LIMIT 1"));

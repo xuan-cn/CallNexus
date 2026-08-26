@@ -122,16 +122,23 @@ public class AutoOutboundDialerServiceImpl implements AutoOutboundDialerService 
             cancel(dispatch, member, "号码已命中外呼黑名单");
             return false;
         }
-        PhoneNumberResponse caller = task.getCallerNumberId() == null ? null : phoneNumberService.get(task.getCallerNumberId());
-        if (caller == null || caller.getNodeId() == null || !Boolean.TRUE.equals(caller.getEnabled())) {
-            throw new ServiceException("自动外呼任务必须配置当前节点已启用的主叫号码");
+        if (task.getNodeId() == null) {
+            throw new ServiceException("自动外呼任务未配置执行节点");
         }
-        FreeSwitchNodeConnectionResponse node = nodeQueryService.getEnabledConnection(caller.getNodeId());
+        PhoneNumberResponse caller = task.getCallerNumberId() == null ? null : phoneNumberService.get(task.getCallerNumberId());
+        if (task.getCallerNumberId() != null && caller == null) {
+            throw new ServiceException("自动外呼任务指定的外显号码不存在");
+        }
+        if (caller != null && (!Boolean.TRUE.equals(caller.getEnabled()) || !task.getNodeId().equals(caller.getNodeId()))) {
+            throw new ServiceException("自动外呼任务指定的外显号码不可用或不属于执行节点");
+        }
+        FreeSwitchNodeConnectionResponse node = nodeQueryService.getEnabledConnection(task.getNodeId());
         EslEndpoint endpoint = new EslEndpoint(node.getEslHost(), node.getEslPort(), node.getEslPassword(), node.getSipDomain());
         OutboundAuthorizationResult authorization = authorizationService.authorize(new OutboundAuthorizationCommand(
-            TenantHelper.getTenantId(), "AUTO_OUTBOUND", caller.getNodeId(), node.getSipDomain(), null,
-            null, null, task.getSkillGroupId(), caller.getNumber(), member.getPhoneNumber(), caller.getId(),
-            task.getId(), member.getId(), member.getCustomerId()));
+            TenantHelper.getTenantId(), "AUTO_OUTBOUND", task.getNodeId(), node.getSipDomain(), null,
+            null, null, task.getSkillGroupId(), caller == null ? null : caller.getNumber(), member.getPhoneNumber(),
+            caller == null ? null : caller.getId(),
+            task.getOutboundLinePolicyId(), task.getId(), member.getId(), member.getCustomerId()));
         if (!authorization.allowed()) throw new ServiceException(authorization.rejectMessage());
         if (!authorization.external() || authorization.outboundRoute() == null) {
             throw new ServiceException("自动外呼名单只允许拨打外线号码");
@@ -139,19 +146,20 @@ public class AutoOutboundDialerServiceImpl implements AutoOutboundDialerService 
         if (dispatch.getBusinessCallId() != null && !dispatch.getBusinessCallId().isBlank()) {
             return resumeSubmittedDispatch(dispatch, member, endpoint);
         }
-        String answeredDestination = answeredDestination(task, caller.getNodeId());
-        Map<String, String> variables = targetVariables(task);
+        var outboundRoute = authorization.outboundRoute();
+        String answeredDestination = answeredDestination(task, task.getNodeId());
+        Map<String, String> variables = targetVariables(task, authorization.normalizedCallee());
         String businessCallId = UUID.randomUUID().toString();
         OutboundAttempt attempt = createAttempt(task, member, dispatch, businessCallId);
         bindDispatchAndMember(dispatch, member, attempt, businessCallId);
         associationService.associateCustomer(businessCallId, member.getCustomerId());
         commandGateway.originateAgentless(endpoint, businessCallId, authorization.normalizedCallee(),
             toRoute(authorization), new CallOriginateContext(businessCallId, member.getCustomerId(), task.getId(),
-                member.getId(), caller.getId(), task.getSkillGroupId(), null), answeredDestination, variables);
+                member.getId(), outboundRoute.getNumberId(), task.getSkillGroupId(), null), answeredDestination, variables);
         extendCallLease(dispatch.getId());
-        log.info("自动外呼已提交，dispatchId={}，attemptId={}，businessCallId={}，taskId={}，memberId={}，mode={}，target={}",
+        log.info("自动外呼已提交，dispatchId={}，attemptId={}，businessCallId={}，taskId={}，memberId={}，mode={}，target={}，callerNumberId={}，configuredPolicyId={}，policyCode={}",
             dispatch.getId(), attempt.getId(), businessCallId, task.getId(), member.getId(),
-            task.getDialMode(), answeredDestination);
+            task.getDialMode(), answeredDestination, outboundRoute.getNumberId(), task.getOutboundLinePolicyId(), outboundRoute.getPolicyCode());
         return true;
     }
 
@@ -171,10 +179,11 @@ public class AutoOutboundDialerServiceImpl implements AutoOutboundDialerService 
         throw new ServiceException("渐进式自动外呼将在后续阶段接入坐席容量，本阶段仅支持 AI 和 IVR");
     }
 
-    private Map<String, String> targetVariables(OutboundTask task) {
+    private Map<String, String> targetVariables(OutboundTask task, String customerPhone) {
         Map<String, String> variables = new HashMap<>();
         variables.put("callnexus_auto_outbound", "true");
         variables.put("callnexus_auto_outbound_mode", task.getDialMode());
+        variables.put("callnexus_customer_phone", customerPhone);
         if ("AGENTLESS_IVR".equals(task.getDialMode())) {
             variables.put("callnexus_ivr_flow_id", String.valueOf(task.getTargetId()));
         }

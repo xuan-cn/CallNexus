@@ -3,6 +3,8 @@ package org.dromara.ai.domain.response;
 import lombok.Data;
 
 import java.util.Date;
+import java.util.Map;
+import java.util.Set;
 
 @Data
 public class AiSpeechProviderResponse {
@@ -18,6 +20,18 @@ public class AiSpeechProviderResponse {
     private Boolean defaultStreamingTts;
     private Boolean defaultRecordingAsr;
     private Boolean defaultStreamingAsr;
+    private String ttsModel;
+    private String streamingTtsModel;
+    private String recordingAsrModel;
+    private String streamingAsrModel;
+    private String ttsVoice;
+    private String streamingTtsVoice;
+    private String ttsEndpointMode;
+    private String streamingTtsEndpointMode;
+    private String recordingAsrEndpointMode;
+    private String streamingAsrEndpointMode;
+    private Map<String, Object> credentialValues;
+    private Set<String> configuredSecretFields;
     private String endpointUrl;
     private String httpMethod;
     private String authType;
@@ -41,6 +55,9 @@ public class AiSpeechProviderResponse {
     private Integer asrMaxSentenceMs;
     private String asrOptionsJson;
     private Boolean enabled;
+    private String lastTestStatus;
+    private String lastTestMessage;
+    private Date lastTestTime;
     private String remark;
     private Integer version;
     private Date createTime;
