@@ -666,7 +666,6 @@ public class AiRealtimeMrcpEventService {
             AiIntentRecognitionRequest request = new AiIntentRecognitionRequest();
             request.setAgentId(runtime.agentId);
             request.setText(text);
-            request.setModelFallbackEnabled(false);
             recognition = intentService.recognize(request);
         } catch (Exception exception) {
             log.warn("AI intent recognition failed; continuing with knowledge/model answer, sessionId={}, businessCallId={}, error={}",

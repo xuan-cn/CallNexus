@@ -9,5 +9,4 @@ import lombok.Data;
 public class AiIntentRecognitionRequest {
     @NotNull private Long agentId;
     @NotBlank @Size(max = 2000) private String text;
-    private Boolean modelFallbackEnabled;
 }

@@ -128,6 +128,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         AiSpeechProvider provider = new AiSpeechProvider();
         provider.setProviderCode(generateProviderCode());
         fillProvider(provider, request, true);
+        ensureMissingDefaults(provider, null);
         validateProvider(provider);
         clearOtherDefaults(provider, null);
         providerMapper.insert(provider);
@@ -144,6 +145,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         }
         validateDefaultMutation(provider, request);
         fillProvider(provider, request, false);
+        ensureMissingDefaults(provider, id);
         validateProvider(provider);
         clearOtherDefaults(provider, id);
         provider.setVersion(request.getVersion());
@@ -1253,6 +1255,38 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         template.setDefaultVoice(request.getDefaultVoice());
         template.setEnabled(request.getEnabled() == null || request.getEnabled());
         template.setRemark(request.getRemark());
+    }
+
+    /**
+     * The simplified configuration page should not require a separate default-provider setup step.
+     * Explicit selections still win; this only fills a default when the tenant currently has none.
+     */
+    private void ensureMissingDefaults(AiSpeechProvider provider, Long excludedId) {
+        if (!Boolean.TRUE.equals(provider.getEnabled())) return;
+        if (Boolean.TRUE.equals(provider.getTtsEnabled()) && !Boolean.TRUE.equals(provider.getDefaultTts())
+            && !hasEnabledDefault(AiSpeechProvider::getDefaultTts, excludedId)) {
+            provider.setDefaultTts(true);
+        }
+        if (Boolean.TRUE.equals(provider.getStreamingTtsEnabled()) && !Boolean.TRUE.equals(provider.getDefaultStreamingTts())
+            && !hasEnabledDefault(AiSpeechProvider::getDefaultStreamingTts, excludedId)) {
+            provider.setDefaultStreamingTts(true);
+        }
+        if (Boolean.TRUE.equals(provider.getRecordingAsrEnabled()) && !Boolean.TRUE.equals(provider.getDefaultRecordingAsr())
+            && !hasEnabledDefault(AiSpeechProvider::getDefaultRecordingAsr, excludedId)) {
+            provider.setDefaultRecordingAsr(true);
+        }
+        if (Boolean.TRUE.equals(provider.getStreamingAsrEnabled()) && !Boolean.TRUE.equals(provider.getDefaultStreamingAsr())
+            && !hasEnabledDefault(AiSpeechProvider::getDefaultStreamingAsr, excludedId)) {
+            provider.setDefaultStreamingAsr(true);
+        }
+    }
+
+    private boolean hasEnabledDefault(com.baomidou.mybatisplus.core.toolkit.support.SFunction<AiSpeechProvider, ?> defaultField,
+                                      Long excludedId) {
+        return providerMapper.selectCount(new LambdaQueryWrapper<AiSpeechProvider>()
+            .eq(AiSpeechProvider::getEnabled, true)
+            .eq(defaultField, true)
+            .ne(excludedId != null, AiSpeechProvider::getId, excludedId)) > 0;
     }
 
     private Map<String, Object> mergeCredentials(AiSpeechProvider provider, Map<String, Object> submitted) {

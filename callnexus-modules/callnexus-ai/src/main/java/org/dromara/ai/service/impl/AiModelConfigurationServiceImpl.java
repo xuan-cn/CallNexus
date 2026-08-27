@@ -3,6 +3,7 @@ package org.dromara.ai.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.dromara.ai.domain.*;
 import org.dromara.ai.domain.request.*;
 import org.dromara.ai.domain.response.*;
@@ -22,6 +23,7 @@ import java.util.*;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AiModelConfigurationServiceImpl implements AiModelConfigurationService {
     private static final Set<String> CAPABILITIES = Set.of("CHAT", "EMBEDDING", "RERANK");
     private final AiModelProviderMapper providerMapper;
@@ -66,25 +68,58 @@ public class AiModelConfigurationServiceImpl implements AiModelConfigurationServ
     @Override
     public Map<String, Object> testProvider(Long id) {
         AiModelProvider provider = requireEnabledProvider(id);
+        String endpoint = provider.getBaseUrl().replaceAll("/+$", "") + "/models";
         try {
-            String base = provider.getBaseUrl().replaceAll("/+$", "");
-            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(base + "/models"))
+            int connectTimeout = provider.getConnectTimeoutSeconds() == null ? 10 : provider.getConnectTimeoutSeconds();
+            HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(connectTimeout))
+                .build();
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(endpoint))
                 .timeout(Duration.ofSeconds(provider.getReadTimeoutSeconds() == null ? 30 : provider.getReadTimeoutSeconds())).GET();
             if (StringUtils.isNotBlank(provider.getApiKey())) builder.header("Authorization", "Bearer " + provider.getApiKey());
-            HttpResponse<String> response = HttpClient.newHttpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new ServiceException("模型服务连接测试失败，HTTP状态码=" + response.statusCode());
+                throw new ServiceException("模型服务连接测试失败，HTTP状态码=" + response.statusCode()
+                    + "，响应=" + responseSummary(response.body()));
             }
             int count = JsonUtils.getObjectMapper().readTree(response.body()).path("data").size();
             return Map.of("success", true, "modelCount", count, "message", "模型服务连接成功");
         } catch (ServiceException e) {
+            log.warn("模型服务连接测试失败，providerId={}，providerCode={}，endpoint={}，error={}",
+                provider.getId(), provider.getProviderCode(), endpoint, e.getMessage());
             throw e;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.warn("模型服务连接测试被中断，providerId={}，providerCode={}，endpoint={}",
+                provider.getId(), provider.getProviderCode(), endpoint, e);
             throw new ServiceException("模型服务连接测试被中断");
         } catch (Exception e) {
-            throw new ServiceException("模型服务连接测试失败：" + e.getMessage());
+            String diagnostic = exceptionDiagnostic(e);
+            log.error("模型服务连接测试发生异常，providerId={}，providerCode={}，endpoint={}，error={}",
+                provider.getId(), provider.getProviderCode(), endpoint, diagnostic, e);
+            throw new ServiceException("模型服务连接测试失败：" + diagnostic);
         }
+    }
+
+    private String exceptionDiagnostic(Throwable throwable) {
+        List<String> chain = new ArrayList<>();
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        Throwable current = throwable;
+        while (current != null && visited.add(current) && chain.size() < 6) {
+            String type = current.getClass().getSimpleName();
+            String message = StringUtils.isBlank(current.getMessage()) ? "无详细消息" : current.getMessage().trim();
+            chain.add(type + ": " + message);
+            current = current.getCause();
+        }
+        return String.join(" -> ", chain);
+    }
+
+    private String responseSummary(String body) {
+        if (StringUtils.isBlank(body)) {
+            return "<empty>";
+        }
+        String value = body.trim().replaceAll("[\\r\\n]+", " ");
+        return value.length() <= 1000 ? value : value.substring(0, 1000) + "...";
     }
 
     @Override

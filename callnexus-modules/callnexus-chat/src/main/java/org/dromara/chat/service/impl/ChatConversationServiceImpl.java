@@ -384,7 +384,6 @@ public class ChatConversationServiceImpl implements ChatConversationService {
         AiIntentRecognitionRequest request = new AiIntentRecognitionRequest();
         request.setAgentId(aiAgentId);
         request.setText(text);
-        request.setModelFallbackEnabled(false);
         return aiIntentApplicationService.recognize(request);
     }
 

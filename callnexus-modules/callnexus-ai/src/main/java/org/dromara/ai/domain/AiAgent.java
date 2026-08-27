@@ -25,6 +25,8 @@ public class AiAgent extends TenantEntity {
     private Integer bargeInGraceMs;
     private String retrievalMode;
     private String retrievalFailurePolicy;
+    private Boolean faqLearningEnabled;
+    private Long faqLearningKnowledgeBaseId;
     private Integer topK;
     private BigDecimal scoreThreshold;
     private BigDecimal faqScoreThreshold;

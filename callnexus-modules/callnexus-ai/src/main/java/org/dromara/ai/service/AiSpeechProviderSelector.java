@@ -43,8 +43,21 @@ public class AiSpeechProviderSelector {
     }
 
     public AiSpeechProvider requireDefaultStreamingAsr() {
-        AiSpeechProvider provider = defaultProvider(AiSpeechProvider::getStreamingAsrEnabled,
-            AiSpeechProvider::getDefaultStreamingAsr, "未配置默认流式 ASR 语音服务商");
+        AiSpeechProvider provider = providerMapper.selectOne(new LambdaQueryWrapper<AiSpeechProvider>()
+            .eq(AiSpeechProvider::getEnabled, true)
+            .eq(AiSpeechProvider::getStreamingAsrEnabled, true)
+            .eq(AiSpeechProvider::getDefaultStreamingAsr, true)
+            .last("limit 1"));
+        if (provider == null) {
+            AiSpeechProvider enabled = providerMapper.selectOne(new LambdaQueryWrapper<AiSpeechProvider>()
+                .eq(AiSpeechProvider::getEnabled, true)
+                .eq(AiSpeechProvider::getStreamingAsrEnabled, true)
+                .last("limit 1"));
+            if (enabled != null) {
+                throw new ServiceException("流式 ASR 已启用，但服务商“" + enabled.getProviderName() + "”尚未设为默认流式 ASR");
+            }
+            throw new ServiceException("未配置已启用的流式 ASR 语音服务商");
+        }
         streamingAsrProviderRegistry.get(provider.getProviderType());
         return provider;
     }

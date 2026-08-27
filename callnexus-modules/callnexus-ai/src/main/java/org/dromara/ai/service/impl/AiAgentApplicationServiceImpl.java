@@ -12,6 +12,7 @@ import org.dromara.ai.knowledge.KnowledgeTextUtils;
 import org.dromara.ai.mapper.*;
 import org.dromara.ai.provider.*;
 import org.dromara.ai.service.AiAgentApplicationService;
+import org.dromara.ai.service.AiFaqLearningApplicationService;
 import org.dromara.ai.vector.*;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
@@ -59,6 +60,7 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
     private final EmbeddingProviderRegistry embeddingRegistry;
     private final ChatProviderRegistry chatRegistry;
     private final VectorStore vectorStore;
+    private final AiFaqLearningApplicationService faqLearningService;
 
     @Override
     public List<AiAgentResponse> agents() {
@@ -257,6 +259,10 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
             persistUsage(conversation.getId(), assistantMessage.getId(), provider, chatModel, result,
                 System.currentTimeMillis() - started, "SUCCESS", null);
             emitCitations(eventConsumer, retrieval.hits());
+            if ("MODEL".equals(retrieval.sourceType())) {
+                faqLearningService.captureFallbackAsync(TenantHelper.getTenantId(), agent, userMessage, assistantMessage,
+                    retrieval.bestFaqScore(), retrieval.bestDocumentScore(), userId != null && userId == 0L ? "VOICE" : "ONLINE_CHAT");
+            }
             eventConsumer.accept("completed", Map.of("messageId", assistantMessage.getId(), "sourceType", retrieval.sourceType()));
             long completedAt = System.currentTimeMillis();
             Long firstTokenMs = firstTokenAt.get() == 0L ? null : firstTokenAt.get() - started;
@@ -533,6 +539,14 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
             else if (!Objects.equals(embedding, base.getEmbeddingModelId()))
                 throw new ServiceException("同一 AI 助手绑定的知识库必须使用相同向量模型");
         }
+        if (Boolean.TRUE.equals(request.getFaqLearningEnabled())) {
+            if (!"FALLBACK_MODEL".equals(request.getRetrievalFailurePolicy()))
+                throw new ServiceException("FAQ 学习仅适用于模型兜底策略");
+            if (request.getFaqLearningKnowledgeBaseId() == null)
+                throw new ServiceException("开启 FAQ 学习后必须选择目标知识库");
+            if (!ids.contains(request.getFaqLearningKnowledgeBaseId()))
+                throw new ServiceException("FAQ 学习目标必须是当前助手已绑定的知识库");
+        }
     }
 
     private void fill(AiAgent item, AiAgentRequest request) {
@@ -566,6 +580,8 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         item.setRetrievalFailurePolicy(defaultValue(request.getRetrievalFailurePolicy(), "STRICT"));
         if (!Set.of("STRICT", "FALLBACK_MODEL").contains(item.getRetrievalFailurePolicy()))
             throw new ServiceException("未知的知识未命中处理策略");
+        item.setFaqLearningEnabled(Boolean.TRUE.equals(request.getFaqLearningEnabled()));
+        item.setFaqLearningKnowledgeBaseId(item.getFaqLearningEnabled() ? request.getFaqLearningKnowledgeBaseId() : null);
         item.setTopK(request.getTopK() == null ? 5 : request.getTopK());
         item.setScoreThreshold(request.getScoreThreshold() == null ? new BigDecimal("0.50") : request.getScoreThreshold());
         item.setFaqScoreThreshold(request.getFaqScoreThreshold() == null ? new BigDecimal("0.80") : request.getFaqScoreThreshold());
@@ -613,6 +629,8 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         value.setBargeInGraceMs(item.getBargeInGraceMs() == null ? 500 : item.getBargeInGraceMs());
         value.setRetrievalMode(item.getRetrievalMode());
         value.setRetrievalFailurePolicy(item.getRetrievalFailurePolicy());
+        value.setFaqLearningEnabled(Boolean.TRUE.equals(item.getFaqLearningEnabled()));
+        value.setFaqLearningKnowledgeBaseId(item.getFaqLearningKnowledgeBaseId());
         value.setTopK(item.getTopK());
         value.setScoreThreshold(item.getScoreThreshold());
         value.setFaqScoreThreshold(item.getFaqScoreThreshold());

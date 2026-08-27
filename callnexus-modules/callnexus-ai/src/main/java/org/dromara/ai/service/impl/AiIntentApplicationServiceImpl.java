@@ -14,17 +14,25 @@ import org.dromara.ai.domain.response.AiIntentUtteranceResponse;
 import org.dromara.ai.mapper.*;
 import org.dromara.ai.provider.*;
 import org.dromara.ai.service.AiIntentApplicationService;
+import org.dromara.ai.knowledge.KnowledgeTextUtils;
+import org.dromara.ai.vector.VectorPoint;
+import org.dromara.ai.vector.VectorSearchHit;
+import org.dromara.ai.vector.VectorStore;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 @Service
@@ -36,6 +44,8 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         "NONE", "CHAT_REPLY", "REPEAT_LAST_REPLY", "STOP_PLAYBACK",
         "TRANSFER_QUEUE", "TRANSFER_EXTENSION", "TRANSFER_IVR", "TRANSFER_ONLINE_SERVICE", "CREATE_TICKET", "END_CALL", "KNOWLEDGE_QUERY");
     private static final Set<String> UTTERANCE_TYPES = Set.of("POSITIVE", "NEGATIVE");
+    private static final String VECTOR_SOURCE_TYPE = "INTENT_UTTERANCE";
+    private static final int VECTOR_SEARCH_LIMIT = 100;
 
     private final AiIntentMapper intentMapper;
     private final AiIntentUtteranceMapper utteranceMapper;
@@ -44,7 +54,10 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
     private final AiAgentMapper agentMapper;
     private final AiModelMapper modelMapper;
     private final AiModelProviderMapper providerMapper;
-    private final ChatProviderRegistry chatProviderRegistry;
+    private final EmbeddingProviderRegistry embeddingRegistry;
+    private final VectorStore vectorStore;
+    private final Map<String, String> indexedCatalogFingerprints = new ConcurrentHashMap<>();
+    private final Map<String, Object> indexLocks = new ConcurrentHashMap<>();
 
     @Override
     public List<AiIntentResponse> intents() {
@@ -67,6 +80,7 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         intentMapper.insert(intent);
         saveUtterances(intent.getId(), request.getUtterances());
         saveBindings(intent.getId(), request.getAgentIds());
+        scheduleIntentReindex(intent.getId());
         return intent.getId();
     }
 
@@ -82,6 +96,7 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         agentIntentMapper.deletePhysicallyByIntentId(tenantId, id);
         saveUtterances(id, request.getUtterances());
         saveBindings(id, request.getAgentIds());
+        scheduleIntentReindex(id);
     }
 
     @Override
@@ -92,6 +107,7 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         utteranceMapper.deletePhysicallyByIntentId(tenantId, id);
         agentIntentMapper.deletePhysicallyByIntentId(tenantId, id);
         intentMapper.deleteById(id);
+        scheduleIntentVectorDelete(tenantId, id);
     }
 
     @Override
@@ -125,90 +141,275 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
             }
         }
 
-        List<AiIntent> modelCandidates = candidates.stream()
+        List<AiIntent> vectorCandidates = candidates.stream()
             .filter(item -> !negativeMatches.contains(item.getId())).toList();
-        if (modelCandidates.isEmpty()) {
+        if (vectorCandidates.isEmpty()) {
             return persist(request, normalized, unmatched("NONE", "文本命中反例话术，已排除全部候选意图"), started, null);
         }
-        if (Boolean.FALSE.equals(request.getModelFallbackEnabled())) {
-            return persist(request, normalized, unmatched("LOCAL",
-                "本地话术未命中，实时模式跳过模型分类"), started, null);
-        }
+        Long embeddingModelId = null;
         try {
-            AiModel model = modelMapper.selectById(agent.getChatModelId());
-            if (model == null || !"CHAT".equals(model.getCapability()) || !Boolean.TRUE.equals(model.getEnabled())) {
-                throw new ServiceException("AI 助手的 Chat 模型不可用");
-            }
-            AiModelProvider provider = providerMapper.selectById(model.getProviderId());
-            if (provider == null || !Boolean.TRUE.equals(provider.getEnabled())) {
-                throw new ServiceException("AI 助手的模型服务商不可用");
-            }
-            ChatResult result = chatProviderRegistry.get(provider.getProviderType()).chat(new ChatRequest(
-                provider, model, classificationPrompt(modelCandidates, utteranceCatalog, request.getText()),
-                new BigDecimal("0.10"), 300));
-            AiIntentRecognitionResponse recognition = parseModelResult(result.content(), modelCandidates);
+            AiModel model = requireDefaultEmbeddingModel();
+            embeddingModelId = model.getId();
+            AiModelProvider provider = requireEnabledProvider(model.getProviderId());
+            ensureCatalogIndexed(agent.getId(), model, candidates, utteranceCatalog);
+            EmbeddingResult embedding = embeddingRegistry.get(provider.getProviderType()).embed(
+                new EmbeddingRequest(provider, model, List.of(request.getText().trim())));
+            validateEmbedding(embedding, model, 1);
+            List<VectorSearchHit> hits = vectorStore.search(intentCollection(TenantHelper.getTenantId(), model),
+                embedding.vectors().get(0), Map.of(
+                    "tenantId", TenantHelper.getTenantId(),
+                    "sourceType", VECTOR_SOURCE_TYPE,
+                    "intentId", vectorCandidates.stream().map(AiIntent::getId).toList()),
+                Math.min(VECTOR_SEARCH_LIMIT, Math.max(20, vectorCandidates.size() * 6)));
+            AiIntentRecognitionResponse recognition = recognizeByVector(vectorCandidates, hits);
             return persist(request, normalized, recognition, started, model.getId());
         } catch (Exception exception) {
-            log.warn("AI 意图识别模型分类失败，agentId={}，error={}", request.getAgentId(), exception.getMessage());
-            AiIntentRecognitionResponse failed = unmatched("MODEL", "模型分类失败：" + limit(exception.getMessage(), 800));
-            failed.setRawResponse(null);
-            return persist(request, normalized, failed, started, agent.getChatModelId(), "FAILED");
+            log.warn("AI 意图向量识别失败，agentId={}，error={}", request.getAgentId(), exception.getMessage(), exception);
+            AiIntentRecognitionResponse failed = unmatched("VECTOR", "向量识别失败：" + limit(exception.getMessage(), 800));
+            return persist(request, normalized, failed, started, embeddingModelId, "FAILED");
         }
     }
 
-    private List<ChatMessage> classificationPrompt(List<AiIntent> candidates,
-                                                   Map<Long, List<AiIntentUtterance>> utteranceCatalog,
-                                                   String text) {
-        StringBuilder catalog = new StringBuilder();
-        for (AiIntent intent : candidates) {
-            List<AiIntentUtterance> examples = utteranceCatalog.getOrDefault(intent.getId(), List.of());
-            catalog.append("\n- code=").append(intent.getIntentCode())
-                .append(", name=").append(intent.getIntentName())
-                .append(", description=").append(Objects.toString(intent.getDescription(), ""))
-                .append(", threshold=").append(intent.getConfidenceThreshold())
-                .append("\n  positive=").append(examples.stream().filter(it -> "POSITIVE".equals(it.getUtteranceType()))
-                    .map(AiIntentUtterance::getUtteranceText).limit(12).toList())
-                .append("\n  negative=").append(examples.stream().filter(it -> "NEGATIVE".equals(it.getUtteranceType()))
-                    .map(AiIntentUtterance::getUtteranceText).limit(12).toList());
+    private AiIntentRecognitionResponse recognizeByVector(List<AiIntent> candidates, List<VectorSearchHit> hits) {
+        Map<Long, AiIntent> candidateMap = candidates.stream()
+            .collect(Collectors.toMap(AiIntent::getId, item -> item, (left, right) -> left, LinkedHashMap::new));
+        Map<Long, Double> positiveScores = new HashMap<>();
+        Map<Long, Double> negativeScores = new HashMap<>();
+        Map<Long, String> matchedUtterances = new HashMap<>();
+        for (VectorSearchHit hit : hits) {
+            Long intentId = payloadLong(hit.payload(), "intentId");
+            if (intentId == null || !candidateMap.containsKey(intentId)) {
+                continue;
+            }
+            String type = Objects.toString(hit.payload().get("utteranceType"), "");
+            if ("NEGATIVE".equals(type)) {
+                negativeScores.merge(intentId, hit.score(), Math::max);
+            } else if ("POSITIVE".equals(type)) {
+                if (hit.score() >= positiveScores.getOrDefault(intentId, -1D)) {
+                    positiveScores.put(intentId, hit.score());
+                    matchedUtterances.put(intentId, Objects.toString(hit.payload().get("utteranceText"), ""));
+                }
+            }
         }
-        String system = """
-            你是意图分类器，只能从候选意图中选择一个，不能执行任何业务动作。
-            如果文本不属于任何候选意图，intentCode 返回 null。
-            只返回 JSON，不要使用 Markdown：
-            {"intentCode":"编码或null","confidence":0到1的小数,"reason":"简短判断依据"}
-            """;
-        return List.of(
-            new ChatMessage("system", system + "\n候选意图：" + catalog),
-            new ChatMessage("user", text));
+
+        Map<Long, Integer> priorities = new HashMap<>();
+        for (int index = 0; index < candidates.size(); index++) {
+            priorities.put(candidates.get(index).getId(), index);
+        }
+        AiIntent best = candidates.stream()
+            .filter(intent -> {
+                double positive = positiveScores.getOrDefault(intent.getId(), -1D);
+                double threshold = intent.getConfidenceThreshold() == null ? 0.80D : intent.getConfidenceThreshold().doubleValue();
+                double negative = negativeScores.getOrDefault(intent.getId(), -1D);
+                return positive >= threshold && positive > negative;
+            })
+            .sorted(Comparator
+                .<AiIntent>comparingDouble(intent -> positiveScores.getOrDefault(intent.getId(), -1D)).reversed()
+                .thenComparingInt(intent -> priorities.getOrDefault(intent.getId(), Integer.MAX_VALUE)))
+            .findFirst()
+            .orElse(null);
+        if (best == null) {
+            double bestScore = positiveScores.values().stream().mapToDouble(Double::doubleValue).max().orElse(0D);
+            AiIntentRecognitionResponse result = unmatched("VECTOR", positiveScores.isEmpty()
+                ? "当前助手的意图话术没有可用向量命中"
+                : "最高向量相似度未达到意图阈值，或反例相似度更高");
+            result.setConfidence(confidence(bestScore));
+            return result;
+        }
+        double score = positiveScores.get(best.getId());
+        String utterance = matchedUtterances.get(best.getId());
+        return matched(best, confidence(score), "VECTOR",
+            "与正例话术“" + limit(utterance, 120) + "”向量相似度为 " + confidence(score), null);
     }
 
-    private AiIntentRecognitionResponse parseModelResult(String raw, List<AiIntent> candidates) throws Exception {
-        String json = stripCodeFence(raw);
-        JsonNode root = JsonUtils.getObjectMapper().readTree(json);
-        String code = root.path("intentCode").isNull() ? null : root.path("intentCode").asText(null);
-        BigDecimal confidence = BigDecimal.valueOf(root.path("confidence").asDouble(0D));
-        String reason = root.path("reason").asText("模型未提供判断依据");
-        if (StringUtils.isBlank(code)) {
-            AiIntentRecognitionResponse result = unmatched("MODEL", reason);
-            result.setConfidence(confidence);
-            result.setRawResponse(raw);
-            return result;
+    private void ensureCatalogIndexed(Long agentId, AiModel model, List<AiIntent> candidates,
+                                      Map<Long, List<AiIntentUtterance>> utteranceCatalog) {
+        String tenantId = TenantHelper.getTenantId();
+        List<AiIntentUtterance> utterances = candidates.stream()
+            .flatMap(intent -> utteranceCatalog.getOrDefault(intent.getId(), List.of()).stream())
+            .toList();
+        String fingerprint = catalogFingerprint(model, candidates, utterances);
+        String cacheKey = tenantId + ":" + model.getId() + ":" + agentId;
+        if (fingerprint.equals(indexedCatalogFingerprints.get(cacheKey))) {
+            return;
         }
-        AiIntent intent = candidates.stream().filter(item -> item.getIntentCode().equalsIgnoreCase(code)).findFirst().orElse(null);
-        if (intent == null) {
-            AiIntentRecognitionResponse result = unmatched("MODEL", "模型返回了候选列表之外的意图：" + code);
-            result.setConfidence(confidence);
-            result.setRawResponse(raw);
-            return result;
+        Object lock = indexLocks.computeIfAbsent(cacheKey, ignored -> new Object());
+        synchronized (lock) {
+            if (fingerprint.equals(indexedCatalogFingerprints.get(cacheKey))) {
+                return;
+            }
+            indexUtterances(tenantId, model, candidates, utterances);
+            indexedCatalogFingerprints.put(cacheKey, fingerprint);
         }
-        if (confidence.compareTo(intent.getConfidenceThreshold()) < 0) {
-            AiIntentRecognitionResponse result = unmatched("MODEL",
-                "置信度 " + confidence + " 低于意图阈值 " + intent.getConfidenceThreshold());
-            result.setConfidence(confidence);
-            result.setRawResponse(raw);
-            return result;
+    }
+
+    private void indexUtterances(String tenantId, AiModel model, List<AiIntent> intents,
+                                 List<AiIntentUtterance> utterances) {
+        String collection = intentCollection(tenantId, model);
+        vectorStore.ensureCollection(collection, model.getVectorDimension());
+        List<Long> intentIds = intents.stream().map(AiIntent::getId).distinct().toList();
+        if (!intentIds.isEmpty()) {
+            vectorStore.deleteByFilter(collection, Map.of(
+                "tenantId", tenantId,
+                "sourceType", VECTOR_SOURCE_TYPE,
+                "intentId", intentIds));
         }
-        return matched(intent, confidence, "MODEL", reason, raw);
+        if (utterances.isEmpty()) {
+            return;
+        }
+        AiModelProvider provider = requireEnabledProvider(model.getProviderId());
+        Map<Long, AiIntent> intentMap = intents.stream()
+            .collect(Collectors.toMap(AiIntent::getId, item -> item));
+        int batchSize = Math.max(1, model.getMaxBatchSize() == null ? 16 : model.getMaxBatchSize());
+        for (int offset = 0; offset < utterances.size(); offset += batchSize) {
+            List<AiIntentUtterance> batch = utterances.subList(offset, Math.min(utterances.size(), offset + batchSize));
+            EmbeddingResult result = embeddingRegistry.get(provider.getProviderType()).embed(
+                new EmbeddingRequest(provider, model, batch.stream().map(AiIntentUtterance::getUtteranceText).toList()));
+            validateEmbedding(result, model, batch.size());
+            List<VectorPoint> points = new ArrayList<>();
+            for (int index = 0; index < batch.size(); index++) {
+                AiIntentUtterance utterance = batch.get(index);
+                AiIntent intent = intentMap.get(utterance.getIntentId());
+                if (intent == null) {
+                    continue;
+                }
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("tenantId", tenantId);
+                payload.put("sourceType", VECTOR_SOURCE_TYPE);
+                payload.put("embeddingModelId", model.getId());
+                payload.put("intentId", intent.getId());
+                payload.put("intentCode", intent.getIntentCode());
+                payload.put("utteranceId", utterance.getId());
+                payload.put("utteranceType", utterance.getUtteranceType());
+                payload.put("utteranceText", utterance.getUtteranceText());
+                points.add(new VectorPoint(intentPointId(model.getId(), utterance.getId()),
+                    result.vectors().get(index), payload));
+            }
+            vectorStore.upsert(collection, points);
+        }
+        log.info("AI 意图话术向量已更新，tenantId={}，embeddingModelId={}，intentCount={}，utteranceCount={}，collection={}",
+            tenantId, model.getId(), intents.size(), utterances.size(), collection);
+    }
+
+    private void scheduleIntentReindex(Long intentId) {
+        String tenantId = TenantHelper.getTenantId();
+        runAfterCommit(() -> TenantHelper.dynamic(tenantId, () -> {
+            indexedCatalogFingerprints.clear();
+            try {
+                AiIntent intent = intentMapper.selectById(intentId);
+                AiModel model = requireDefaultEmbeddingModel();
+                if (intent == null || !Boolean.TRUE.equals(intent.getEnabled())) {
+                    deleteIntentVectors(tenantId, model, intentId);
+                    return;
+                }
+                indexUtterances(tenantId, model, List.of(intent), utterances(intentId));
+            } catch (Exception exception) {
+                log.warn("AI 意图保存成功，但话术向量更新失败，将在首次识别时重试，intentId={}，error={}",
+                    intentId, exception.getMessage(), exception);
+            }
+        }));
+    }
+
+    private void scheduleIntentVectorDelete(String tenantId, Long intentId) {
+        runAfterCommit(() -> TenantHelper.dynamic(tenantId, () -> {
+            indexedCatalogFingerprints.clear();
+            try {
+                deleteIntentVectors(tenantId, requireDefaultEmbeddingModel(), intentId);
+            } catch (Exception exception) {
+                log.warn("AI 意图已删除，但历史话术向量清理失败，intentId={}，error={}",
+                    intentId, exception.getMessage(), exception);
+            }
+        }));
+    }
+
+    private void deleteIntentVectors(String tenantId, AiModel model, Long intentId) {
+        String collection = intentCollection(tenantId, model);
+        vectorStore.ensureCollection(collection, model.getVectorDimension());
+        vectorStore.deleteByFilter(collection, Map.of(
+            "tenantId", tenantId,
+            "sourceType", VECTOR_SOURCE_TYPE,
+            "intentId", intentId));
+    }
+
+    private void runAfterCommit(Runnable action) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
+    }
+
+    private AiModel requireDefaultEmbeddingModel() {
+        AiModel model = modelMapper.selectOne(new LambdaQueryWrapper<AiModel>()
+            .eq(AiModel::getCapability, "EMBEDDING")
+            .eq(AiModel::getEnabled, true)
+            .eq(AiModel::getDefaultModel, true)
+            .orderByAsc(AiModel::getId)
+            .last("limit 1"));
+        if (model == null) {
+            throw new ServiceException("未配置默认 Embedding 模型，无法执行意图向量识别");
+        }
+        if (model.getVectorDimension() == null || model.getVectorDimension() <= 0) {
+            throw new ServiceException("默认 Embedding 模型未检测向量维度，请先执行模型测试");
+        }
+        return model;
+    }
+
+    private AiModelProvider requireEnabledProvider(Long providerId) {
+        AiModelProvider provider = providerMapper.selectById(providerId);
+        if (provider == null || !Boolean.TRUE.equals(provider.getEnabled())) {
+            throw new ServiceException("默认 Embedding 模型的服务商不存在或未启用");
+        }
+        return provider;
+    }
+
+    private void validateEmbedding(EmbeddingResult result, AiModel model, int expectedCount) {
+        if (result == null || result.vectors() == null || result.vectors().size() != expectedCount) {
+            throw new ServiceException("Embedding 模型返回的向量数量不正确");
+        }
+        if (result.dimension() != model.getVectorDimension()) {
+            throw new ServiceException("Embedding 向量维度不一致，配置=" + model.getVectorDimension()
+                + "，实际=" + result.dimension());
+        }
+    }
+
+    private String catalogFingerprint(AiModel model, List<AiIntent> intents, List<AiIntentUtterance> utterances) {
+        String intentPart = intents.stream().map(intent -> intent.getId() + ":" + intent.getVersion())
+            .collect(Collectors.joining(","));
+        String utterancePart = utterances.stream().map(utterance -> utterance.getId() + ":" + utterance.getTextHash())
+            .collect(Collectors.joining(","));
+        return sha256(model.getId() + "|" + model.getVectorDimension() + "|" + intentPart + "|" + utterancePart);
+    }
+
+    private String intentCollection(String tenantId, AiModel model) {
+        return "cnx_intent_" + KnowledgeTextUtils.sha256(tenantId).substring(0, 12)
+            + "_" + model.getId() + "_" + model.getVectorDimension();
+    }
+
+    private String intentPointId(Long modelId, Long utteranceId) {
+        return UUID.nameUUIDFromBytes(("intent:" + modelId + ":" + utteranceId)
+            .getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    private Long payloadLong(Map<String, Object> payload, String key) {
+        Object value = payload == null ? null : payload.get(key);
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return value == null ? null : Long.valueOf(String.valueOf(value));
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private BigDecimal confidence(double score) {
+        return BigDecimal.valueOf(Math.max(0D, Math.min(1D, score))).setScale(6, RoundingMode.HALF_UP);
     }
 
     private AiIntentRecognitionResponse persist(AiIntentRecognitionRequest request, String normalized,
@@ -447,16 +648,6 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         } catch (Exception exception) {
             throw new IllegalStateException("无法计算话术摘要", exception);
         }
-    }
-
-    private String stripCodeFence(String value) {
-        String text = Objects.toString(value, "").trim();
-        if (text.startsWith("```")) {
-            int firstLine = text.indexOf('\n');
-            int lastFence = text.lastIndexOf("```");
-            if (firstLine >= 0 && lastFence > firstLine) text = text.substring(firstLine + 1, lastFence).trim();
-        }
-        return text;
     }
 
     private String upper(String value) {

@@ -21,6 +21,8 @@ public class AiAgentRequest {
     @Min(0) @Max(5000) private Integer bargeInGraceMs;
     private String retrievalMode;
     private String retrievalFailurePolicy;
+    private Boolean faqLearningEnabled;
+    private Long faqLearningKnowledgeBaseId;
     @Min(1) @Max(20) private Integer topK;
     @DecimalMin("0") @DecimalMax("1") private BigDecimal scoreThreshold;
     @DecimalMin("0") @DecimalMax("1") private BigDecimal faqScoreThreshold;
