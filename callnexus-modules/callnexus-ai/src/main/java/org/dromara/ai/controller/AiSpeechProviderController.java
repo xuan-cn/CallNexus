@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.ai.domain.request.AiSpeechProviderRequest;
 import org.dromara.ai.domain.request.TtsTestRequest;
+import org.dromara.ai.domain.request.TtsMediaGenerateRequest;
 import org.dromara.ai.domain.response.AiSpeechProviderResponse;
 import org.dromara.ai.domain.response.AsrTestResponse;
 import org.dromara.ai.domain.response.TtsTestResponse;
@@ -88,6 +89,12 @@ public class AiSpeechProviderController {
     @SaCheckPermission("callcenter:ai-speech:test")
     public R<TtsTestResponse> testTts(@PathVariable Long id, @Valid @RequestBody TtsTestRequest request) {
         return R.ok(service.testProvider(id, request));
+    }
+
+    @PostMapping("/media/generate")
+    @SaCheckPermission("callcenter:media-asset:create")
+    public R<Long> generateMedia(@Valid @RequestBody TtsMediaGenerateRequest request) {
+        return R.ok(service.generateMedia(request));
     }
 
     @GetMapping("/{id}/voices")

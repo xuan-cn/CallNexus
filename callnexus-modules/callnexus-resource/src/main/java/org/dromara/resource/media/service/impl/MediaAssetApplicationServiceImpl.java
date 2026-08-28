@@ -89,6 +89,7 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
         if (category == MediaAssetCategory.CALL_RECORDING || category == MediaAssetCategory.VOICEMAIL_RECORDING) {
             throw new ServiceException("录音类媒体不允许作为系统生成媒体保存");
         }
+        validateVoiceMetadata(voiceProvider, voiceName);
         validateAudio(file);
         MediaAsset asset = store(assetName, category, "TTS", languageCode, remark, durationMs, 0, file);
         asset.setSourceText(sourceText);
@@ -109,6 +110,7 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
         if (category == MediaAssetCategory.CALL_RECORDING || category == MediaAssetCategory.VOICEMAIL_RECORDING) {
             throw new ServiceException("录音类媒体不允许作为系统生成媒体保存");
         }
+        validateVoiceMetadata(voiceProvider, voiceName);
         validateAudio(file);
         String checksum = checksum(file);
         SysOssVo oss = sysOssService.upload(file, storageProperties.getConfigKey(category));
@@ -257,6 +259,15 @@ public class MediaAssetApplicationServiceImpl implements MediaAssetApplicationSe
             mapper.updateById(asset);
         }
         return asset;
+    }
+
+    private void validateVoiceMetadata(String voiceProvider, String voiceName) {
+        if (voiceProvider != null && voiceProvider.length() > 64) {
+            throw new ServiceException("TTS 语音服务商编码不能超过 64 个字符");
+        }
+        if (voiceName != null && voiceName.length() > 64) {
+            throw new ServiceException("TTS 音色名称不能超过 64 个字符");
+        }
     }
 
     private void validateAudio(MultipartFile file) {

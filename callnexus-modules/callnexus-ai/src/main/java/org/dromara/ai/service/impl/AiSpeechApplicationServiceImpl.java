@@ -21,6 +21,7 @@ import org.dromara.ai.speech.definition.SpeechCapability;
 import org.dromara.ai.speech.definition.SpeechProviderDefinition;
 import org.dromara.ai.speech.definition.SpeechProviderDefinitionRegistry;
 import org.dromara.ai.speech.definition.VoiceDefinition;
+import org.dromara.ai.support.AudioDurationEstimator;
 import org.dromara.ai.support.ByteArrayAudioMultipartFile;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.service.OssService;
@@ -196,6 +197,31 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             throw new ServiceException("当前语音服务商没有可用的音色目录，可直接输入厂商支持的音色名称");
         }
         return tts.voices().stream().map(VoiceDefinition::id).toList();
+    }
+
+    @Override
+    public Long generateMedia(TtsMediaGenerateRequest request) {
+        MediaAssetCategory category = request.getCategory();
+        if (category == MediaAssetCategory.CALL_RECORDING || category == MediaAssetCategory.VOICEMAIL_RECORDING) {
+            throw new ServiceException("录音类媒体不允许通过 TTS 生成");
+        }
+        AiSpeechProvider provider = providerSelector.requireDefaultTts();
+        String voice = provider.getDefaultVoice();
+        TtsGenerateResult result = generateAudio(provider, request.getText().trim(), voice, "MEDIA_ASSET",
+            Map.of("category", category.name()));
+        if (result == null || result.audioBytes() == null || result.audioBytes().length == 0) {
+            throw new ServiceException("TTS 服务未返回音频内容");
+        }
+        String suffix = StringUtils.isBlank(result.fileSuffix()) ? ".wav" : result.fileSuffix();
+        String contentType = StringUtils.isBlank(result.contentType()) ? "audio/wav" : result.contentType();
+        ByteArrayAudioMultipartFile file = new ByteArrayAudioMultipartFile(
+            "file", "tts-" + System.currentTimeMillis() + suffix, contentType, result.audioBytes());
+        String languageCode = StringUtils.isBlank(request.getLanguageCode()) ? "zh-CN" : request.getLanguageCode().trim();
+        Long mediaId = mediaAssetService.storeGenerated(request.getAssetName().trim(), category, languageCode,
+            request.getRemark(), result.durationMs(), request.getText().trim(), provider.getProviderCode(), voice, file);
+        log.info("文字转语音声音媒体生成完成，mediaId={}，category={}，provider={}，voice={}，textLength={}",
+            mediaId, category, provider.getProviderCode(), voice, request.getText().trim().length());
+        return mediaId;
     }
 
     @Override
@@ -492,7 +518,14 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
             StringUtils.isBlank(provider.getDefaultFormat()) ? "wav" : provider.getDefaultFormat(),
             provider.getDefaultSampleRate() == null ? 8000 : provider.getDefaultSampleRate(),
             businessType, metadata);
-        return providerRegistry.get(provider.getProviderType()).generate(provider, request);
+        TtsGenerateResult result = providerRegistry.get(provider.getProviderType()).generate(provider, request);
+        if (result == null || (result.durationMs() != null && result.durationMs() > 0)) {
+            return result;
+        }
+        Long durationMs = AudioDurationEstimator.estimate(
+            result.audioBytes(), result.contentType(), result.fileSuffix(), request.sampleRate());
+        return new TtsGenerateResult(
+            result.audioBytes(), result.contentType(), result.fileSuffix(), durationMs);
     }
 
     private AiSpeechTask createAsrTask(AiCallRecordingSource source, AiSpeechProvider provider) {

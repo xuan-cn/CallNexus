@@ -278,7 +278,7 @@ callnexus:
 --- # AI 知识库与向量检索
 ai:
   knowledge-oss-config-key: ${CALLNEXUS_AI_KNOWLEDGE_OSS_CONFIG_KEY:knowledge-document}
-  qdrant-url: ${CALLNEXUS_AI_QDRANT_URL:http://192.168.0.176:6333}
+  qdrant-url: ${CALLNEXUS_AI_QDRANT_URL:http://192.168.244.128:6333}
   qdrant-api-key: ${CALLNEXUS_AI_QDRANT_API_KEY:}
   index-worker-concurrency: ${CALLNEXUS_AI_INDEX_WORKER_CONCURRENCY:2}
   index-lease-minutes: ${CALLNEXUS_AI_INDEX_LEASE_MINUTES:30}
