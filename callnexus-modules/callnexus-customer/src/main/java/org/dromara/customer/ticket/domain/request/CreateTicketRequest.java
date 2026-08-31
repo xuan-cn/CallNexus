@@ -14,5 +14,8 @@ public class CreateTicketRequest {
     @Size(max = 64)
     private String sourceCallId;
     private Long templateId;
+    private String sourceType;
+    private Long sourceDraftId;
+    private Long aiAgentId;
     private Map<String, Object> formData = new HashMap<>();
 }

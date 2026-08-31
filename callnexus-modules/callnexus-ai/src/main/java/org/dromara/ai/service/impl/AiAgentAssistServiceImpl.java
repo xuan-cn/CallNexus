@@ -8,20 +8,26 @@ import org.dromara.ai.domain.AiAgent;
 import org.dromara.ai.domain.AiAgentAssistSession;
 import org.dromara.ai.domain.AiAgentAssistSuggestion;
 import org.dromara.ai.domain.AiCallTranscriptSegment;
+import org.dromara.ai.domain.AiTicketDraft;
 import org.dromara.ai.domain.request.AiAgentAssistSegmentRequest;
 import org.dromara.ai.domain.response.AiAgentAssistDetailResponse;
 import org.dromara.ai.domain.response.AiAgentAssistSuggestionResponse;
 import org.dromara.ai.domain.response.AiCallTranscriptSegmentResponse;
 import org.dromara.ai.domain.response.AiChatTurnResult;
+import org.dromara.ai.domain.response.AiTicketDraftResponse;
 import org.dromara.ai.mapper.AiAgentAssistSessionMapper;
 import org.dromara.ai.mapper.AiAgentAssistSuggestionMapper;
 import org.dromara.ai.mapper.AiAgentMapper;
 import org.dromara.ai.mapper.AiCallTranscriptSegmentMapper;
+import org.dromara.ai.mapper.AiTicketDraftMapper;
 import org.dromara.ai.service.AiAgentApplicationService;
 import org.dromara.ai.service.AiAgentAssistService;
 import org.dromara.ai.service.AiAgentAssistStreamService;
+import org.dromara.ai.service.AiTicketDraftReviewService;
+import org.dromara.ai.domain.request.AiTicketDraftReviewRequest;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.common.json.utils.JsonUtils;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.Resource;
@@ -30,6 +36,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 
@@ -46,9 +53,11 @@ public class AiAgentAssistServiceImpl implements AiAgentAssistService {
     private final AiAgentAssistSessionMapper sessionMapper;
     private final AiAgentAssistSuggestionMapper suggestionMapper;
     private final AiCallTranscriptSegmentMapper transcriptSegmentMapper;
+    private final AiTicketDraftMapper ticketDraftMapper;
     private final AiAgentMapper agentMapper;
     private final AiAgentApplicationService agentApplicationService;
     private final AiAgentAssistStreamService streamService;
+    private final AiTicketDraftReviewService ticketDraftReviewService;
     @Resource(name = "aiRealtimeExecutor")
     private Executor executor;
     private final ConcurrentHashMap<String, Object> callLocks = new ConcurrentHashMap<>();
@@ -73,6 +82,11 @@ public class AiAgentAssistServiceImpl implements AiAgentAssistService {
                     .eq(AiCallTranscriptSegment::getBusinessCallId, businessCallId)
                     .orderByAsc(AiCallTranscriptSegment::getSentenceIndex, AiCallTranscriptSegment::getId))
             .stream().map(this::transcriptResponse).toList());
+        AiTicketDraft draft = ticketDraftMapper.selectOne(new LambdaQueryWrapper<AiTicketDraft>()
+            .eq(AiTicketDraft::getSourceCallId, businessCallId)
+            .in(AiTicketDraft::getStatus, List.of("PENDING_REVIEW", "LOW_CONFIDENCE", "CREATED"))
+            .orderByDesc(AiTicketDraft::getUpdateTime, AiTicketDraft::getId).last("LIMIT 1"));
+        response.setTicketDraft(ticketDraftResponse(draft));
         if (session == null) {
             return response;
         }
@@ -89,6 +103,33 @@ public class AiAgentAssistServiceImpl implements AiAgentAssistService {
                     .orderByAsc(AiAgentAssistSuggestion::getId))
             .stream().map(this::suggestionResponse).toList());
         return response;
+    }
+
+    private AiTicketDraftResponse ticketDraftResponse(AiTicketDraft value) {
+        if (value == null) return null;
+        AiTicketDraftResponse response = new AiTicketDraftResponse();
+        response.setId(value.getId()); response.setSourceCallId(value.getSourceCallId());
+        response.setCustomerId(value.getCustomerId()); response.setCallerNumber(value.getCallerNumber());
+        response.setTicketTemplateId(value.getTicketTemplateId()); response.setStatus(value.getStatus());
+        response.setConfidence(value.getConfidence()); response.setTitle(value.getTitle()); response.setSummary(value.getSummary());
+        response.setFormData(jsonMap(value.getFormDataJson())); response.setMissingFields(jsonList(value.getMissingFieldsJson()));
+        response.setFailureReason(value.getFailureReason()); response.setFormalTicketId(value.getFormalTicketId());
+        response.setVersion(value.getVersion());
+        return response;
+    }
+
+    @SuppressWarnings("unchecked")
+    private java.util.Map<String, Object> jsonMap(String json) {
+        if (StringUtils.isBlank(json)) return new LinkedHashMap<>();
+        try { return JsonUtils.getObjectMapper().readValue(json, LinkedHashMap.class); }
+        catch (Exception ignored) { return new LinkedHashMap<>(); }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> jsonList(String json) {
+        if (StringUtils.isBlank(json)) return new ArrayList<>();
+        try { return JsonUtils.getObjectMapper().readValue(json, ArrayList.class); }
+        catch (Exception ignored) { return new ArrayList<>(); }
     }
 
     @Override
@@ -111,6 +152,18 @@ public class AiAgentAssistServiceImpl implements AiAgentAssistService {
         String tenantId = TenantHelper.getTenantId();
         executor.execute(() -> TenantHelper.dynamic(tenantId,
             () -> generate(session.getId(), suggestion.getId())));
+    }
+
+    @Override
+    public Long approveTicketDraft(String businessCallId, Long draftId, Integer version) {
+        AiTicketDraft draft = ticketDraftMapper.selectById(draftId);
+        if (draft == null || !businessCallId.equals(draft.getSourceCallId())) {
+            throw new ServiceException("当前通话的 AI 工单草稿不存在");
+        }
+        AiTicketDraftReviewRequest request = new AiTicketDraftReviewRequest();
+        request.setVersion(version);
+        request.setReason("坐席工作台确认");
+        return ticketDraftReviewService.approve(draftId, request);
     }
 
     private void processSerially(AiAgentAssistSegmentRequest request) {

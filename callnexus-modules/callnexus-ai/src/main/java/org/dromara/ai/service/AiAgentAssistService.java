@@ -9,4 +9,6 @@ public interface AiAgentAssistService {
     AiAgentAssistDetailResponse detail(String businessCallId);
 
     void regenerate(String businessCallId, Long suggestionId);
+
+    Long approveTicketDraft(String businessCallId, Long draftId, Integer version);
 }

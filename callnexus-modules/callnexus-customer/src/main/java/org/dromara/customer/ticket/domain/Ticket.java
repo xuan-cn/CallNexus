@@ -21,6 +21,9 @@ public class Ticket extends TenantEntity {
     private Long customerId;
     private String callerNumber;
     private String sourceCallId;
+    private String sourceType;
+    private Long sourceDraftId;
+    private Long aiAgentId;
     private Long templateId;
     private String workflowCode;
     private String processStatus;

@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
@@ -43,5 +44,12 @@ public class AiAgentAssistController {
     public R<Void> regenerate(@PathVariable String businessCallId, @PathVariable Long suggestionId) {
         service.regenerate(businessCallId, suggestionId);
         return R.ok();
+    }
+
+    @PostMapping("/ticket-drafts/{draftId}/approve")
+    @SaCheckPermission("callcenter:customer:query")
+    public R<Long> approveTicketDraft(@PathVariable String businessCallId, @PathVariable Long draftId,
+                                      @RequestParam Integer version) {
+        return R.ok(service.approveTicketDraft(businessCallId, draftId, version));
     }
 }

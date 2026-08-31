@@ -97,6 +97,7 @@ public class AiRealtimeMrcpEventService {
     private final AiCallTranscriptMapper transcriptMapper;
     private final AiCallTranscriptSegmentMapper transcriptSegmentMapper;
     private final AiCallTranscriptStreamService transcriptStreamService;
+    private final AiTicketDraftTriggerService ticketDraftTriggerService;
     private final AiRealtimeTtsInternalService realtimeTtsService;
     private final AiRealtimeTtsConnectionRegistry ttsConnectionRegistry;
     private final ObjectProvider<AiRealtimeTelephonyGateway> telephonyGatewayProvider;
@@ -120,6 +121,7 @@ public class AiRealtimeMrcpEventService {
                                        AiCallTranscriptMapper transcriptMapper,
                                        AiCallTranscriptSegmentMapper transcriptSegmentMapper,
                                        AiCallTranscriptStreamService transcriptStreamService,
+                                       AiTicketDraftTriggerService ticketDraftTriggerService,
                                        AiRealtimeTtsInternalService realtimeTtsService,
                                        AiRealtimeTtsConnectionRegistry ttsConnectionRegistry,
                                        ObjectProvider<AiRealtimeTelephonyGateway> telephonyGatewayProvider,
@@ -138,6 +140,7 @@ public class AiRealtimeMrcpEventService {
         this.transcriptMapper = transcriptMapper;
         this.transcriptSegmentMapper = transcriptSegmentMapper;
         this.transcriptStreamService = transcriptStreamService;
+        this.ticketDraftTriggerService = ticketDraftTriggerService;
         this.realtimeTtsService = realtimeTtsService;
         this.ttsConnectionRegistry = ttsConnectionRegistry;
         this.telephonyGatewayProvider = telephonyGatewayProvider;
@@ -1144,12 +1147,14 @@ public class AiRealtimeMrcpEventService {
                 case "STOP_PLAYBACK" -> gateway().stopPlayback(runtime.nodeId, runtime.customerLegUuid);
                 case "TRANSFER_EXTENSION" -> {
                     updateState(runtime, "TRANSFERRING", null);
+                    notifyTicketTransfer(runtime);
                     gateway().transferToExtension(runtime.nodeId, runtime.customerLegUuid, action.target());
                     end(runtime, "INTENT_TRANSFER_EXTENSION");
                     return true;
                 }
                 case "TRANSFER_QUEUE" -> {
                     updateState(runtime, "TRANSFERRING", null);
+                    notifyTicketTransfer(runtime);
                     gateway().transferToQueue(runtime.nodeId, runtime.customerLegUuid, action.target());
                     end(runtime, "INTENT_TRANSFER_QUEUE");
                     return true;
@@ -1473,6 +1478,7 @@ public class AiRealtimeMrcpEventService {
                 transcript.setFullText(appendTranscriptLine(transcript.getFullText(), speaker, text.trim()));
                 transcriptMapper.updateById(transcript);
                 transcriptStreamService.publishSegment(runtime.tenantId, source.getId(), transcript.getId(), segment);
+                ticketDraftTriggerService.onTranscriptSegment(runtime.tenantId, runtime.businessCallId, transcript.getId());
                 log.info("AI 实时通话转写已入库，sessionId={}，businessCallId={}，speaker={}，sourceType={}，sentenceIndex={}",
                     runtime.entity.getId(), runtime.businessCallId, speaker, sourceType, segment.getSentenceIndex());
             }
@@ -1486,6 +1492,19 @@ public class AiRealtimeMrcpEventService {
                                                        LocalDateTime messageTime, Long agentId) {
         executor.execute(() -> TenantHelper.dynamic(runtime.tenantId,
             () -> appendRealtimeTranscriptSegment(runtime, speaker, sourceType, text, messageTime, agentId)));
+    }
+
+    private void notifyTicketTransfer(RuntimeSession runtime) {
+        try {
+            AiCallTranscript transcript = transcriptMapper.selectOne(new LambdaQueryWrapper<AiCallTranscript>()
+                .eq(AiCallTranscript::getBusinessCallId, runtime.businessCallId)
+                .orderByDesc(AiCallTranscript::getId).last("LIMIT 1"));
+            ticketDraftTriggerService.onTransferToAgent(runtime.tenantId, runtime.businessCallId,
+                transcript == null ? null : transcript.getId());
+        } catch (Exception exception) {
+            log.warn("AI 转人工工单草稿刷新触发失败，不阻塞转接，businessCallId={}，error={}",
+                runtime.businessCallId, exception.getMessage());
+        }
     }
 
     private AiCallTranscript ensureRealtimeTranscript(RuntimeSession runtime, AiCallRecordingSource source) {
@@ -1535,6 +1554,7 @@ public class AiRealtimeMrcpEventService {
                 }
                 transcript.setFinishedAt(LocalDateTime.now());
                 transcriptMapper.updateById(transcript);
+                ticketDraftTriggerService.onTranscriptReady(runtime.tenantId, runtime.businessCallId, transcript.getId());
             }
         } catch (Exception exception) {
             log.debug("AI 实时通话转写结束时间更新失败，businessCallId={}，error={}", runtime.businessCallId, exception.getMessage());

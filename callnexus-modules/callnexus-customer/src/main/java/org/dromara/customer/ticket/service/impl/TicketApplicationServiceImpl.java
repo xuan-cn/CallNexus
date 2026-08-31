@@ -72,6 +72,9 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         ticket.setCustomerId(request.getCustomerId());
         ticket.setCallerNumber(request.getCallerNumber());
         ticket.setSourceCallId(request.getSourceCallId());
+        ticket.setSourceType(request.getSourceType());
+        ticket.setSourceDraftId(request.getSourceDraftId());
+        ticket.setAiAgentId(request.getAiAgentId());
         ticket.setTemplateId(request.getTemplateId());
         FormTemplate template = requireTicketTemplate(request.getTemplateId());
         ticket.setWorkflowCode(normalizeWorkflowCode(template.getWorkflowCode()));

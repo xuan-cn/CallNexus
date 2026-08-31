@@ -15,8 +15,8 @@ import java.util.List;
 public class SentenceSegmenter {
 
     private static final int MIN_LENGTH = 4;
-    private static final int FIRST_SOFT_MAX = 12;
-    private static final int FIRST_HARD_MAX = 24;
+    private static final int FIRST_SOFT_MAX = 8;
+    private static final int FIRST_HARD_MAX = 16;
     private static final int FOLLOWUP_SOFT_MAX = 24;
     private static final int FOLLOWUP_HARD_MAX = 48;
 

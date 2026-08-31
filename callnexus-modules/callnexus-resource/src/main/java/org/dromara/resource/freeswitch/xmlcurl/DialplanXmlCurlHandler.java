@@ -193,7 +193,17 @@ public class DialplanXmlCurlHandler implements FreeSwitchXmlCurlHandler {
 
     private SipDirectoryAccountResponse findInternalAccount(FreeSwitchXmlCurlRequest request, String context,
                                                              String domain, String destinationNumber) {
-        if (!"default".equalsIgnoreCase(context)) return null;
+        if (!"default".equalsIgnoreCase(context)) {
+            if (!"public".equalsIgnoreCase(context) || !isInternalSofiaProfile(request)) return null;
+            String caller = normalizeDialedNumber(callerNumber(request));
+            if (caller == null || caller.isBlank() || sipAccountQueryService.findDirectoryAccountByExtension(
+                request.tenantId(), domain, caller) == null) {
+                log.warn("拒绝 public 上下文内部分机路由：主叫不是当前租户启用的 SIP 分机，"
+                        + "context={}，domain={}，caller={}，destinationNumber={}，tenantId={}",
+                    context, domain, caller, destinationNumber, request.tenantId());
+                return null;
+            }
+        }
         return sipAccountQueryService.findDirectoryAccountByExtension(request.tenantId(), domain, destinationNumber);
     }
 

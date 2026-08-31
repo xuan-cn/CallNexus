@@ -14,6 +14,7 @@ public class AiAgentAssistDetailResponse {
     private Long assistAgentId;
     private String assistAgentName;
     private String sessionState;
+    private AiTicketDraftResponse ticketDraft;
     private List<AiCallTranscriptSegmentResponse> transcriptSegments = new ArrayList<>();
     private List<AiAgentAssistSuggestionResponse> suggestions = new ArrayList<>();
 }

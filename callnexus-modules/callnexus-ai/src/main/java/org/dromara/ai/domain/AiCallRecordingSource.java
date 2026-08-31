@@ -14,6 +14,9 @@ public class AiCallRecordingSource {
     private String businessCallId;
     private Long nodeId;
     private String direction;
+    private String callerNumber;
+    private String calledNumber;
+    private String callStatus;
     private Long agentId;
     private String agentExtension;
     private Long ownerAgentId;
@@ -21,6 +24,8 @@ public class AiCallRecordingSource {
     private String ownerAgentLegUuid;
     private LocalDateTime startedAt;
     private LocalDateTime answeredAt;
+    private LocalDateTime endedAt;
+    private Integer durationSeconds;
     private Long recordingOssId;
     private Long recordingMediaId;
     private String recordingFileName;

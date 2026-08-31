@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.ai.domain.response.AiAgentAssistStreamEvent;
 import org.dromara.ai.domain.response.AiAgentAssistSuggestionResponse;
 import org.dromara.ai.domain.response.AiCallTranscriptSegmentResponse;
+import org.dromara.ai.domain.response.AiTicketDraftResponse;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -27,7 +28,7 @@ public class AiAgentAssistStreamService {
         emitter.onError(error -> remove(key, emitter));
         try {
             emitter.send(SseEmitter.event().name("connected")
-                .data(new AiAgentAssistStreamEvent(businessCallId, null, null)));
+                .data(new AiAgentAssistStreamEvent(businessCallId, null, null, null)));
         } catch (IOException | IllegalStateException exception) {
             remove(key, emitter);
             emitter.completeWithError(exception);
@@ -37,12 +38,18 @@ public class AiAgentAssistStreamService {
 
     public void publish(String tenantId, String businessCallId, AiAgentAssistSuggestionResponse suggestion) {
         String key = key(tenantId, businessCallId);
-        send(key, businessCallId, "suggestion", new AiAgentAssistStreamEvent(businessCallId, suggestion, null));
+        send(key, businessCallId, "suggestion", new AiAgentAssistStreamEvent(businessCallId, suggestion, null, null));
     }
 
     public void publishSegment(String tenantId, String businessCallId, AiCallTranscriptSegmentResponse segment) {
         String key = key(tenantId, businessCallId);
-        send(key, businessCallId, "segment", new AiAgentAssistStreamEvent(businessCallId, null, segment));
+        send(key, businessCallId, "segment", new AiAgentAssistStreamEvent(businessCallId, null, segment, null));
+    }
+
+    public void publishTicketDraft(String tenantId, String businessCallId, AiTicketDraftResponse ticketDraft) {
+        String key = key(tenantId, businessCallId);
+        send(key, businessCallId, "ticket-draft",
+            new AiAgentAssistStreamEvent(businessCallId, null, null, ticketDraft));
     }
 
     private void send(String key, String businessCallId, String eventName, AiAgentAssistStreamEvent event) {
