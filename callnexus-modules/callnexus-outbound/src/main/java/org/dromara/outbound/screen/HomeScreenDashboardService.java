@@ -234,11 +234,48 @@ public class HomeScreenDashboardService {
             ? session.getOwnerAgentExtension()
             : session.getAgentExtension();
         item.setTarget(StringUtils.isNotBlank(agentExt)
-            ? "\u5750\u5e2d " + agentExt
+            ? agentExt
             : StringUtils.blankToDefault(session.getHandlingQueueName(), "-"));
-        item.setStatus(statusText(session.getCallStatus()));
-        item.setTagClass(statusTag(session.getCallStatus()));
+        applyFeedOutcome(item, session);
         return item;
+    }
+
+    /**
+     * 大屏动态用「结果」口径：通话中 / 已接通 / 未接通（及振铃、排队中）。
+     * 「未接通」是结果，不等于挂断原因里的「无人接听」。
+     */
+    private void applyFeedOutcome(HomeScreenDashboardResponse.FeedItem item, CallSession session) {
+        String status = safe(session.getCallStatus()).toUpperCase(Locale.ROOT);
+        if (isActiveSession(session)) {
+            if (status.contains("RING")) {
+                item.setStatus("\u632f\u94c3");
+                item.setTagClass("is-info");
+                return;
+            }
+            if (status.contains("QUEUE") || status.contains("WAIT")) {
+                item.setStatus("\u6392\u961f\u4e2d");
+                item.setTagClass("is-warning");
+                return;
+            }
+            if (session.getAnsweredAt() != null
+                || status.contains("ANSWER")
+                || status.contains("BRIDGE")
+                || status.contains("TALK")) {
+                item.setStatus("\u901a\u8bdd\u4e2d");
+                item.setTagClass("is-success");
+                return;
+            }
+            item.setStatus("\u632f\u94c3");
+            item.setTagClass("is-info");
+            return;
+        }
+        if (session.getAnsweredAt() != null) {
+            item.setStatus("\u5df2\u63a5\u901a");
+            item.setTagClass("is-success");
+            return;
+        }
+        item.setStatus("\u672a\u63a5\u901a");
+        item.setTagClass("is-danger");
     }
 
     private AgentCounts summarizeAgents(CallQueueMonitorOverviewResponse overview) {
@@ -414,36 +451,6 @@ public class HomeScreenDashboardService {
             return digits.substring(0, 3) + "****" + digits.substring(digits.length() - 4);
         }
         return digits.substring(0, 3) + "****" + digits.substring(digits.length() - 4);
-    }
-
-    private String statusText(String status) {
-        String s = safe(status).toUpperCase(Locale.ROOT);
-        return switch (s) {
-            case "RINGING", "AGENT_RING" -> "\u632f\u94c3";
-            case "QUEUED", "WAITING", "QUEUE_WAIT" -> "\u6392\u961f\u4e2d";
-            case "ANSWERED", "BRIDGED", "IN_CALL", "TALKING" -> "\u901a\u8bdd\u4e2d";
-            case "AFTER_CALL", "WRAP_UP" -> "\u8bdd\u540e\u5904\u7406";
-            case "ABANDONED", "ABANDON", "TIMEOUT" -> "\u5df2\u653e\u5f03";
-            case "HANGUP", "ENDED", "COMPLETED" -> "\u5df2\u63a5\u901a";
-            default -> StringUtils.isBlank(status) ? "-" : status;
-        };
-    }
-
-    private String statusTag(String status) {
-        String s = safe(status).toUpperCase(Locale.ROOT);
-        if (s.contains("ABANDON") || s.contains("TIMEOUT") || s.contains("FAIL")) {
-            return "is-danger";
-        }
-        if (s.contains("QUEUE") || s.contains("WAIT")) {
-            return "is-warning";
-        }
-        if (s.contains("RING")) {
-            return "is-info";
-        }
-        if (s.contains("ANSWER") || s.contains("BRIDGE") || s.contains("TALK") || s.contains("HANGUP") || s.contains("END")) {
-            return "is-success";
-        }
-        return "is-info";
     }
 
     private LocalDateTime toLocalDateTime(Date date) {
