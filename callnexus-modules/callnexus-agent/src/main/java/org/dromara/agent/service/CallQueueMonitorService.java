@@ -32,10 +32,13 @@ public class CallQueueMonitorService {
     private final CallQueueMonitorMapper monitorMapper;
 
     public List<CallQueueMonitorResponse> list() {
+        return list(null, null);
+    }
+
+    public List<CallQueueMonitorResponse> list(LocalDate beginDate, LocalDate endDate) {
         String tenantId = LoginHelper.getTenantId();
-        LocalDateTime startAt = LocalDate.now().atStartOfDay();
-        LocalDateTime endAt = startAt.plusDays(1);
-        List<CallQueueMonitorResponse> queues = monitorMapper.selectMonitorList(tenantId, startAt, endAt, LocalDateTime.now());
+        LocalDateTime[] range = resolveRange(beginDate, endDate);
+        List<CallQueueMonitorResponse> queues = monitorMapper.selectMonitorList(tenantId, range[0], range[1], LocalDateTime.now());
         queues.forEach(queue -> fillRuntimeFields(tenantId, queue));
         return queues;
     }
@@ -48,7 +51,11 @@ public class CallQueueMonitorService {
     }
 
     public CallQueueMonitorOverviewResponse overview() {
-        List<CallQueueMonitorResponse> queues = list();
+        return overview(null, null);
+    }
+
+    public CallQueueMonitorOverviewResponse overview(LocalDate beginDate, LocalDate endDate) {
+        List<CallQueueMonitorResponse> queues = list(beginDate, endDate);
         CallQueueMonitorOverviewResponse response = new CallQueueMonitorOverviewResponse();
         response.setQueueCount((long) queues.size());
         response.setHealthyQueueCount(countHealth(queues, "NORMAL"));
@@ -69,6 +76,17 @@ public class CallQueueMonitorService {
         response.setAnswerRate(rate(response.getTodayAnsweredCount(), response.getTodayEnteredCount()));
         response.setAbandonRate(rate(response.getTodayAbandonedCount(), response.getTodayEnteredCount()));
         return response;
+    }
+
+    private LocalDateTime[] resolveRange(LocalDate beginDate, LocalDate endDate) {
+        LocalDate begin = beginDate == null ? LocalDate.now() : beginDate;
+        LocalDate end = endDate == null ? begin : endDate;
+        if (end.isBefore(begin)) {
+            LocalDate swap = begin;
+            begin = end;
+            end = swap;
+        }
+        return new LocalDateTime[]{begin.atStartOfDay(), end.plusDays(1).atStartOfDay()};
     }
 
     public List<CallQueueAgentStatusResponse> agents(Long queueId) {

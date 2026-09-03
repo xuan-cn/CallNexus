@@ -34,8 +34,10 @@ public class CallQueueMonitorController {
 
     @GetMapping("/monitor/overview")
     @SaCheckPermission("callcenter:queue-monitor:query")
-    public R<CallQueueMonitorOverviewResponse> overview() {
-        return R.ok(service.overview());
+    public R<CallQueueMonitorOverviewResponse> overview(
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate beginDate,
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate endDate) {
+        return R.ok(service.overview(beginDate, endDate));
     }
 
     @GetMapping("/{queueId}/monitor")
