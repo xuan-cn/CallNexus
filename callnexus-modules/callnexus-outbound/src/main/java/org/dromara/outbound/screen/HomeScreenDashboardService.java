@@ -4,11 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.agent.domain.response.CallQueueMonitorOverviewResponse;
 import org.dromara.agent.domain.response.CallQueueMonitorResponse;
-import org.dromara.agent.domain.response.CallQueueRecentCallResponse;
 import org.dromara.agent.service.CallQueueMonitorService;
 import org.dromara.call.domain.CallSession;
 import org.dromara.call.domain.VoiceMailMessage;
-import org.dromara.call.domain.response.DispatchActiveCallResponse;
 import org.dromara.call.domain.response.DispatchExtensionStatusResponse;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.mapper.VoiceMailMessageMapper;
@@ -36,7 +34,9 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 首页运营大屏只读聚合。组合队列监控 / 调度 / 留言 / 外呼既有能力，不改动业务核心。
+ * 首页运营大屏只读聚合。
+ * 中心话务指标与趋势、动态统一取自 cc_call_session；
+ * 队列/技能组仍走队列监控口径。
  */
 @Service
 @RequiredArgsConstructor
@@ -59,16 +59,20 @@ public class HomeScreenDashboardService {
         AgentCounts agents = summarizeAgents(overview);
         OutboundCounts outbound = summarizeOutbound();
         long voicemailPending = countUnhandledVoicemail();
-        long yesterdayInbound = countYesterdayInbound();
+        List<CallSession> todaySessions = listTodaySessions();
+        SessionTraffic todayTraffic = summarizeSessions(todaySessions);
+        long yesterdayInbound = countInboundBetween(
+            LocalDate.now().minusDays(1).atStartOfDay(),
+            LocalDate.now().atStartOfDay());
 
         HomeScreenDashboardResponse response = new HomeScreenDashboardResponse();
         response.setKpis(buildKpis(overview, agents, outbound, voicemailPending));
-        response.setHeroCore(buildHero(overview, yesterdayInbound));
+        response.setHeroCore(buildHero(todayTraffic, yesterdayInbound));
         response.setAgentSummary(buildAgentSummary(agents));
         response.setQueueRanking(buildQueueRanking(queues));
         response.setSkillGroups(buildSkillGroups(queues));
-        response.setTrendHours(buildTrendHours());
-        response.setLiveFeed(buildLiveFeed(queues));
+        response.setTrendHours(buildTrendHours(todaySessions));
+        response.setLiveFeed(buildLiveFeed());
         return response;
     }
 
@@ -95,15 +99,13 @@ public class HomeScreenDashboardService {
         return list;
     }
 
-    private HomeScreenDashboardResponse.HeroCore buildHero(CallQueueMonitorOverviewResponse overview,
-                                                           long yesterdayInbound) {
-        long inbound = nz(overview.getTodayEnteredCount());
-        long answerRate = nz(overview.getAnswerRate());
+    private HomeScreenDashboardResponse.HeroCore buildHero(SessionTraffic today, long yesterdayInbound) {
+        long inbound = today.inbound;
         HomeScreenDashboardResponse.HeroCore hero = new HomeScreenDashboardResponse.HeroCore();
         hero.setInbound(String.valueOf(inbound));
-        hero.setAnswerRate(answerRate);
+        hero.setAnswerRate(inbound <= 0 ? 0L : Math.round(today.inboundAnswered * 100.0 / inbound));
         if (yesterdayInbound <= 0) {
-            hero.setInboundExtra("\u4eca\u65e5\u961f\u5217\u8fdb\u5165");
+            hero.setInboundExtra(inbound > 0 ? "\u4eca\u65e5\u547c\u5165" : "\u6682\u65e0\u547c\u5165");
             hero.setInboundTone(null);
         } else {
             double delta = (inbound - yesterdayInbound) * 100.0 / yesterdayInbound;
@@ -167,18 +169,7 @@ public class HomeScreenDashboardService {
             .toList();
     }
 
-    private List<HomeScreenDashboardResponse.TrendPoint> buildTrendHours() {
-        ZoneId zone = ZoneId.systemDefault();
-        LocalDateTime dayStart = LocalDate.now().atStartOfDay();
-        Date dayStartDate = Date.from(dayStart.atZone(zone).toInstant());
-
-        List<CallSession> sessions = callSessionMapper.selectList(new LambdaQueryWrapper<CallSession>()
-            .and(w -> w.ge(CallSession::getStartedAt, dayStart)
-                .or()
-                .ge(CallSession::getCreateTime, dayStartDate))
-            .orderByDesc(CallSession::getStartedAt)
-            .last("limit 5000"));
-
+    private List<HomeScreenDashboardResponse.TrendPoint> buildTrendHours(List<CallSession> sessions) {
         Map<String, long[]> buckets = new LinkedHashMap<>();
         for (int hour = 8; hour <= 18; hour++) {
             buckets.put(String.format(Locale.ROOT, "%02d:00", hour), new long[3]);
@@ -195,10 +186,9 @@ public class HomeScreenDashboardService {
             if (arr == null) {
                 continue;
             }
-            String direction = safe(session.getDirection()).toUpperCase(Locale.ROOT);
-            if ("OUTBOUND".equals(direction)) {
+            if (isOutbound(session.getDirection())) {
                 arr[1]++;
-            } else {
+            } else if (isInbound(session.getDirection())) {
                 arr[0]++;
             }
             if (session.getAnsweredAt() != null) {
@@ -218,66 +208,36 @@ public class HomeScreenDashboardService {
         return points;
     }
 
-    private List<HomeScreenDashboardResponse.FeedItem> buildLiveFeed(List<CallQueueMonitorResponse> queues) {
-        List<HomeScreenDashboardResponse.FeedItem> feed = new ArrayList<>();
-
-        try {
-            List<DispatchActiveCallResponse> active = dispatchCallMonitorService.listActiveCalls();
-            active.stream().limit(6).forEach(call -> feed.add(fromActiveCall(call)));
-        } catch (Exception ignored) {
-            // 调度监控不可用时不影响主指标
-        }
-
-        List<CallQueueMonitorResponse> topQueues = queues.stream()
-            .sorted(Comparator.comparingLong((CallQueueMonitorResponse q) ->
-                nz(q.getWaitingCount()) + nz(q.getEnteredCount())).reversed())
-            .limit(3)
-            .toList();
-        for (CallQueueMonitorResponse queue : topQueues) {
-            try {
-                List<CallQueueRecentCallResponse> recent = callQueueMonitorService.recentCalls(queue.getQueueId(), 4);
-                for (CallQueueRecentCallResponse call : recent) {
-                    feed.add(fromRecentCall(call, queue.getQueueName()));
-                }
-            } catch (Exception ignored) {
-                // 单队列失败忽略
-            }
-        }
-
-        return feed.stream()
-            .sorted(Comparator.comparing(HomeScreenDashboardResponse.FeedItem::getTime).reversed())
+    private List<HomeScreenDashboardResponse.FeedItem> buildLiveFeed() {
+        List<CallSession> sessions = callSessionMapper.selectList(new LambdaQueryWrapper<CallSession>()
+            .orderByDesc(CallSession::getStartedAt)
+            .last("limit 24"));
+        return sessions.stream()
+            .sorted(Comparator
+                .comparing((CallSession s) -> isActiveSession(s) ? 0 : 1)
+                .thenComparing(CallSession::getStartedAt, Comparator.nullsLast(Comparator.reverseOrder())))
             .limit(8)
+            .map(this::fromSession)
             .toList();
     }
 
-    private HomeScreenDashboardResponse.FeedItem fromActiveCall(DispatchActiveCallResponse call) {
+    private HomeScreenDashboardResponse.FeedItem fromSession(CallSession session) {
         HomeScreenDashboardResponse.FeedItem item = new HomeScreenDashboardResponse.FeedItem();
-        item.setId("active-" + Objects.toString(call.getBusinessCallId(), String.valueOf(call.getSessionId())));
-        LocalDateTime t = call.getStartedAt() != null ? call.getStartedAt() : LocalDateTime.now();
+        item.setId(Objects.toString(session.getBusinessCallId(), String.valueOf(session.getId())));
+        LocalDateTime t = session.getStartedAt() != null
+            ? session.getStartedAt()
+            : (session.getAnsweredAt() != null ? session.getAnsweredAt() : LocalDateTime.now());
         item.setTime(t.format(TIME_FMT));
-        item.setType(directionText(call.getDirection()));
-        item.setPhone(maskPhone(preferredPhone(call.getDirection(), call.getCallerNumber(), call.getCalledNumber())));
-        item.setTarget(StringUtils.isNotBlank(call.getOwnerAgentExtension())
-            ? "\u5750\u5e2d " + call.getOwnerAgentExtension()
-            : StringUtils.blankToDefault(call.getQueueName(), "-"));
-        item.setStatus(statusText(call.getCallStatus()));
-        item.setTagClass(statusTag(call.getCallStatus()));
-        return item;
-    }
-
-    private HomeScreenDashboardResponse.FeedItem fromRecentCall(CallQueueRecentCallResponse call, String queueName) {
-        HomeScreenDashboardResponse.FeedItem item = new HomeScreenDashboardResponse.FeedItem();
-        item.setId("recent-" + Objects.toString(call.getBusinessCallId(), String.valueOf(call.getSessionId())));
-        LocalDateTime t = call.getStartedAt() != null ? call.getStartedAt()
-            : (call.getAnsweredAt() != null ? call.getAnsweredAt() : LocalDateTime.now());
-        item.setTime(t.format(TIME_FMT));
-        item.setType(directionText(call.getDirection()));
-        item.setPhone(maskPhone(preferredPhone(call.getDirection(), call.getCallerNumber(), call.getCalledNumber())));
-        item.setTarget(StringUtils.isNotBlank(call.getAgentExtension())
-            ? "\u5750\u5e2d " + call.getAgentExtension()
-            : StringUtils.blankToDefault(queueName, "-"));
-        item.setStatus(statusText(call.getCallStatus()));
-        item.setTagClass(statusTag(call.getCallStatus()));
+        item.setType(directionText(session.getDirection()));
+        item.setPhone(maskPhone(preferredPhone(session.getDirection(), session.getCallerNumber(), session.getCalledNumber())));
+        String agentExt = StringUtils.isNotBlank(session.getOwnerAgentExtension())
+            ? session.getOwnerAgentExtension()
+            : session.getAgentExtension();
+        item.setTarget(StringUtils.isNotBlank(agentExt)
+            ? "\u5750\u5e2d " + agentExt
+            : StringUtils.blankToDefault(session.getHandlingQueueName(), "-"));
+        item.setStatus(statusText(session.getCallStatus()));
+        item.setTagClass(statusTag(session.getCallStatus()));
         return item;
     }
 
@@ -355,10 +315,33 @@ public class HomeScreenDashboardService {
         }
     }
 
-    private long countYesterdayInbound() {
+    private List<CallSession> listTodaySessions() {
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDateTime dayStart = LocalDate.now().atStartOfDay();
+        Date dayStartDate = Date.from(dayStart.atZone(zone).toInstant());
+        return callSessionMapper.selectList(new LambdaQueryWrapper<CallSession>()
+            .and(w -> w.ge(CallSession::getStartedAt, dayStart)
+                .or()
+                .ge(CallSession::getCreateTime, dayStartDate))
+            .orderByDesc(CallSession::getStartedAt)
+            .last("limit 5000"));
+    }
+
+    private SessionTraffic summarizeSessions(List<CallSession> sessions) {
+        SessionTraffic traffic = new SessionTraffic();
+        for (CallSession session : sessions) {
+            if (isInbound(session.getDirection())) {
+                traffic.inbound++;
+                if (session.getAnsweredAt() != null) {
+                    traffic.inboundAnswered++;
+                }
+            }
+        }
+        return traffic;
+    }
+
+    private long countInboundBetween(LocalDateTime start, LocalDateTime end) {
         try {
-            LocalDateTime start = LocalDate.now().minusDays(1).atStartOfDay();
-            LocalDateTime end = LocalDate.now().atStartOfDay();
             return callSessionMapper.selectCount(new LambdaQueryWrapper<CallSession>()
                 .ge(CallSession::getStartedAt, start)
                 .lt(CallSession::getStartedAt, end)
@@ -370,6 +353,20 @@ public class HomeScreenDashboardService {
         } catch (Exception ignored) {
             return 0L;
         }
+    }
+
+    private boolean isInbound(String direction) {
+        String value = safe(direction).toUpperCase(Locale.ROOT);
+        return value.isEmpty() || "INBOUND".equals(value);
+    }
+
+    private boolean isOutbound(String direction) {
+        return "OUTBOUND".equalsIgnoreCase(safe(direction));
+    }
+
+    private boolean isActiveSession(CallSession session) {
+        return session.getEndedAt() == null
+            && !"ENDED".equalsIgnoreCase(safe(session.getCallStatus()));
     }
 
     private HomeScreenDashboardResponse.KpiItem kpi(String label, String value, String extra, String tone) {
@@ -390,7 +387,12 @@ public class HomeScreenDashboardService {
     }
 
     private String directionText(String direction) {
-        return "OUTBOUND".equalsIgnoreCase(safe(direction)) ? "\u547c\u51fa" : "\u547c\u5165";
+        String value = safe(direction).toUpperCase(Locale.ROOT);
+        return switch (value) {
+            case "OUTBOUND" -> "\u547c\u51fa";
+            case "INTERNAL" -> "\u5185\u90e8";
+            default -> "\u547c\u5165";
+        };
     }
 
     private String preferredPhone(String direction, String caller, String called) {
@@ -476,5 +478,10 @@ public class HomeScreenDashboardService {
         private long total;
         private long completed;
         private int completionRate;
+    }
+
+    private static class SessionTraffic {
+        private long inbound;
+        private long inboundAnswered;
     }
 }

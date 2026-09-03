@@ -123,11 +123,14 @@ public class AiScreenDashboardService {
     private List<AiScreenDashboardResponse.KpiItem> buildKpis(double intentMatchRate, double avgConfidence,
                                                               long concurrent, long avgLatency) {
         List<AiScreenDashboardResponse.KpiItem> list = new ArrayList<>();
-        list.add(kpi("\u610f\u56fe\u8bc6\u522b\u51c6\u786e\u7387", formatPercent(intentMatchRate * 100), "\u8fd1 1 \u5c0f\u65f6", "is-up"));
-        list.add(kpi("ASR \u51c6\u786e\u7387", formatPercent(avgConfidence * 100), "\u7f6e\u4fe1\u5ea6\u4ee3\u7406", "is-up"));
+        list.add(kpi("\u610f\u56fe\u8bc6\u522b\u51c6\u786e\u7387", formatPercent(intentMatchRate * 100), "\u8fd1 1 \u5c0f\u65f6",
+            intentMatchRate >= 0.85 ? "is-up" : "is-down"));
+        list.add(kpi("\u5e73\u5747\u7f6e\u4fe1\u5ea6", formatPercent(avgConfidence * 100), "\u610f\u56fe\u8bc6\u522b",
+            avgConfidence >= 0.8 ? "is-up" : null));
         list.add(kpi("AI \u5e76\u53d1\u4f1a\u8bdd", String.valueOf(concurrent),
             concurrent > 0 ? ("\u5f53\u524d " + concurrent) : "\u6682\u65e0\u4f1a\u8bdd", null));
-        list.add(kpi("\u5e73\u5747\u54cd\u5e94", avgLatency + " ms", "ASR+NLU", avgLatency > 500 ? "is-down" : "is-up"));
+        list.add(kpi("\u5e73\u5747\u54cd\u5e94", avgLatency + " ms", "\u610f\u56fe\u8bc6\u522b",
+            avgLatency > 500 ? "is-down" : "is-up"));
         return list;
     }
 
@@ -217,7 +220,7 @@ public class AiScreenDashboardService {
 
     private List<AiScreenDashboardResponse.LatencyPoint> buildLatencyTrend(List<AiIntentRecognitionLog> logs) {
         Map<String, List<Long>> buckets = new LinkedHashMap<>();
-        for (int hour = 8; hour <= 16; hour++) {
+        for (int hour = 8; hour <= 18; hour++) {
             buckets.put(String.format(Locale.ROOT, "%02d:00", hour), new ArrayList<>());
         }
         for (AiIntentRecognitionLog log : logs) {
@@ -237,8 +240,9 @@ public class AiScreenDashboardService {
             point.setHour(hour);
             long avg = values.isEmpty() ? 0L
                 : Math.round(values.stream().mapToLong(Long::longValue).average().orElse(0));
+            // 当前仅有意图识别延迟落库；TTS 无独立指标，不伪造
             point.setAsr(avg);
-            point.setTts(Math.max(0, avg - 40));
+            point.setTts(0L);
             points.add(point);
         });
         return points;
