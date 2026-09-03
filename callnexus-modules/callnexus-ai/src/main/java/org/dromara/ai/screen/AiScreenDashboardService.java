@@ -76,9 +76,11 @@ public class AiScreenDashboardService {
 
         OutcomeBucket bucket = classifySessions(todaySessions);
         long inbound = todaySessions.size();
-        double resolveRate = ratio(bucket.resolved, inbound);
-        double transferRate = ratio(bucket.transfer, inbound);
-        double failRate = ratio(bucket.fail, inbound);
+        long classified = bucket.resolved + bucket.transfer + bucket.fail;
+        long rateBase = classified > 0 ? classified : inbound;
+        double resolveRate = ratio(bucket.resolved, rateBase);
+        double transferRate = ratio(bucket.transfer, rateBase);
+        double failRate = ratio(bucket.fail, rateBase);
 
         RecognitionStats recognitionStats = summarizeRecognition(recentLogs.isEmpty() ? todayLogs : recentLogs);
 
@@ -111,7 +113,7 @@ public class AiScreenDashboardService {
         response.setOutcomes(List.of(
             outcome("\u5df2\u89e3\u51b3", bucket.resolved, "#2ee6a8"),
             outcome("\u8f6c\u4eba\u5de5", bucket.transfer, "#ff9a3c"),
-            outcome("\u8bc6\u522b\u5931\u8d25", bucket.fail, "#ff7a7a")
+            outcome("\u5f02\u5e38\u7ed3\u675f", bucket.fail, "#ff7a7a")
         ));
         response.setIntentRanking(buildIntentRanking(todayLogs));
         response.setFeed(buildFeed(todaySessions));
@@ -123,13 +125,14 @@ public class AiScreenDashboardService {
     private List<AiScreenDashboardResponse.KpiItem> buildKpis(double intentMatchRate, double avgConfidence,
                                                               long concurrent, long avgLatency) {
         List<AiScreenDashboardResponse.KpiItem> list = new ArrayList<>();
-        list.add(kpi("\u610f\u56fe\u8bc6\u522b\u51c6\u786e\u7387", formatPercent(intentMatchRate * 100), "\u8fd1 1 \u5c0f\u65f6",
+        // 命中率 = MATCHED / 识别次数，不是人工标注准确率
+        list.add(kpi("\u610f\u56fe\u547d\u4e2d\u7387", formatPercent(intentMatchRate * 100), "\u8fd1 1 \u5c0f\u65f6",
             intentMatchRate >= 0.85 ? "is-up" : "is-down"));
         list.add(kpi("\u5e73\u5747\u7f6e\u4fe1\u5ea6", formatPercent(avgConfidence * 100), "\u610f\u56fe\u8bc6\u522b",
             avgConfidence >= 0.8 ? "is-up" : null));
         list.add(kpi("AI \u5e76\u53d1\u4f1a\u8bdd", String.valueOf(concurrent),
             concurrent > 0 ? ("\u5f53\u524d " + concurrent) : "\u6682\u65e0\u4f1a\u8bdd", null));
-        list.add(kpi("\u5e73\u5747\u54cd\u5e94", avgLatency + " ms", "\u610f\u56fe\u8bc6\u522b",
+        list.add(kpi("\u8bc6\u522b\u8017\u65f6", avgLatency + " ms", "\u610f\u56fe\u8bc6\u522b",
             avgLatency > 500 ? "is-down" : "is-up"));
         return list;
     }
@@ -240,7 +243,7 @@ public class AiScreenDashboardService {
             point.setHour(hour);
             long avg = values.isEmpty() ? 0L
                 : Math.round(values.stream().mapToLong(Long::longValue).average().orElse(0));
-            // 当前仅有意图识别延迟落库；TTS 无独立指标，不伪造
+            // 当前仅有意图识别延迟落库；无独立 ASR/TTS 延迟指标
             point.setAsr(avg);
             point.setTts(0L);
             points.add(point);
