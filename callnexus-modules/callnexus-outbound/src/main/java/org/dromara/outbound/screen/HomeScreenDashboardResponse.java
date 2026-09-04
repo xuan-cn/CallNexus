@@ -18,6 +18,10 @@ public class HomeScreenDashboardResponse {
     private List<SkillRateItem> skillGroups = new ArrayList<>();
     private List<TrendPoint> trendHours = new ArrayList<>();
     private List<FeedItem> liveFeed = new ArrayList<>();
+    /** 工单状态（与系统首页口径一致） */
+    private TicketSummary ticketSummary = new TicketSummary();
+    /** 客户概况（与系统首页口径一致） */
+    private CustomerSummary customerSummary = new CustomerSummary();
 
     @Data
     public static class KpiItem {
@@ -78,5 +82,29 @@ public class HomeScreenDashboardResponse {
         private String target;
         private String status;
         private String tagClass;
+    }
+
+    @Data
+    public static class TicketSummary {
+        private long open;
+        private long processing;
+        private long resolved;
+        private long closed;
+    }
+
+    @Data
+    public static class CustomerSummary {
+        private long todayNew;
+        private long total;
+        private long unassigned;
+        private List<CustomerRecentItem> recent = new ArrayList<>();
+    }
+
+    @Data
+    public static class CustomerRecentItem {
+        private String id;
+        private String name;
+        private String phone;
+        private String time;
     }
 }

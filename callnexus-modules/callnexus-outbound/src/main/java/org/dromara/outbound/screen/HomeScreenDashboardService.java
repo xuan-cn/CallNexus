@@ -12,6 +12,13 @@ import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.mapper.VoiceMailMessageMapper;
 import org.dromara.call.service.DispatchCallMonitorService;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.customer.customer.domain.Customer;
+import org.dromara.customer.customer.domain.CustomerAssignment;
+import org.dromara.customer.customer.mapper.CustomerAssignmentMapper;
+import org.dromara.customer.customer.mapper.CustomerMapper;
+import org.dromara.customer.ticket.domain.Ticket;
+import org.dromara.customer.ticket.domain.TicketStatus;
+import org.dromara.customer.ticket.mapper.TicketMapper;
 import org.dromara.outbound.domain.response.AutoOutboundTaskResponse;
 import org.dromara.outbound.domain.response.OutboundTaskResponse;
 import org.dromara.outbound.service.AutoOutboundTaskService;
@@ -27,11 +34,13 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 首页运营大屏只读聚合。
@@ -51,6 +60,9 @@ public class HomeScreenDashboardService {
     private final VoiceMailMessageMapper voiceMailMessageMapper;
     private final OutboundTaskService outboundTaskService;
     private final AutoOutboundTaskService autoOutboundTaskService;
+    private final TicketMapper ticketMapper;
+    private final CustomerMapper customerMapper;
+    private final CustomerAssignmentMapper customerAssignmentMapper;
 
     public HomeScreenDashboardResponse overview() {
         CallQueueMonitorOverviewResponse overview = callQueueMonitorService.overview();
@@ -73,6 +85,8 @@ public class HomeScreenDashboardService {
         response.setSkillGroups(buildSkillGroups(queues));
         response.setTrendHours(buildTrendHours(todaySessions));
         response.setLiveFeed(buildLiveFeed());
+        response.setTicketSummary(buildTicketSummary());
+        response.setCustomerSummary(buildCustomerSummary());
         return response;
     }
 
@@ -341,6 +355,82 @@ public class HomeScreenDashboardService {
         counts.completionRate = counts.total <= 0 ? 0
             : (int) Math.round(counts.completed * 100.0 / counts.total);
         return counts;
+    }
+
+    private HomeScreenDashboardResponse.TicketSummary buildTicketSummary() {
+        HomeScreenDashboardResponse.TicketSummary summary = new HomeScreenDashboardResponse.TicketSummary();
+        try {
+            summary.setOpen(countTicket(TicketStatus.OPEN));
+            summary.setProcessing(countTicket(TicketStatus.PROCESSING));
+            summary.setResolved(countTicket(TicketStatus.RESOLVED));
+            summary.setClosed(countTicket(TicketStatus.CLOSED));
+        } catch (Exception ignored) {
+            // keep zeros
+        }
+        return summary;
+    }
+
+    private HomeScreenDashboardResponse.CustomerSummary buildCustomerSummary() {
+        HomeScreenDashboardResponse.CustomerSummary summary = new HomeScreenDashboardResponse.CustomerSummary();
+        try {
+            ZoneId zone = ZoneId.systemDefault();
+            LocalDateTime dayStart = LocalDate.now().atStartOfDay();
+            Date dayStartDate = Date.from(dayStart.atZone(zone).toInstant());
+            Date dayEndDate = Date.from(dayStart.plusDays(1).atZone(zone).toInstant());
+
+            long total = nz(customerMapper.selectCount(new LambdaQueryWrapper<>()));
+            long todayNew = nz(customerMapper.selectCount(new LambdaQueryWrapper<Customer>()
+                .ge(Customer::getCreateTime, dayStartDate)
+                .lt(Customer::getCreateTime, dayEndDate)));
+            Set<Long> assignedIds = loadAssignedCustomerIds();
+            long unassigned = assignedIds.isEmpty()
+                ? total
+                : nz(customerMapper.selectCount(new LambdaQueryWrapper<Customer>()
+                    .notIn(Customer::getId, assignedIds)));
+
+            summary.setTotal(total);
+            summary.setTodayNew(todayNew);
+            summary.setUnassigned(Math.max(0, unassigned));
+            summary.setRecent(listRecentCustomers());
+        } catch (Exception ignored) {
+            // keep zeros
+        }
+        return summary;
+    }
+
+    private List<HomeScreenDashboardResponse.CustomerRecentItem> listRecentCustomers() {
+        List<Customer> rows = customerMapper.selectList(new LambdaQueryWrapper<Customer>()
+            .orderByDesc(Customer::getCreateTime)
+            .last("limit 6"));
+        List<HomeScreenDashboardResponse.CustomerRecentItem> items = new ArrayList<>();
+        for (Customer row : rows) {
+            HomeScreenDashboardResponse.CustomerRecentItem item = new HomeScreenDashboardResponse.CustomerRecentItem();
+            item.setId(Objects.toString(row.getId(), ""));
+            item.setName(StringUtils.blankToDefault(row.getCustomerName(), "-"));
+            item.setPhone(maskPhone(row.getPrimaryPhone()));
+            LocalDateTime created = toLocalDateTime(row.getCreateTime());
+            item.setTime(created != null ? created.format(TIME_FMT) : "-");
+            items.add(item);
+        }
+        return items;
+    }
+
+    private long countTicket(TicketStatus status) {
+        return nz(ticketMapper.selectCount(new LambdaQueryWrapper<Ticket>()
+            .eq(Ticket::getTicketStatus, status)));
+    }
+
+    private Set<Long> loadAssignedCustomerIds() {
+        List<CustomerAssignment> rows = customerAssignmentMapper.selectList(new LambdaQueryWrapper<CustomerAssignment>()
+            .eq(CustomerAssignment::getEnabled, true)
+            .select(CustomerAssignment::getCustomerId));
+        Set<Long> ids = new HashSet<>();
+        for (CustomerAssignment row : rows) {
+            if (row.getCustomerId() != null) {
+                ids.add(row.getCustomerId());
+            }
+        }
+        return ids;
     }
 
     private long countUnhandledVoicemail() {
