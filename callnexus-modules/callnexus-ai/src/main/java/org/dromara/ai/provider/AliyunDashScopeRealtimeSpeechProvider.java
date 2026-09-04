@@ -50,6 +50,7 @@ public class AliyunDashScopeRealtimeSpeechProvider
     private static final String DEFAULT_FILE_ASR_MODEL = "qwen3-asr-flash";
     private static final String DEFAULT_REALTIME_ASR_MODEL = "qwen3-asr-flash-realtime";
     private static final String DEFAULT_TTS_MODEL = "qwen3-tts-flash-realtime";
+    private static final int REALTIME_CONNECT_TIMEOUT_SECONDS = 5;
 
     @Override
     public String providerType() {
@@ -121,12 +122,13 @@ public class AliyunDashScopeRealtimeSpeechProvider
         }
 
         protected void connect(String endpoint, String model) {
+            int connectTimeoutSeconds = Math.min(timeout(provider), REALTIME_CONNECT_TIMEOUT_SECONDS);
             try {
                 WebSocket.Builder builder = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(timeout(provider)))
+                    .connectTimeout(Duration.ofSeconds(connectTimeoutSeconds))
                     .build()
                     .newWebSocketBuilder()
-                    .connectTimeout(Duration.ofSeconds(timeout(provider)))
+                    .connectTimeout(Duration.ofSeconds(connectTimeoutSeconds))
                     .header("Authorization", "Bearer " + provider.getAuthToken())
                     .header("OpenAI-Beta", "realtime=v1");
                 String workspaceId = option(provider.getCredentialJson(), "workspaceId");
@@ -134,8 +136,11 @@ public class AliyunDashScopeRealtimeSpeechProvider
                     builder.header("X-DashScope-WorkSpace", workspaceId);
                 }
                 socket = builder.buildAsync(URI.create(withModel(endpoint, model)), this).join();
-                if (!ready.await(timeout(provider), TimeUnit.SECONDS)) {
+                if (!ready.await(connectTimeoutSeconds, TimeUnit.SECONDS)) {
                     throw new ServiceException("连接百炼实时语音服务超时");
+                }
+                if (closed.get()) {
+                    throw new ServiceException("百炼实时语音连接在初始化阶段已关闭");
                 }
             } catch (ServiceException exception) {
                 closeSocket();
@@ -152,11 +157,23 @@ public class AliyunDashScopeRealtimeSpeechProvider
         }
 
         protected void sendText(String payload) {
+            CompletableFuture<Void> current;
             synchronized (sendLock) {
                 outbound = outbound.handle((ignored, failure) -> null)
                     .thenCompose(ignored -> socket.sendText(payload, true))
                     .thenAccept(ignored -> { });
+                current = outbound;
             }
+            current.whenComplete((ignored, failure) -> {
+                if (failure == null || !closed.compareAndSet(false, true)) {
+                    return;
+                }
+                fail("发送百炼实时语音事件失败：" + rootMessage(failure));
+                ready.countDown();
+                if (socket != null) {
+                    socket.abort();
+                }
+            });
         }
 
         protected void closeSocket() {
@@ -196,15 +213,24 @@ public class AliyunDashScopeRealtimeSpeechProvider
 
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
-            closed.set(true);
+            boolean expected = closed.getAndSet(true);
             ready.countDown();
+            if (!expected) {
+                fail("百炼实时语音连接意外关闭，code=" + statusCode + "，reason="
+                    + StringUtils.blankToDefault(reason, "无"));
+            }
             return CompletableFuture.completedFuture(null);
         }
 
         @Override
         public void onError(WebSocket webSocket, Throwable error) {
-            fail("百炼实时语音连接异常：" + rootMessage(error));
+            if (closed.compareAndSet(false, true)) {
+                fail("百炼实时语音连接异常：" + rootMessage(error));
+            }
             ready.countDown();
+            if (socket != null) {
+                socket.abort();
+            }
         }
 
         protected abstract void onConnected();

@@ -39,6 +39,8 @@ public class IvrDialplanRenderSupport {
                       <action application="sleep" data="300"/>
                       <action application="set" data="RECORD_STEREO=true"/>
                       <action application="set" data="record_sample_rate=8000"/>
+                      <action application="set" data="recording_follow_transfer=true"/>
+                      <action application="set" data="recording_follow_attxfer=true"/>
                       <action application="set" data="callnexus_recording_path=/var/lib/freeswitch/recordings/${callnexus_business_call_id}.wav"/>
                       <action application="export" data="callnexus_recording_path=${callnexus_recording_path}"/>
                       <action application="set" data="api_hangup_hook=bg_system /opt/callnexus/bin/upload-recording.sh ${callnexus_business_call_id} ${callnexus_recording_path}"/>

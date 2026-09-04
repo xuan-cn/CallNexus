@@ -4,11 +4,15 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.ai.domain.request.AiIntentRecognitionRequest;
+import org.dromara.ai.domain.request.AiIntentBatchUpdateRequest;
+import org.dromara.ai.domain.request.AiIntentQuery;
 import org.dromara.ai.domain.request.AiIntentRequest;
 import org.dromara.ai.domain.response.AiIntentRecognitionResponse;
 import org.dromara.ai.domain.response.AiIntentResponse;
 import org.dromara.ai.service.AiIntentApplicationService;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -23,6 +27,12 @@ public class AiIntentController {
     @SaCheckPermission("callcenter:ai-intent:list")
     public R<List<AiIntentResponse>> list() {
         return R.ok(service.intents());
+    }
+
+    @GetMapping("/page")
+    @SaCheckPermission("callcenter:ai-intent:list")
+    public TableDataInfo<AiIntentResponse> page(AiIntentQuery query, PageQuery pageQuery) {
+        return service.page(query, pageQuery);
     }
 
     @GetMapping("/{id}")
@@ -48,6 +58,13 @@ public class AiIntentController {
     @SaCheckPermission("callcenter:ai-intent:delete")
     public R<Void> delete(@PathVariable Long id) {
         service.deleteIntent(id);
+        return R.ok();
+    }
+
+    @PutMapping("/batch")
+    @SaCheckPermission("callcenter:ai-intent:update")
+    public R<Void> batchUpdate(@Valid @RequestBody AiIntentBatchUpdateRequest request) {
+        service.batchUpdate(request);
         return R.ok();
     }
 

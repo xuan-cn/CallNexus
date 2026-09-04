@@ -25,6 +25,7 @@ import org.dromara.ai.service.AiAgentAssistService;
 import org.dromara.ai.service.AiAgentAssistStreamService;
 import org.dromara.ai.service.AiTicketDraftReviewService;
 import org.dromara.ai.domain.request.AiTicketDraftReviewRequest;
+import org.dromara.ai.domain.request.AiTicketDraftUpdateRequest;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.common.json.utils.JsonUtils;
@@ -156,14 +157,29 @@ public class AiAgentAssistServiceImpl implements AiAgentAssistService {
 
     @Override
     public Long approveTicketDraft(String businessCallId, Long draftId, Integer version) {
-        AiTicketDraft draft = ticketDraftMapper.selectById(draftId);
-        if (draft == null || !businessCallId.equals(draft.getSourceCallId())) {
-            throw new ServiceException("当前通话的 AI 工单草稿不存在");
-        }
+        requireTicketDraft(businessCallId, draftId);
         AiTicketDraftReviewRequest request = new AiTicketDraftReviewRequest();
         request.setVersion(version);
         request.setReason("坐席工作台确认");
         return ticketDraftReviewService.approve(draftId, request);
+    }
+
+    @Override
+    public AiTicketDraftResponse updateTicketDraft(String businessCallId, Long draftId,
+                                                    AiTicketDraftUpdateRequest request) {
+        requireTicketDraft(businessCallId, draftId);
+        ticketDraftReviewService.update(draftId, request);
+        AiTicketDraftResponse response = ticketDraftReviewService.get(draftId);
+        streamService.publishTicketDraft(TenantHelper.getTenantId(), businessCallId, response);
+        return response;
+    }
+
+    private AiTicketDraft requireTicketDraft(String businessCallId, Long draftId) {
+        AiTicketDraft draft = ticketDraftMapper.selectById(draftId);
+        if (draft == null || !businessCallId.equals(draft.getSourceCallId())) {
+            throw new ServiceException("当前通话的 AI 工单草稿不存在");
+        }
+        return draft;
     }
 
     private void processSerially(AiAgentAssistSegmentRequest request) {

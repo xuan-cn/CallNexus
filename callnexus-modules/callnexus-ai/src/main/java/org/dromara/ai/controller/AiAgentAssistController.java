@@ -2,8 +2,11 @@ package org.dromara.ai.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.ai.domain.response.AiAgentAssistDetailResponse;
+import org.dromara.ai.domain.response.AiTicketDraftResponse;
+import org.dromara.ai.domain.request.AiTicketDraftUpdateRequest;
 import org.dromara.ai.service.AiAgentAssistService;
 import org.dromara.ai.service.AiAgentAssistStreamService;
 import org.dromara.common.core.domain.R;
@@ -12,6 +15,8 @@ import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -51,5 +56,13 @@ public class AiAgentAssistController {
     public R<Long> approveTicketDraft(@PathVariable String businessCallId, @PathVariable Long draftId,
                                       @RequestParam Integer version) {
         return R.ok(service.approveTicketDraft(businessCallId, draftId, version));
+    }
+
+    @PutMapping("/ticket-drafts/{draftId}")
+    @SaCheckPermission("callcenter:customer:query")
+    public R<AiTicketDraftResponse> updateTicketDraft(@PathVariable String businessCallId,
+                                                       @PathVariable Long draftId,
+                                                       @Valid @RequestBody AiTicketDraftUpdateRequest request) {
+        return R.ok(service.updateTicketDraft(businessCallId, draftId, request));
     }
 }

@@ -384,6 +384,15 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
                 if (!fallbackTriggered.compareAndSet(false, true)) {
                     return;
                 }
+                int emittedBytes = totalBytes.get();
+                if (emittedBytes > 0) {
+                    log.warn("AI TTS 上游流式合成在已发送音频后失败，不执行整句 HTTP 重放，sessionId={}，seq={}，audioBytes={}，error={}",
+                        session.getId(), segment.seq(), emittedBytes, message);
+                    sendError(session, "流式 TTS 播放中断：" + message);
+                    closeSession(session, state, new CloseStatus(1011, "upstream tts interrupted"));
+                    done.countDown();
+                    return;
+                }
                 log.warn("AI TTS 上游流式合成失败，将回退到 HTTP 一次性 TTS（FreeSWITCH 侧仍为内部 WS），sessionId={}，text={}，error={}",
                     session.getId(), sentence, message);
                 fallbackHttp(session, state, segment);

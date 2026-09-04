@@ -36,6 +36,7 @@ public class AiTicketDraftReviewServiceImpl implements AiTicketDraftReviewServic
     private final AiCallRecordingSourceMapper callSourceMapper;
     private final AiTicketDraftTaskDispatcher dispatcher;
     private final ObjectProvider<AiTicketConversionService> conversionServices;
+    private final ObjectProvider<AiTicketBusinessContextProvider> contextProviders;
     private final PlatformTransactionManager transactionManager;
 
     @Override
@@ -55,15 +56,36 @@ public class AiTicketDraftReviewServiceImpl implements AiTicketDraftReviewServic
     @Transactional(rollbackFor = Exception.class)
     public void update(Long id, AiTicketDraftUpdateRequest request) {
         AiTicketDraft before = requireReviewable(id);
+        Map<String, Object> formData = request.getFormData() == null
+            ? new LinkedHashMap<>() : new LinkedHashMap<>(request.getFormData());
+        List<String> missingFields = requiredMissingFields(before, formData);
         int updated = draftMapper.update(null, new LambdaUpdateWrapper<AiTicketDraft>()
             .eq(AiTicketDraft::getId, id).eq(AiTicketDraft::getVersion, request.getVersion())
             .in(AiTicketDraft::getStatus, REVIEWABLE)
             .set(AiTicketDraft::getTitle, request.getTitle())
             .set(AiTicketDraft::getSummary, request.getSummary())
-            .set(AiTicketDraft::getFormDataJson, JsonUtils.toJsonString(request.getFormData()))
+            .set(AiTicketDraft::getFormDataJson, JsonUtils.toJsonString(formData))
+            .set(AiTicketDraft::getMissingFieldsJson, JsonUtils.toJsonString(missingFields))
             .setSql("version = version + 1"));
         if (updated != 1) throw conflict();
         audit(id, "EDIT", before, draftMapper.selectById(id), null);
+    }
+
+    private List<String> requiredMissingFields(AiTicketDraft draft, Map<String, Object> formData) {
+        AiTicketBusinessContextProvider provider = contextProviders.getIfAvailable();
+        if (provider == null) throw new ServiceException("工单业务上下文提供器未加载");
+        return provider.load(draft.getTicketTemplateId(), draft.getCallerNumber()).fields().stream()
+            .filter(org.dromara.ai.service.model.AiTicketTemplateContext.Field::required)
+            .filter(field -> empty(formData.get(field.code())))
+            .map(org.dromara.ai.service.model.AiTicketTemplateContext.Field::code)
+            .toList();
+    }
+
+    private boolean empty(Object value) {
+        if (value == null) return true;
+        if (value instanceof String text) return text.isBlank();
+        if (value instanceof Collection<?> values) return values.isEmpty();
+        return false;
     }
 
     @Override

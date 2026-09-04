@@ -1,10 +1,13 @@
 package org.dromara.ai.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.databind.JsonNode;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.ai.domain.*;
+import org.dromara.ai.domain.request.AiIntentBatchUpdateRequest;
+import org.dromara.ai.domain.request.AiIntentQuery;
 import org.dromara.ai.domain.request.AiIntentRecognitionRequest;
 import org.dromara.ai.domain.request.AiIntentRequest;
 import org.dromara.ai.domain.request.AiIntentUtteranceRequest;
@@ -21,6 +24,8 @@ import org.dromara.ai.vector.VectorStore;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -48,6 +53,7 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
     private static final int VECTOR_SEARCH_LIMIT = 100;
 
     private final AiIntentMapper intentMapper;
+    private final AiIntentGroupMapper intentGroupMapper;
     private final AiIntentUtteranceMapper utteranceMapper;
     private final AiAgentIntentMapper agentIntentMapper;
     private final AiIntentRecognitionLogMapper recognitionLogMapper;
@@ -61,9 +67,14 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
 
     @Override
     public List<AiIntentResponse> intents() {
-        return intentMapper.selectList(new LambdaQueryWrapper<AiIntent>()
-                .orderByAsc(AiIntent::getPriority).orderByAsc(AiIntent::getIntentCode))
-            .stream().map(this::response).toList();
+        return responses(intentMapper.selectList(new LambdaQueryWrapper<AiIntent>()
+            .orderByDesc(AiIntent::getCreateTime).orderByDesc(AiIntent::getId)));
+    }
+
+    @Override
+    public TableDataInfo<AiIntentResponse> page(AiIntentQuery query, PageQuery pageQuery) {
+        Page<AiIntent> page = intentMapper.selectPage(pageQuery.build(), intentQuery(query));
+        return new TableDataInfo<>(responses(page.getRecords()), page.getTotal());
     }
 
     @Override
@@ -111,16 +122,42 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void batchUpdate(AiIntentBatchUpdateRequest request) {
+        List<Long> ids = request.getIntentIds().stream().filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) throw new ServiceException("请选择需要处理的意图");
+        if (request.getGroupId() != null && intentGroupMapper.selectById(request.getGroupId()) == null) {
+            throw new ServiceException("意图分类不存在");
+        }
+        boolean updateGroup = request.getGroupId() != null || Boolean.TRUE.equals(request.getClearGroup());
+        if (!updateGroup && request.getEnabled() == null) throw new ServiceException("没有需要更新的内容");
+        for (AiIntent intent : intentMapper.selectBatchIds(ids)) {
+            if (updateGroup) intent.setGroupId(Boolean.TRUE.equals(request.getClearGroup()) ? null : request.getGroupId());
+            if (request.getEnabled() != null) intent.setEnabled(request.getEnabled());
+            intentMapper.updateById(intent);
+            scheduleIntentReindex(intent.getId());
+        }
+    }
+
+    @Override
     public AiIntentRecognitionResponse recognize(AiIntentRecognitionRequest request) {
         long started = System.currentTimeMillis();
+        if (request == null || request.getAgentId() == null) {
+            throw new ServiceException("AI 助手不能为空");
+        }
+        String inputText = StringUtils.trim(request.getText());
+        if (StringUtils.isBlank(inputText)) {
+            throw new ServiceException("意图识别文本不能为空");
+        }
         AiAgent agent = agentMapper.selectById(request.getAgentId());
         if (agent == null || !Boolean.TRUE.equals(agent.getEnabled())) {
             throw new ServiceException("AI 助手不存在或未启用");
         }
-        String normalized = normalize(request.getText());
-        List<AiIntent> candidates = boundIntents(agent.getId());
+        String normalized = normalize(inputText);
+        List<AiIntent> candidates = scopedCandidates(boundIntents(agent.getId()), request);
         if (candidates.isEmpty()) {
-            return persist(request, normalized, unmatched("NONE", "当前 AI 助手未绑定可用意图"), started, null);
+            return persist(request, inputText, normalized,
+                unmatched("NONE", "当前 AI 助手未绑定可用意图"), started, null);
         }
         Map<Long, List<AiIntentUtterance>> utteranceCatalog = utterancesByIntent(candidates);
 
@@ -136,7 +173,7 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
             boolean positive = utterances.stream().anyMatch(item ->
                 "POSITIVE".equals(item.getUtteranceType()) && normalized.equals(item.getNormalizedText()));
             if (positive) {
-                return persist(request, normalized, matched(intent, BigDecimal.ONE, "EXACT",
+                return persist(request, inputText, normalized, matched(intent, BigDecimal.ONE, "EXACT",
                     "与正例话术精确匹配", null), started, null);
             }
         }
@@ -144,7 +181,8 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         List<AiIntent> vectorCandidates = candidates.stream()
             .filter(item -> !negativeMatches.contains(item.getId())).toList();
         if (vectorCandidates.isEmpty()) {
-            return persist(request, normalized, unmatched("NONE", "文本命中反例话术，已排除全部候选意图"), started, null);
+            return persist(request, inputText, normalized,
+                unmatched("NONE", "文本命中反例话术，已排除全部候选意图"), started, null);
         }
         Long embeddingModelId = null;
         try {
@@ -153,7 +191,7 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
             AiModelProvider provider = requireEnabledProvider(model.getProviderId());
             ensureCatalogIndexed(agent.getId(), model, candidates, utteranceCatalog);
             EmbeddingResult embedding = embeddingRegistry.get(provider.getProviderType()).embed(
-                new EmbeddingRequest(provider, model, List.of(request.getText().trim())));
+                new EmbeddingRequest(provider, model, List.of(inputText)));
             validateEmbedding(embedding, model, 1);
             List<VectorSearchHit> hits = vectorStore.search(intentCollection(TenantHelper.getTenantId(), model),
                 embedding.vectors().get(0), Map.of(
@@ -162,11 +200,11 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
                     "intentId", vectorCandidates.stream().map(AiIntent::getId).toList()),
                 Math.min(VECTOR_SEARCH_LIMIT, Math.max(20, vectorCandidates.size() * 6)));
             AiIntentRecognitionResponse recognition = recognizeByVector(vectorCandidates, hits);
-            return persist(request, normalized, recognition, started, model.getId());
+            return persist(request, inputText, normalized, recognition, started, model.getId());
         } catch (Exception exception) {
             log.warn("AI 意图向量识别失败，agentId={}，error={}", request.getAgentId(), exception.getMessage(), exception);
             AiIntentRecognitionResponse failed = unmatched("VECTOR", "向量识别失败：" + limit(exception.getMessage(), 800));
-            return persist(request, normalized, failed, started, embeddingModelId, "FAILED");
+            return persist(request, inputText, normalized, failed, started, embeddingModelId, "FAILED");
         }
     }
 
@@ -412,18 +450,19 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         return BigDecimal.valueOf(Math.max(0D, Math.min(1D, score))).setScale(6, RoundingMode.HALF_UP);
     }
 
-    private AiIntentRecognitionResponse persist(AiIntentRecognitionRequest request, String normalized,
+    private AiIntentRecognitionResponse persist(AiIntentRecognitionRequest request, String inputText, String normalized,
                                                 AiIntentRecognitionResponse result, long started, Long modelId) {
-        return persist(request, normalized, result, started, modelId, result.isMatched() ? "MATCHED" : "UNMATCHED");
+        return persist(request, inputText, normalized, result, started, modelId,
+            result.isMatched() ? "MATCHED" : "UNMATCHED");
     }
 
-    private AiIntentRecognitionResponse persist(AiIntentRecognitionRequest request, String normalized,
+    private AiIntentRecognitionResponse persist(AiIntentRecognitionRequest request, String inputText, String normalized,
                                                 AiIntentRecognitionResponse result, long started, Long modelId,
                                                 String status) {
         result.setLatencyMs(System.currentTimeMillis() - started);
         AiIntentRecognitionLog value = new AiIntentRecognitionLog();
         value.setAgentId(request.getAgentId());
-        value.setInputText(request.getText());
+        value.setInputText(inputText);
         value.setNormalizedText(normalized);
         value.setIntentId(result.getIntentId());
         value.setIntentCode(result.getIntentCode());
@@ -485,6 +524,38 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
             .toList();
     }
 
+    private List<AiIntent> scopedCandidates(List<AiIntent> candidates, AiIntentRecognitionRequest request) {
+        Set<String> codes = request.getIntentCodes() == null ? Set.of() : request.getIntentCodes().stream()
+            .filter(StringUtils::isNotBlank).map(this::upper).collect(Collectors.toSet());
+        Set<Long> groupIds = request.getGroupIds() == null ? Set.of() : request.getGroupIds().stream()
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (codes.isEmpty() && groupIds.isEmpty()) return candidates;
+        return candidates.stream().filter(intent -> codes.contains(intent.getIntentCode())
+            || intent.getGroupId() != null && groupIds.contains(intent.getGroupId())).toList();
+    }
+
+    private LambdaQueryWrapper<AiIntent> intentQuery(AiIntentQuery query) {
+        LambdaQueryWrapper<AiIntent> wrapper = new LambdaQueryWrapper<>();
+        AiIntentQuery criteria = query == null ? new AiIntentQuery() : query;
+        if (criteria.getAgentId() != null) {
+            List<Long> intentIds = agentIntentMapper.selectList(new LambdaQueryWrapper<AiAgentIntent>()
+                    .eq(AiAgentIntent::getAgentId, criteria.getAgentId()).eq(AiAgentIntent::getEnabled, true))
+                .stream().map(AiAgentIntent::getIntentId).distinct().toList();
+            if (intentIds.isEmpty()) return wrapper.eq(AiIntent::getId, -1L);
+            wrapper.in(AiIntent::getId, intentIds);
+        }
+        return wrapper
+            .eq(criteria.getGroupId() != null, AiIntent::getGroupId, criteria.getGroupId())
+            .isNull(Boolean.TRUE.equals(criteria.getUngrouped()), AiIntent::getGroupId)
+            .eq(StringUtils.isNotBlank(criteria.getIntentType()), AiIntent::getIntentType, upper(criteria.getIntentType()))
+            .eq(criteria.getEnabled() != null, AiIntent::getEnabled, criteria.getEnabled())
+            .and(StringUtils.isNotBlank(criteria.getKeyword()), value -> value
+                .like(AiIntent::getIntentName, criteria.getKeyword()).or()
+                .like(AiIntent::getIntentCode, criteria.getKeyword()).or()
+                .like(AiIntent::getDescription, criteria.getKeyword()))
+            .orderByDesc(AiIntent::getCreateTime).orderByDesc(AiIntent::getId);
+    }
+
     private List<AiIntentUtterance> utterances(Long intentId) {
         return utteranceMapper.selectList(new LambdaQueryWrapper<AiIntentUtterance>()
             .eq(AiIntentUtterance::getIntentId, intentId).orderByAsc(AiIntentUtterance::getSortOrder));
@@ -511,6 +582,10 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         if (!INTENT_TYPES.contains(type)) throw new ServiceException("未知的意图类型：" + type);
         if (!ACTION_TYPES.contains(action)) throw new ServiceException("未知的受控动作类型：" + action);
         validateActionConfig(action, request.getActionConfigJson());
+        if (request.getGroupId() != null && intentGroupMapper.selectById(request.getGroupId()) == null) {
+            throw new ServiceException("意图分类不存在");
+        }
+        intent.setGroupId(request.getGroupId());
         intent.setIntentCode(upper(request.getIntentCode()));
         intent.setIntentName(request.getIntentName().trim());
         intent.setIntentType(type);
@@ -592,8 +667,39 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
     }
 
     private AiIntentResponse response(AiIntent intent) {
+        return responses(List.of(intent)).get(0);
+    }
+
+    private List<AiIntentResponse> responses(List<AiIntent> intents) {
+        if (intents.isEmpty()) return List.of();
+        List<Long> intentIds = intents.stream().map(AiIntent::getId).toList();
+        Map<Long, List<AiIntentUtterance>> utteranceMap = utteranceMapper.selectList(
+                new LambdaQueryWrapper<AiIntentUtterance>().in(AiIntentUtterance::getIntentId, intentIds)
+                    .orderByAsc(AiIntentUtterance::getIntentId).orderByAsc(AiIntentUtterance::getSortOrder))
+            .stream().collect(Collectors.groupingBy(AiIntentUtterance::getIntentId, LinkedHashMap::new, Collectors.toList()));
+        Map<Long, List<AiAgentIntent>> bindingMap = agentIntentMapper.selectList(
+                new LambdaQueryWrapper<AiAgentIntent>().in(AiAgentIntent::getIntentId, intentIds)
+                    .orderByAsc(AiAgentIntent::getIntentId).orderByAsc(AiAgentIntent::getPriority))
+            .stream().collect(Collectors.groupingBy(AiAgentIntent::getIntentId, LinkedHashMap::new, Collectors.toList()));
+        Set<Long> agentIds = bindingMap.values().stream().flatMap(Collection::stream)
+            .map(AiAgentIntent::getAgentId).collect(Collectors.toSet());
+        Map<Long, String> agentNames = agentIds.isEmpty() ? Map.of() : agentMapper.selectBatchIds(agentIds).stream()
+            .collect(Collectors.toMap(AiAgent::getId, AiAgent::getAgentName));
+        Set<Long> groupIds = intents.stream().map(AiIntent::getGroupId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> groupNames = groupIds.isEmpty() ? Map.of() : intentGroupMapper.selectBatchIds(groupIds).stream()
+            .collect(Collectors.toMap(AiIntentGroup::getId, AiIntentGroup::getGroupName));
+        return intents.stream().map(intent -> response(intent, utteranceMap, bindingMap, agentNames, groupNames)).toList();
+    }
+
+    private AiIntentResponse response(AiIntent intent,
+                                      Map<Long, List<AiIntentUtterance>> utteranceMap,
+                                      Map<Long, List<AiAgentIntent>> bindingMap,
+                                      Map<Long, String> agentNames,
+                                      Map<Long, String> groupNames) {
         AiIntentResponse value = new AiIntentResponse();
         value.setId(intent.getId());
+        value.setGroupId(intent.getGroupId());
+        value.setGroupName(intent.getGroupId() == null ? null : groupNames.get(intent.getGroupId()));
         value.setIntentCode(intent.getIntentCode());
         value.setIntentName(intent.getIntentName());
         value.setIntentType(intent.getIntentType());
@@ -606,19 +712,16 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         value.setConfirmationRequired(intent.getConfirmationRequired());
         value.setEnabled(intent.getEnabled());
         value.setVersion(intent.getVersion());
-        value.setUtterances(utterances(intent.getId()).stream().map(item -> {
+        value.setUtterances(utteranceMap.getOrDefault(intent.getId(), List.of()).stream().map(item -> {
             AiIntentUtteranceResponse response = new AiIntentUtteranceResponse();
             response.setId(item.getId());
             response.setUtteranceType(item.getUtteranceType());
             response.setUtteranceText(item.getUtteranceText());
             return response;
         }).toList());
-        List<AiAgentIntent> bindings = agentIntentMapper.selectList(new LambdaQueryWrapper<AiAgentIntent>()
-            .eq(AiAgentIntent::getIntentId, intent.getId()).orderByAsc(AiAgentIntent::getPriority));
+        List<AiAgentIntent> bindings = bindingMap.getOrDefault(intent.getId(), List.of());
         value.setAgentIds(bindings.stream().map(AiAgentIntent::getAgentId).toList());
-        Map<Long, String> names = agentMapper.selectBatchIds(value.getAgentIds()).stream()
-            .collect(Collectors.toMap(AiAgent::getId, AiAgent::getAgentName));
-        value.setAgentNames(value.getAgentIds().stream().map(id -> names.getOrDefault(id, String.valueOf(id))).toList());
+        value.setAgentNames(value.getAgentIds().stream().map(id -> agentNames.getOrDefault(id, String.valueOf(id))).toList());
         return value;
     }
 

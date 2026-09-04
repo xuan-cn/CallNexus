@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
+import java.net.http.HttpClient;
 import java.net.http.HttpResponse;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -61,12 +62,13 @@ public class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
     private EmbeddingResult embedSingleBatch(EmbeddingRequest request) {
         IOException transportFailure = null;
         for (int attempt = 1; attempt <= 2; attempt++) {
+            HttpClient client = OpenAiCompatibleSupport.client(request.provider());
             try {
-                return execute(request);
+                return execute(request, client);
             } catch (IOException exception) {
                 transportFailure = exception;
                 if (attempt == 1) {
-                    OpenAiCompatibleSupport.invalidateClient(request.provider());
+                    OpenAiCompatibleSupport.invalidateClient(request.provider(), client);
                     log.warn("Embedding 连接在响应前被关闭，已淘汰失效连接并重试一次，providerCode={}，model={}，error={}",
                         request.provider().getProviderCode(), request.model().getModelName(), exception.getMessage());
                     continue;
@@ -74,7 +76,7 @@ public class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
                 break;
             } catch (ServiceException exception) {
                 if (attempt == 1 && isRetryableGatewayFailure(exception)) {
-                    OpenAiCompatibleSupport.invalidateClient(request.provider());
+                    OpenAiCompatibleSupport.invalidateClient(request.provider(), client);
                     log.warn("Embedding 上游网关暂时不可用，已淘汰连接并准备重试一次，providerCode={}，model={}，error={}",
                         request.provider().getProviderCode(), request.model().getModelName(), exception.getMessage());
                     pauseBeforeRetry();
@@ -128,12 +130,12 @@ public class OpenAiCompatibleEmbeddingProvider implements EmbeddingProvider {
         }
     }
 
-    private EmbeddingResult execute(EmbeddingRequest request) throws Exception {
+    private EmbeddingResult execute(EmbeddingRequest request, HttpClient client) throws Exception {
         try {
             Map<String, Object> body = OpenAiCompatibleSupport.options(request.model());
             body.put("model", request.model().getModelName());
             body.put("input", request.inputs());
-            HttpResponse<String> response = OpenAiCompatibleSupport.client(request.provider()).send(
+            HttpResponse<String> response = client.send(
                 OpenAiCompatibleSupport.request(request.provider(), "/embeddings", body),
                 HttpResponse.BodyHandlers.ofString());
             OpenAiCompatibleSupport.requireSuccess(response.statusCode(), response.body(), "Embedding");

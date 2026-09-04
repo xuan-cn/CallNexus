@@ -32,16 +32,15 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
         EslEndpoint endpoint = endpoint(nodeId);
         // 下发轮次上下文，供 callnexussynth 插件按 (callId,turnId) 复用同一条 TTS WebSocket。
         // callId 使用业务通话腿 UUID（即 customerLegUuid），与插件 start 帧对齐。
-        eslCommandGateway.sendRawCommand(endpoint,
-            "api uuid_setvar " + customerLegUuid + " callnexus_ai_call_id " + customerLegUuid);
+        StringBuilder variables = new StringBuilder(192)
+            .append("callnexus_ai_call_id=").append(customerLegUuid);
         if (StringUtils.isNotBlank(turnId)) {
-            eslCommandGateway.sendRawCommand(endpoint,
-                "api uuid_setvar " + customerLegUuid + " callnexus_ai_turn_id " + safeVar(turnId));
+            variables.append(";callnexus_ai_turn_id=").append(safeVar(turnId));
         }
+        variables.append(";callnexus_ai_segment_seq=").append(Math.max(1, seq));
+        variables.append(";callnexus_ai_turn_end=").append(turnEnd);
         eslCommandGateway.sendRawCommand(endpoint,
-            "api uuid_setvar " + customerLegUuid + " callnexus_ai_segment_seq " + Math.max(1, seq));
-        eslCommandGateway.sendRawCommand(endpoint,
-            "api uuid_setvar " + customerLegUuid + " callnexus_ai_turn_end " + turnEnd);
+            "api uuid_setvar_multi " + customerLegUuid + " " + variables);
         String command = render(properties.getUnimrcp().getSpeakCommandTemplate(), customerLegUuid, text, voice);
         long startNanos = System.nanoTime();
         eslCommandGateway.sendRawCommand(endpoint, command);

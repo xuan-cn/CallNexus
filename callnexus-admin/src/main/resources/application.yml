@@ -290,6 +290,8 @@ ai:
   realtime-token-secret: ${CALLNEXUS_AI_REALTIME_TOKEN_SECRET:cnx_fs_dir_8f3d9c2b7a1e4f6a9c0d5b2ee}
   realtime-token-ttl-seconds: ${CALLNEXUS_AI_REALTIME_TOKEN_TTL_SECONDS:300}
   realtime-worker-threads: ${CALLNEXUS_AI_REALTIME_WORKER_THREADS:8}
+  # 实时通话意图识别总预算，包含线程排队、精确匹配、Embedding 与向量检索。
+  realtime-intent-timeout-ms: ${CALLNEXUS_AI_REALTIME_INTENT_TIMEOUT_MS:1800}
   realtime-transport: ${CALLNEXUS_AI_REALTIME_TRANSPORT:UNIMRCP}
   call-realtime-asr-enabled: ${CALLNEXUS_AI_CALL_REALTIME_ASR_ENABLED:true}
   call-realtime-asr-legs: ${CALLNEXUS_AI_CALL_REALTIME_ASR_LEGS:BOTH}
@@ -300,10 +302,11 @@ ai:
     recognize-command-template: "${CALLNEXUS_AI_UNIMRCP_RECOGNIZE_COMMAND_TEMPLATE:api luarun {detectScript} {uuid}}"
     profile: ${CALLNEXUS_AI_UNIMRCP_PROFILE:unimrcp}
     voice: ${CALLNEXUS_AI_UNIMRCP_VOICE:default}
-    grammar: "${CALLNEXUS_AI_UNIMRCP_GRAMMAR:{start-input-timers=true,no-input-timeout=15000}builtin:speech/transcribe transcribe}"
+    grammar: "${CALLNEXUS_AI_UNIMRCP_GRAMMAR:{start-input-timers=true,no-input-timeout=15000,speech-complete-timeout=800,speech-incomplete-timeout=1200}builtin:speech/transcribe transcribe}"
     detect-script: ${CALLNEXUS_AI_UNIMRCP_DETECT_SCRIPT:/usr/share/freeswitch/scripts/callnexus_detect_speech.lua}
     speak-complete-delay-ms: ${CALLNEXUS_AI_UNIMRCP_SPEAK_COMPLETE_DELAY_MS:600}
-    streaming-speak-complete-timeout-ms: ${CALLNEXUS_AI_UNIMRCP_STREAMING_SPEAK_COMPLETE_TIMEOUT_MS:180000}
+    # WS 播报完成事件丢失时的最短兜底时间；长文本仍按预计播放时长自动延长。
+    streaming-speak-complete-timeout-ms: ${CALLNEXUS_AI_UNIMRCP_STREAMING_SPEAK_COMPLETE_TIMEOUT_MS:5000}
     recognize-retry-delay-ms: ${CALLNEXUS_AI_UNIMRCP_RECOGNIZE_RETRY_DELAY_MS:500}
     recognize-stall-timeout-ms: ${CALLNEXUS_AI_UNIMRCP_RECOGNIZE_STALL_TIMEOUT_MS:25000}
     channel-probe-interval-ms: ${CALLNEXUS_AI_UNIMRCP_CHANNEL_PROBE_INTERVAL_MS:2000}

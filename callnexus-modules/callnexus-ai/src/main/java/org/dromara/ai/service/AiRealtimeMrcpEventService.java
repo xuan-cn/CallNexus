@@ -16,12 +16,15 @@ import org.dromara.ai.domain.request.AiIntentRecognitionRequest;
 import org.dromara.ai.domain.request.AiRealtimeTtsRequest;
 import org.dromara.ai.domain.response.AiConversationStartResponse;
 import org.dromara.ai.domain.response.AiIntentRecognitionResponse;
+import org.dromara.ai.domain.response.AiWorkflowCustomerContext;
+import org.dromara.ai.domain.response.AiWorkflowVoiceExecutionResponse;
 import org.dromara.ai.mapper.AiAgentMapper;
 import org.dromara.ai.mapper.AiCallRecordingSourceMapper;
 import org.dromara.ai.mapper.AiCallTranscriptMapper;
 import org.dromara.ai.mapper.AiCallTranscriptSegmentMapper;
 import org.dromara.ai.mapper.AiRealtimeCallSessionMapper;
 import org.dromara.ai.mapper.AiRealtimeCallTurnMapper;
+import org.dromara.ai.mapper.AiWorkflowContextMapper;
 import org.dromara.ai.realtime.AiRealtimeTtsConnectionRegistry;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
@@ -42,6 +45,7 @@ import java.time.Duration;
 import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Service;
 
@@ -50,13 +54,18 @@ import java.time.LocalDateTime;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -90,6 +99,8 @@ public class AiRealtimeMrcpEventService {
     private final AiSpeechProviderSelector speechProviderSelector;
     private final AiAgentApplicationService agentService;
     private final AiIntentApplicationService intentService;
+    private final AiWorkflowRuntimeService workflowRuntimeService;
+    private final AiWorkflowContextMapper workflowContextMapper;
     private final AiAgentMapper agentMapper;
     private final AiRealtimeCallSessionMapper sessionMapper;
     private final AiRealtimeCallTurnMapper turnMapper;
@@ -104,6 +115,8 @@ public class AiRealtimeMrcpEventService {
     private final ObjectProvider<AiIntentTicketActionService> ticketActionServiceProvider;
     @Qualifier("aiRealtimeExecutor")
     private final Executor executor;
+    @Qualifier("aiRealtimeIntentExecutor")
+    private final ThreadPoolTaskExecutor intentExecutor;
     @Qualifier("aiRealtimeScheduler")
     private final ThreadPoolTaskScheduler scheduler;
     private final Map<String, RuntimeSession> sessions = new ConcurrentHashMap<>();
@@ -114,6 +127,8 @@ public class AiRealtimeMrcpEventService {
                                       AiSpeechProviderSelector speechProviderSelector,
                                       AiAgentApplicationService agentService,
                                       AiIntentApplicationService intentService,
+                                      AiWorkflowRuntimeService workflowRuntimeService,
+                                      AiWorkflowContextMapper workflowContextMapper,
                                       AiAgentMapper agentMapper,
                                       AiRealtimeCallSessionMapper sessionMapper,
                                       AiRealtimeCallTurnMapper turnMapper,
@@ -125,14 +140,17 @@ public class AiRealtimeMrcpEventService {
                                        AiRealtimeTtsInternalService realtimeTtsService,
                                        AiRealtimeTtsConnectionRegistry ttsConnectionRegistry,
                                        ObjectProvider<AiRealtimeTelephonyGateway> telephonyGatewayProvider,
-                                       ObjectProvider<AiIntentTicketActionService> ticketActionServiceProvider,
+                                      ObjectProvider<AiIntentTicketActionService> ticketActionServiceProvider,
                                       @Qualifier("aiRealtimeExecutor") Executor executor,
+                                      @Qualifier("aiRealtimeIntentExecutor") ThreadPoolTaskExecutor intentExecutor,
                                       @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler scheduler) {
         this.properties = properties;
         this.nodeQueryService = nodeQueryService;
         this.speechProviderSelector = speechProviderSelector;
         this.agentService = agentService;
         this.intentService = intentService;
+        this.workflowRuntimeService = workflowRuntimeService;
+        this.workflowContextMapper = workflowContextMapper;
         this.agentMapper = agentMapper;
         this.sessionMapper = sessionMapper;
         this.turnMapper = turnMapper;
@@ -146,6 +164,7 @@ public class AiRealtimeMrcpEventService {
         this.telephonyGatewayProvider = telephonyGatewayProvider;
         this.ticketActionServiceProvider = ticketActionServiceProvider;
         this.executor = executor;
+        this.intentExecutor = intentExecutor;
         this.scheduler = scheduler;
     }
 
@@ -301,8 +320,13 @@ public class AiRealtimeMrcpEventService {
             log.info("AI UniMRCP 识别到用户语音，sessionId={}，businessCallId={}，text={}",
                 runtime.entity.getId(), runtime.businessCallId, result.trim());
             LocalDateTime recognizedAt = LocalDateTime.now();
-            executor.execute(() -> TenantHelper.dynamic(tenantId,
-                () -> processTurn(runtime, result.trim(), recognitionAcceptedNanos)));
+            executor.execute(() -> TenantHelper.dynamic(tenantId, () -> {
+                if (runtime.workflowActive.get()) {
+                    processWorkflowInput(runtime, result.trim());
+                } else {
+                    processTurn(runtime, result.trim(), recognitionAcceptedNanos);
+                }
+            }));
             appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_CUSTOMER, SOURCE_REALTIME_ASR,
                 result.trim(), recognizedAt, null);
         }
@@ -457,6 +481,41 @@ public class AiRealtimeMrcpEventService {
             } catch (Exception exception) {
                 log.warn("AI UniMRCP 下发语音传输模式失败，将继续按 HTTP 模式尝试，sessionId={}，error={}",
                     runtime.entity.getId(), exception.getMessage());
+            }
+            Map<String, Object> workflowVariables = new LinkedHashMap<>();
+            workflowVariables.put("call.businessCallId", runtime.businessCallId);
+            workflowVariables.put("call.customerLegUuid", runtime.customerLegUuid);
+            workflowVariables.put("agent.id", runtime.agentId);
+            String workflowScene = enrichWorkflowVariables(runtime, workflowVariables);
+            workflowVariables.put("call.direction", "VOICE_OUTBOUND".equals(workflowScene) ? "OUTBOUND" : "INBOUND");
+            try {
+                var workflow = workflowRuntimeService.startVoice(runtime.agentId, runtime.businessCallId,
+                    workflowScene, workflowVariables);
+                if (workflow.isPresent()) {
+                    runtime.workflowExecutionId = workflow.get().getExecutionId();
+                    runtime.workflowActive.set(true);
+                    runtime.conversationReady.set(true);
+                    handleWorkflowAction(runtime, workflow.get());
+                    log.info("AI UniMRCP 已启动语音工作流，sessionId={}，businessCallId={}，executionId={}，actionType={}",
+                        runtime.entity.getId(), runtime.businessCallId, runtime.workflowExecutionId,
+                        workflow.get().getActionType());
+                    return;
+                }
+            } catch (Exception exception) {
+                log.warn("AI UniMRCP 启动语音工作流失败，回退默认 AI 对话，sessionId={}，businessCallId={}，agentId={}，error={}",
+                    runtime.entity.getId(), runtime.businessCallId, runtime.agentId, exception.getMessage(), exception);
+                String failedExecutionId = runtime.workflowExecutionId;
+                runtime.workflowExecutionId = null;
+                runtime.workflowActive.set(false);
+                runtime.workflowSpeak.set(false);
+                if (StringUtils.isNotBlank(failedExecutionId)) {
+                    try {
+                        workflowRuntimeService.terminate(failedExecutionId, "VOICE_START_ACTION_FAILED");
+                    } catch (Exception terminateException) {
+                        log.debug("AI 语音工作流启动失败后终止实例失败，executionId={}，error={}",
+                            failedExecutionId, terminateException.getMessage());
+                    }
+                }
             }
             long conversationNanos = System.nanoTime();
             AiConversationStartResponse start = agentService.startRealtimeConversation(runtime.agentId);
@@ -665,11 +724,36 @@ public class AiRealtimeMrcpEventService {
     private boolean recognizeAndHandleIntent(RuntimeSession runtime, AiRealtimeCallTurn turn, String text) {
         AiIntentRecognitionResponse recognition;
         long startedNanos = System.nanoTime();
+        long timeoutMs = resolveRealtimeIntentTimeout(properties.getRealtimeIntentTimeoutMs());
+        Future<AiIntentRecognitionResponse> intentFuture = null;
         try {
             AiIntentRecognitionRequest request = new AiIntentRecognitionRequest();
             request.setAgentId(runtime.agentId);
             request.setText(text);
-            recognition = intentService.recognize(request);
+            intentFuture = intentExecutor.submit(() -> TenantHelper.dynamic(runtime.tenantId,
+                () -> intentService.recognize(request)));
+            recognition = intentFuture.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException exception) {
+            if (intentFuture != null) {
+                intentFuture.cancel(true);
+            }
+            log.warn("AI intent recognition exceeded realtime budget; continuing with knowledge/model answer, sessionId={}, businessCallId={}, turn={}, timeoutMs={}, costMs={}",
+                runtime.entity.getId(), runtime.businessCallId, turn.getSequenceNo(), timeoutMs,
+                elapsedMillis(startedNanos));
+            return false;
+        } catch (InterruptedException exception) {
+            if (intentFuture != null) {
+                intentFuture.cancel(true);
+            }
+            Thread.currentThread().interrupt();
+            log.warn("AI intent recognition interrupted; continuing with knowledge/model answer, sessionId={}, businessCallId={}, turn={}, costMs={}",
+                runtime.entity.getId(), runtime.businessCallId, turn.getSequenceNo(), elapsedMillis(startedNanos));
+            return false;
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+            log.warn("AI intent recognition failed; continuing with knowledge/model answer, sessionId={}, businessCallId={}, error={}",
+                runtime.entity.getId(), runtime.businessCallId, cause.getMessage());
+            return false;
         } catch (Exception exception) {
             log.warn("AI intent recognition failed; continuing with knowledge/model answer, sessionId={}, businessCallId={}, error={}",
                 runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
@@ -864,6 +948,101 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void speak(RuntimeSession runtime, String text, AiRealtimeCallTurn turn) {
+        speak(runtime, text, turn, turn == null);
+    }
+
+    private String enrichWorkflowVariables(RuntimeSession runtime, Map<String, Object> variables) {
+        if (StringUtils.isBlank(runtime.businessCallId)) {
+            return "VOICE_INBOUND";
+        }
+        try {
+            AiWorkflowCustomerContext customer = workflowContextMapper.findOutboundCustomer(
+                runtime.tenantId, runtime.businessCallId);
+            String sceneType = customer == null ? "VOICE_INBOUND" : "VOICE_OUTBOUND";
+            if (customer == null) {
+                customer = workflowContextMapper.findInboundCustomer(runtime.tenantId, runtime.businessCallId);
+            }
+            if (customer == null) {
+                return sceneType;
+            }
+            putIfNotBlank(variables, "call.callerNumber", customer.getPhone());
+            putIfNotBlank(variables, "customer.phone", customer.getPhone());
+            if (customer.getCustomerId() != null) {
+                variables.put("customer.id", customer.getCustomerId());
+            }
+            putIfNotBlank(variables, "customer.name", customer.getCustomerName());
+            appendCustomerFormVariables(variables, customer.getFormData());
+            if (customer.getOutboundTaskId() != null) {
+                variables.put("outbound.taskId", customer.getOutboundTaskId());
+                putIfNotBlank(variables, "outbound.taskName", customer.getOutboundTaskName());
+                putIfNotBlank(variables, "task.name", customer.getOutboundTaskName());
+            }
+            if (customer.getOutboundMemberId() != null) {
+                variables.put("outbound.memberId", customer.getOutboundMemberId());
+            }
+            if (customer.getOutboundAttemptCount() != null) {
+                variables.put("outbound.attemptCount", customer.getOutboundAttemptCount());
+            }
+            log.info("AI 语音工作流已装载通话上下文，sessionId={}，businessCallId={}，sceneType={}，customerId={}，taskId={}，memberId={}，hasName={}，phone={}",
+                runtime.entity.getId(), runtime.businessCallId, sceneType, customer.getCustomerId(),
+                customer.getOutboundTaskId(), customer.getOutboundMemberId(),
+                StringUtils.isNotBlank(customer.getCustomerName()), customer.getPhone());
+            return sceneType;
+        } catch (Exception exception) {
+            log.warn("AI 语音工作流装载通话上下文失败，继续按呼入场景使用基础变量，sessionId={}，businessCallId={}，error={}",
+                runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
+            return "VOICE_INBOUND";
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void appendCustomerFormVariables(Map<String, Object> variables, String formData) {
+        if (StringUtils.isBlank(formData)) {
+            return;
+        }
+        Map<String, Object> values = JsonUtils.parseObject(formData, LinkedHashMap.class);
+        if (values == null || values.isEmpty()) {
+            return;
+        }
+        values.forEach((key, value) -> {
+            if (StringUtils.isNotBlank(key) && value != null) {
+                variables.put("customer.custom." + key, value);
+            }
+        });
+        Object gender = firstValue(values, "gender", "sex", "customerGender");
+        if (gender != null && StringUtils.isNotBlank(String.valueOf(gender))) {
+            variables.put("customer.gender", normalizeGender(String.valueOf(gender)));
+        }
+    }
+
+    private Object firstValue(Map<String, Object> values, String... keys) {
+        for (String key : keys) {
+            Object value = values.get(key);
+            if (value != null && StringUtils.isNotBlank(String.valueOf(value))) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String normalizeGender(String value) {
+        String normalized = value.trim();
+        if ("男".equals(normalized) || "M".equalsIgnoreCase(normalized) || "MALE".equalsIgnoreCase(normalized)) {
+            return "MALE";
+        }
+        if ("女".equals(normalized) || "F".equalsIgnoreCase(normalized) || "FEMALE".equalsIgnoreCase(normalized)) {
+            return "FEMALE";
+        }
+        return normalized;
+    }
+
+    private void putIfNotBlank(Map<String, Object> variables, String key, String value) {
+        if (StringUtils.isNotBlank(value)) {
+            variables.put(key, value);
+        }
+    }
+
+    private void speak(RuntimeSession runtime, String text, AiRealtimeCallTurn turn, boolean opening) {
         if (runtime.closed.get()) {
             return;
         }
@@ -891,13 +1070,13 @@ public class AiRealtimeMrcpEventService {
         String turnId = resolveTurnId(runtime, turn);
         boolean turnEnd = isTurnEnd(runtime, turn);
         ActiveSpeak activeSpeak = new ActiveSpeak(turnId, seq, text, System.nanoTime(),
-            runtime.turnGeneration.get(), turn == null);
+            runtime.turnGeneration.get(), opening);
         runtime.activeSpeak.set(activeSpeak);
         log.info("AI UniMRCP 准备提交播报，sessionId={}，businessCallId={}，customerLegUuid={}，textLength={}，voice={}，turnId={}，seq={}，turnEnd={}，stateCostMs={}",
             runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, text.length(), runtime.ttsVoice,
             turnId, seq, turnEnd, stateCostMs);
         gateway().speak(runtime.nodeId, runtime.customerLegUuid, text, runtime.ttsVoice, turnId, seq, turnEnd);
-        tryRecognizeDuringPlayback(runtime, turn == null);
+        tryRecognizeDuringPlayback(runtime, opening);
         long gatewayCostMs = elapsedMillis(gatewayNanos);
         long delay = speakCompletionTimeout(runtime, text);
         ScheduledFuture<?> old = runtime.pendingSpeakTimer.getAndSet(null);
@@ -1006,6 +1185,14 @@ public class AiRealtimeMrcpEventService {
         if (runtime.llmStreaming.get()) {
             return;
         }
+        if (runtime.workflowActive.get() && runtime.workflowSpeak.compareAndSet(true, false)) {
+            try {
+                handleWorkflowAction(runtime, workflowRuntimeService.voiceTtsCompleted(runtime.workflowExecutionId));
+            } catch (Exception exception) {
+                fail(runtime, "AI 语音工作流恢复失败：" + exception.getMessage(), exception);
+            }
+            return;
+        }
         AiRealtimeCallTurn turn = runtime.currentTurn.getAndSet(null);
         if (turn != null) {
             finishTurn(runtime, turn);
@@ -1036,6 +1223,11 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void prewarmPendingSegments(RuntimeSession runtime) {
+        // WS transport already streams each queued segment over the reusable provider session.
+        // HTTP prewarming here would synthesize the same text twice and compete for provider capacity.
+        if (runtime.voiceTransport == VoiceTransport.WS) {
+            return;
+        }
         List<String> pending;
         synchronized (runtime.pendingSpeakSegments) {
             pending = List.copyOf(runtime.pendingSpeakSegments);
@@ -1274,6 +1466,7 @@ public class AiRealtimeMrcpEventService {
         runtime.llmStreaming.set(false);
         runtime.activeSpeak.set(null);
         runtime.waitingSpeakComplete.set(false);
+        runtime.workflowSpeak.set(false);
         runtime.pendingConfirmation.set(null);
         runtime.postPlaybackAction.set(null);
         synchronized (runtime.pendingSpeakSegments) {
@@ -1302,6 +1495,14 @@ public class AiRealtimeMrcpEventService {
         runtime.entity.setLastActivityAt(LocalDateTime.now());
         sessionMapper.updateById(runtime.entity);
         finishRealtimeTranscript(runtime);
+        if (StringUtils.isNotBlank(runtime.workflowExecutionId)) {
+            try {
+                workflowRuntimeService.terminate(runtime.workflowExecutionId, reason);
+            } catch (Exception exception) {
+                log.debug("AI 语音工作流终止状态更新失败，executionId={}，reason={}，error={}",
+                    runtime.workflowExecutionId, reason, exception.getMessage());
+            }
+        }
         log.info("AI UniMRCP 会话结束，sessionId={}，businessCallId={}，customerLegUuid={}，reason={}，cancelledTtsConnections={}",
             runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, reason, cancelledTtsConnections);
     }
@@ -1383,6 +1584,7 @@ public class AiRealtimeMrcpEventService {
             }
             runtime.turnGeneration.incrementAndGet();
             runtime.waitingSpeakComplete.set(false);
+            runtime.workflowSpeak.set(false);
             runtime.llmStreaming.set(false);
             runtime.postPlaybackAction.set(null);
             synchronized (runtime.pendingSpeakSegments) {
@@ -1494,6 +1696,11 @@ public class AiRealtimeMrcpEventService {
             () -> appendRealtimeTranscriptSegment(runtime, speaker, sourceType, text, messageTime, agentId)));
     }
 
+    static long resolveRealtimeIntentTimeout(Long configuredTimeoutMs) {
+        long configured = configuredTimeoutMs == null ? 1800L : configuredTimeoutMs;
+        return Math.max(500L, Math.min(configured, 2000L));
+    }
+
     private void notifyTicketTransfer(RuntimeSession runtime) {
         try {
             AiCallTranscript transcript = transcriptMapper.selectOne(new LambdaQueryWrapper<AiCallTranscript>()
@@ -1505,6 +1712,82 @@ public class AiRealtimeMrcpEventService {
             log.warn("AI 转人工工单草稿刷新触发失败，不阻塞转接，businessCallId={}，error={}",
                 runtime.businessCallId, exception.getMessage());
         }
+    }
+
+    private void processWorkflowInput(RuntimeSession runtime, String text) {
+        if (runtime.closed.get() || StringUtils.isBlank(runtime.workflowExecutionId)) {
+            return;
+        }
+        try {
+            AiWorkflowVoiceExecutionResponse result = workflowRuntimeService.voiceInput(
+                runtime.workflowExecutionId, UUID.randomUUID().toString(), text);
+            handleWorkflowAction(runtime, result);
+        } catch (Exception exception) {
+            runtime.turnInProgress.set(false);
+            fail(runtime, "AI 语音工作流处理输入失败：" + exception.getMessage(), exception);
+        }
+    }
+
+    private void handleWorkflowAction(RuntimeSession runtime, AiWorkflowVoiceExecutionResponse result) {
+        if (runtime.closed.get()) return;
+        String actionType = StringUtils.blankToDefault(result.getActionType(), result.getStatus());
+        switch (actionType) {
+            case "SPEAK" -> {
+                if (StringUtils.isBlank(result.getText())) {
+                    handleWorkflowAction(runtime, workflowRuntimeService.voiceTtsCompleted(result.getExecutionId()));
+                    return;
+                }
+                runtime.workflowSpeak.set(true);
+                runtime.lastAssistantText = result.getText();
+                appendRealtimeTranscriptSegment(runtime, SPEAKER_AI, SOURCE_AI_GENERATED,
+                    result.getText(), LocalDateTime.now(), runtime.agentId);
+                speak(runtime, result.getText(), null, false);
+            }
+            case "WAIT_INPUT" -> {
+                runtime.workflowSpeak.set(false);
+                markListening(runtime);
+                tryRecognize(runtime);
+            }
+            case "TRANSFER_QUEUE", "TRANSFER_EXTENSION", "TRANSFER_IVR" ->
+                executeWorkflowTransfer(runtime, actionType, result.getTarget());
+            case "HANGUP" -> {
+                gateway().hangup(runtime.nodeId, runtime.customerLegUuid);
+                end(runtime, "WORKFLOW_" + actionType);
+            }
+            case "COMPLETED" -> continueWithDefaultConversation(runtime);
+            case "FAILED" -> fail(runtime, "AI 语音工作流执行失败：" + result.getFailureMessage(), null);
+            default -> throw new ServiceException("AI 语音工作流返回了无法执行的动作：" + actionType);
+        }
+    }
+
+    private void continueWithDefaultConversation(RuntimeSession runtime) {
+        AiConversationStartResponse start = agentService.startRealtimeConversation(runtime.agentId);
+        runtime.entity.setConversationId(Long.valueOf(String.valueOf(start.getConversation().getId())));
+        sessionMapper.updateById(runtime.entity);
+        runtime.workflowActive.set(false);
+        runtime.workflowSpeak.set(false);
+        markListening(runtime);
+        tryRecognize(runtime);
+        log.info("AI 语音工作流正常结束，已交回默认 AI 对话，sessionId={}，businessCallId={}，executionId={}",
+            runtime.entity.getId(), runtime.businessCallId, runtime.workflowExecutionId);
+    }
+
+    private void executeWorkflowTransfer(RuntimeSession runtime, String actionType, String target) {
+        if (StringUtils.isBlank(target)) throw new ServiceException("AI 语音工作流转接目标为空：" + actionType);
+        updateState(runtime, "TRANSFERRING", null);
+        switch (actionType) {
+            case "TRANSFER_QUEUE" -> {
+                notifyTicketTransfer(runtime);
+                gateway().transferToQueue(runtime.nodeId, runtime.customerLegUuid, target);
+            }
+            case "TRANSFER_EXTENSION" -> {
+                notifyTicketTransfer(runtime);
+                gateway().transferToExtension(runtime.nodeId, runtime.customerLegUuid, target);
+            }
+            case "TRANSFER_IVR" -> gateway().transferToIvr(runtime.tenantId, runtime.nodeId, runtime.customerLegUuid, target);
+            default -> throw new ServiceException("不支持的工作流转接动作：" + actionType);
+        }
+        end(runtime, "WORKFLOW_" + actionType);
     }
 
     private AiCallTranscript ensureRealtimeTranscript(RuntimeSession runtime, AiCallRecordingSource source) {
@@ -1831,8 +2114,17 @@ public class AiRealtimeMrcpEventService {
         return null;
     }
 
-    private long estimateSpeakDelay(String text) {
-        return Math.max(1200L, text.length() * 180L);
+    static long estimateSpeakDelay(String text) {
+        if (StringUtils.isBlank(text)) {
+            return 1200L;
+        }
+        long spokenUnits = text.codePoints().filter(codePoint -> !Character.isWhitespace(codePoint)).count();
+        long pauseMarks = text.codePoints()
+            .filter(codePoint -> "，。！？；：、（）,.!?;:".indexOf(codePoint) >= 0)
+            .count();
+        // This is only the fallback used when the real playback-complete event is lost.
+        // Keep it conservative so long fixed templates do not reopen ASR while audio is still playing.
+        return Math.max(1200L, spokenUnits * 220L + pauseMarks * 250L + 1200L);
     }
 
     private long speakCompletionTimeout(RuntimeSession runtime, String text) {
@@ -1846,8 +2138,10 @@ public class AiRealtimeMrcpEventService {
         if (transport != VoiceTransport.WS) {
             return estimatedDelay;
         }
-        long configured = streamingTimeoutMs == null ? 180000L : streamingTimeoutMs;
-        long safeTimeout = Math.max(30000L, Math.min(configured, 600000L));
+        long configured = streamingTimeoutMs == null ? 5000L : streamingTimeoutMs;
+        // 配置只控制短文本的最短等待窗口。旧环境即使仍覆盖为 180000，
+        // 也不能让实时通话因完成事件丢失而固定阻塞数分钟。
+        long safeTimeout = Math.max(5000L, Math.min(configured, 15000L));
         return Math.max(estimatedDelay, safeTimeout);
     }
 
@@ -1914,6 +2208,8 @@ public class AiRealtimeMrcpEventService {
         final AtomicReference<PendingIntentAction> pendingConfirmation = new AtomicReference<>();
         final AtomicReference<PendingIntentAction> postPlaybackAction = new AtomicReference<>();
         final AtomicBoolean llmStreaming = new AtomicBoolean();
+        final AtomicBoolean workflowActive = new AtomicBoolean();
+        final AtomicBoolean workflowSpeak = new AtomicBoolean();
         final AtomicReference<ScheduledFuture<?>> pendingSpeakTimer = new AtomicReference<>();
         final AtomicReference<ScheduledFuture<?>> channelProbe = new AtomicReference<>();
         final AtomicReference<ScheduledFuture<?>> pendingActionTimer = new AtomicReference<>();
@@ -1922,6 +2218,7 @@ public class AiRealtimeMrcpEventService {
         volatile SentenceSegmenter segmenter;
         private volatile String lastRecognition;
         private volatile String lastAssistantText;
+        private volatile String workflowExecutionId;
         private volatile LocalDateTime lastActivityAt;
 
         private RuntimeSession(String tenantId, Long nodeId, Long agentId, String businessCallId,

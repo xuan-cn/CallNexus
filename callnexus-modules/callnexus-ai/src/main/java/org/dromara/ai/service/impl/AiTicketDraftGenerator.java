@@ -108,9 +108,12 @@ public class AiTicketDraftGenerator {
             if (!List.of("GENERATING", "PENDING_REVIEW", "LOW_CONFIDENCE", "FAILED").contains(existing.getStatus())) {
                 throw new SkipGenerationException("本次通话已经生成过工单草稿");
             }
+            preserveManualEdits(existing, draft, template);
             draft.setId(existing.getId());
             draft.setVersion(existing.getVersion());
-            draftMapper.updateById(draft);
+            if (draftMapper.updateById(draft) != 1) {
+                throw new ServiceException("工单草稿已被坐席修改，将使用最新版本重新生成");
+            }
             AiTicketDraft saved = draftMapper.selectById(draft.getId());
             audit(saved.getId(), "REALTIME_UPDATE".equals(task.getTriggerType()) ? "REALTIME_UPDATE" : "REGENERATE_UPDATE",
                 existing, saved, "按当前通话内容更新工单草稿");
@@ -125,6 +128,56 @@ public class AiTicketDraftGenerator {
         } catch (DuplicateKeyException exception) {
             throw new SkipGenerationException("本次通话已经生成过工单草稿");
         }
+    }
+
+    private void preserveManualEdits(AiTicketDraft existing, AiTicketDraft generated,
+                                     AiTicketTemplateContext template) {
+        ManualOverrides overrides = manualOverrides(existing.getId());
+        if (overrides.title()) generated.setTitle(existing.getTitle());
+        if (overrides.summary()) generated.setSummary(existing.getSummary());
+        if (overrides.fieldCodes().isEmpty()) return;
+
+        Map<String, Object> generatedValues = readMap(generated.getFormDataJson());
+        Map<String, Object> existingValues = readMap(existing.getFormDataJson());
+        for (String code : overrides.fieldCodes()) {
+            if (existingValues.containsKey(code)) generatedValues.put(code, existingValues.get(code));
+            else generatedValues.remove(code);
+        }
+        Set<String> missing = new LinkedHashSet<>(readList(generated.getMissingFieldsJson()));
+        missing.removeIf(code -> !empty(generatedValues.get(code)));
+        template.fields().stream().filter(AiTicketTemplateContext.Field::required)
+            .filter(field -> empty(generatedValues.get(field.code())))
+            .map(AiTicketTemplateContext.Field::code)
+            .forEach(missing::add);
+        generated.setFormDataJson(JsonUtils.toJsonString(generatedValues));
+        generated.setMissingFieldsJson(JsonUtils.toJsonString(missing));
+    }
+
+    private ManualOverrides manualOverrides(Long draftId) {
+        boolean title = false;
+        boolean summary = false;
+        Set<String> fieldCodes = new LinkedHashSet<>();
+        List<AiTicketDraftAudit> edits = auditMapper.selectList(new LambdaQueryWrapper<AiTicketDraftAudit>()
+            .eq(AiTicketDraftAudit::getDraftId, draftId)
+            .eq(AiTicketDraftAudit::getActionType, "EDIT")
+            .orderByAsc(AiTicketDraftAudit::getId));
+        for (AiTicketDraftAudit edit : edits) {
+            Map<String, Object> before = readMap(edit.getBeforeDataJson());
+            Map<String, Object> after = readMap(edit.getAfterDataJson());
+            title |= !Objects.equals(before.get("title"), after.get("title"));
+            summary |= !Objects.equals(before.get("summary"), after.get("summary"));
+            Map<String, Object> beforeValues = nestedFormData(before.get("formDataJson"));
+            Map<String, Object> afterValues = nestedFormData(after.get("formDataJson"));
+            Set<String> codes = new LinkedHashSet<>(beforeValues.keySet());
+            codes.addAll(afterValues.keySet());
+            codes.stream().filter(code -> !Objects.equals(beforeValues.get(code), afterValues.get(code)))
+                .forEach(fieldCodes::add);
+        }
+        return new ManualOverrides(title, summary, fieldCodes);
+    }
+
+    private Map<String, Object> nestedFormData(Object value) {
+        return value instanceof String json ? readMap(json) : new LinkedHashMap<>();
     }
 
     private void complete(AiTicketPolicy policy, AiTicketDraftTask task, AiTicketDraft draft) {
@@ -368,6 +421,9 @@ public class AiTicketDraftGenerator {
     }
 
     private record ValidatedOutput(Map<String, Object> formData, List<String> missingFields, BigDecimal confidence) {
+    }
+
+    private record ManualOverrides(boolean title, boolean summary, Set<String> fieldCodes) {
     }
 
     private record IntentInfo(String code, String displayName) {

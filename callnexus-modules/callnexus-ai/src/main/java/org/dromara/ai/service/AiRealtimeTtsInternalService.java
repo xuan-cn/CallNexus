@@ -42,7 +42,8 @@ public class AiRealtimeTtsInternalService {
     private static final int MAX_TEXT_LENGTH = 2000;
     private static final long CACHE_TTL_MILLIS = 10 * 60 * 1000L;
     private static final int MAX_CACHE_ENTRIES = 256;
-    private static final long DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 15L;
+    private static final long FIRST_AUDIO_TIMEOUT_SECONDS = 5L;
+    private static final long STREAM_AUDIO_IDLE_TIMEOUT_SECONDS = 10L;
 
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final AiSpeechProviderMapper providerMapper;
@@ -145,8 +146,9 @@ public class AiRealtimeTtsInternalService {
 
         AtomicBoolean finished = new AtomicBoolean();
         AtomicBoolean timedOut = new AtomicBoolean();
+        AtomicBoolean firstAudioReceived = new AtomicBoolean();
+        long streamStartedNanos = System.nanoTime();
         AtomicLong lastAudioActivityNanos = new AtomicLong(System.nanoTime());
-        long streamIdleTimeoutSeconds = streamIdleTimeoutSeconds(provider);
         // session 由外层 open() 返回，onCompleted/onError 里负责 close，
         // generateStream 本身在 commit+finish 后就返回，等待事件异步驱动。
         StreamingTtsSession[] sessionRef = new StreamingTtsSession[1];
@@ -155,7 +157,6 @@ public class AiRealtimeTtsInternalService {
         StreamingTtsListener wrapped = new StreamingTtsListener() {
             @Override
             public void onStarted() {
-                lastAudioActivityNanos.set(System.nanoTime());
                 safeInvoke(listener::onStarted, "onStarted");
             }
 
@@ -164,6 +165,7 @@ public class AiRealtimeTtsInternalService {
                 if (finished.get() || timedOut.get()) {
                     return;
                 }
+                firstAudioReceived.set(true);
                 lastAudioActivityNanos.set(System.nanoTime());
                 try {
                     listener.onAudio(audioBytes);
@@ -209,16 +211,22 @@ public class AiRealtimeTtsInternalService {
             if (finished.get()) {
                 return;
             }
-            long idleNanos = System.nanoTime() - lastAudioActivityNanos.get();
-            if (idleNanos < Duration.ofSeconds(streamIdleTimeoutSeconds).toNanos()) {
+            long now = System.nanoTime();
+            boolean waitingFirstAudio = !firstAudioReceived.get();
+            long timeoutSeconds = waitingFirstAudio
+                ? FIRST_AUDIO_TIMEOUT_SECONDS : STREAM_AUDIO_IDLE_TIMEOUT_SECONDS;
+            long idleNanos = waitingFirstAudio
+                ? now - streamStartedNanos : now - lastAudioActivityNanos.get();
+            if (idleNanos < Duration.ofSeconds(timeoutSeconds).toNanos()) {
                 return;
             }
             if (!timedOut.compareAndSet(false, true)) {
                 return;
             }
-            log.warn("AI 实时 TTS 连续 {}s 未返回音频，强制关闭 session，providerCode={}",
-                streamIdleTimeoutSeconds, provider.getProviderCode());
-            wrapped.onError("流式 TTS 连续" + streamIdleTimeoutSeconds + "秒未返回音频");
+            String stage = waitingFirstAudio ? "首包" : "连续音频";
+            log.warn("AI 实时 TTS {}等待超过 {}s，强制关闭 session，providerCode={}",
+                stage, timeoutSeconds, provider.getProviderCode());
+            wrapped.onError("流式 TTS " + stage + "等待超过" + timeoutSeconds + "秒");
         }, Duration.ofSeconds(1));
 
         try {
@@ -244,14 +252,6 @@ public class AiRealtimeTtsInternalService {
         // 校验 registry 中确实注册了对应的 StreamingTtsProvider；不匹配会抛异常
         streamingTtsProviderRegistry.get(provider.getProviderType());
         return provider;
-    }
-
-    private long streamIdleTimeoutSeconds(AiSpeechProvider provider) {
-        Integer configured = provider.getTimeoutSeconds();
-        if (configured == null || configured <= 0) {
-            return DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS;
-        }
-        return Math.min(configured.longValue(), 300L);
     }
 
     private static void safeInvoke(Runnable action, String tag) {

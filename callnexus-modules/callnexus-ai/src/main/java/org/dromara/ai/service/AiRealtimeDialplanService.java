@@ -4,8 +4,10 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.ai.config.AiKnowledgeProperties;
 import org.dromara.ai.domain.AiAgent;
+import org.dromara.ai.domain.AiAgentWorkflowBinding;
 import org.dromara.ai.domain.AiSpeechProvider;
 import org.dromara.ai.mapper.AiAgentMapper;
+import org.dromara.ai.mapper.AiAgentWorkflowBindingMapper;
 import org.dromara.ai.realtime.AiRealtimeTokenService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
@@ -19,6 +21,7 @@ import org.springframework.stereotype.Service;
 public class AiRealtimeDialplanService implements AiAgentDialplanQueryService {
     private final AiKnowledgeProperties properties;
     private final AiAgentMapper agentMapper;
+    private final AiAgentWorkflowBindingMapper workflowBindingMapper;
     private final AiSpeechProviderSelector speechProviderSelector;
     private final AiRealtimeTokenService tokenService;
 
@@ -44,6 +47,9 @@ public class AiRealtimeDialplanService implements AiAgentDialplanQueryService {
 
     public UniMrcpOpeningPrompt buildUniMrcpOpeningPrompt(Long agentId) {
         validate(agentId);
+        if (hasInboundWorkflow(agentId)) {
+            return new UniMrcpOpeningPrompt(null, null, null);
+        }
         AiAgent agent = requireAgent(agentId);
         String text = StringUtils.isBlank(agent.getWelcomeMessage())
             ? "您好，我是" + agent.getAgentName() + "，请问有什么可以帮您？"
@@ -53,6 +59,13 @@ public class AiRealtimeDialplanService implements AiAgentDialplanQueryService {
             ? properties.getUnimrcp().getVoice()
             : provider.getDefaultVoice();
         return new UniMrcpOpeningPrompt(properties.getUnimrcp().getProfile(), voice, text);
+    }
+
+    private boolean hasInboundWorkflow(Long agentId) {
+        return workflowBindingMapper.selectCount(new LambdaQueryWrapper<AiAgentWorkflowBinding>()
+            .eq(AiAgentWorkflowBinding::getAiAgentId, agentId)
+            .eq(AiAgentWorkflowBinding::getSceneType, "VOICE_INBOUND")
+            .eq(AiAgentWorkflowBinding::getEnabled, true)) > 0;
     }
 
     public boolean isUniMrcpTransport() {

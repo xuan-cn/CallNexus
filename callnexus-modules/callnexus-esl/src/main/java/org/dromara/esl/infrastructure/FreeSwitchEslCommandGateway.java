@@ -54,6 +54,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             + optionalVariable("callnexus_customer_id", safeContext.customerId())
             + optionalVariable("callnexus_outbound_task_id", safeContext.outboundTaskId())
             + optionalVariable("callnexus_outbound_member_id", safeContext.outboundMemberId())
+            + ",recording_follow_transfer=true,recording_follow_attxfer=true"
             + ",origination_caller_id_number=" + callerIdNumber
             + ",origination_caller_id_name=" + callerIdNumber
             + ",execute_on_answer=record_session::/var/lib/freeswitch/recordings/" + callId + ".wav"
@@ -94,6 +95,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             .append(optionalVariable("callnexus_outbound_task_id", safeContext.outboundTaskId()))
             .append(optionalVariable("callnexus_outbound_member_id", safeContext.outboundMemberId()))
             .append(",RECORD_STEREO=true,record_sample_rate=8000")
+            .append(",recording_follow_transfer=true,recording_follow_attxfer=true")
             .append(",origination_caller_id_number=").append(callerIdNumber)
             .append(",origination_caller_id_name=").append(callerIdNumber)
             .append(",execute_on_answer=record_session::/var/lib/freeswitch/recordings/").append(callId).append(".wav")

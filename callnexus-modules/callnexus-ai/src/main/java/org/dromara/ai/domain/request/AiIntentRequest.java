@@ -9,6 +9,7 @@ import java.util.List;
 
 @Data
 public class AiIntentRequest {
+    private Long groupId;
     @NotBlank @Size(max = 64) private String intentCode;
     @NotBlank @Size(max = 128) private String intentName;
     @NotBlank @Size(max = 32) private String intentType;

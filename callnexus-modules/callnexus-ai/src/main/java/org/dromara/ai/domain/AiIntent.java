@@ -12,6 +12,7 @@ import java.math.BigDecimal;
 @TableName("cc_ai_intent")
 public class AiIntent extends TenantEntity {
     @TableId private Long id;
+    private Long groupId;
     private String intentCode;
     private String intentName;
     private String intentType;

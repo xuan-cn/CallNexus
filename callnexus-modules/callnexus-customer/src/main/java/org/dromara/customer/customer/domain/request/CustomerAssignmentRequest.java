@@ -14,6 +14,7 @@ public class CustomerAssignmentRequest {
     private String tags;
     private Long skillGroupId;
     private Long agentId;
+    private List<Long> agentIds;
     private String allocationMode;
     private String remark;
 }

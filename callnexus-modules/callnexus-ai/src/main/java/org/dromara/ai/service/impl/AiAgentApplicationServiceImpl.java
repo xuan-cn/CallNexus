@@ -216,6 +216,11 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
 
     @Override
     public void streamChat(Long agentId, Long userId, AiChatRequest request, BiConsumer<String, Object> eventConsumer) {
+        streamChat(agentId, userId, request, eventConsumer, true);
+    }
+
+    private void streamChat(Long agentId, Long userId, AiChatRequest request,
+                            BiConsumer<String, Object> eventConsumer, boolean knowledgeEnabled) {
         AiAgent agent = requireEnabledAgent(agentId);
         AiConversation conversation = prepareConversation(agent, userId, request);
         eventConsumer.accept("conversation", Map.of("conversationId", conversation.getId()));
@@ -223,7 +228,10 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         AiMessage assistantMessage = saveMessage(conversation, agent, "ASSISTANT", "", "PENDING", "PROCESSING", UUID.randomUUID().toString());
         long started = System.currentTimeMillis();
         try {
-            Retrieval retrieval = retrieve(agent, request.getMessage().trim());
+            Retrieval retrieval = knowledgeEnabled
+                ? retrieve(agent, request.getMessage().trim())
+                : new Retrieval("MODEL", null, List.of(), true, null, null,
+                    null, null, "KNOWLEDGE_DISABLED");
             long retrievalCompleted = System.currentTimeMillis();
             eventConsumer.accept("retrieval", retrieval.summary());
             if (retrieval.directAnswer() != null) {
@@ -284,12 +292,22 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
 
     @Override
     public AiChatTurnResult chatOnce(Long agentId, Long conversationId, String message) {
+        return chatOnce(agentId, conversationId, message, true);
+    }
+
+    @Override
+    public AiChatTurnResult chatOnceModel(Long agentId, Long conversationId, String message) {
+        return chatOnce(agentId, conversationId, message, false);
+    }
+
+    private AiChatTurnResult chatOnce(Long agentId, Long conversationId, String message, boolean knowledgeEnabled) {
         AiChatRequest request = new AiChatRequest();
         request.setConversationId(conversationId);
         request.setMessage(message);
         StringBuilder answer = new StringBuilder();
         AtomicReference<Long> resolvedConversationId = new AtomicReference<>(conversationId);
         AtomicReference<String> sourceType = new AtomicReference<>("MODEL");
+        AtomicReference<Map<String, Object>> retrievalSummary = new AtomicReference<>(Map.of());
         AtomicReference<String> failure = new AtomicReference<>();
         streamChat(agentId, 0L, request, (event, data) -> {
             if (!(data instanceof Map<?, ?> values)) {
@@ -301,17 +319,21 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
                 answer.append(values.get("content"));
             } else if ("completed".equals(event) && values.get("sourceType") != null) {
                 sourceType.set(String.valueOf(values.get("sourceType")));
+            } else if ("retrieval".equals(event)) {
+                Map<String, Object> summary = new LinkedHashMap<>();
+                values.forEach((key, value) -> summary.put(String.valueOf(key), value));
+                retrievalSummary.set(summary);
             } else if ("error".equals(event)) {
                 failure.set(String.valueOf(values.get("message")));
             }
-        });
+        }, knowledgeEnabled);
         if (StringUtils.isNotBlank(failure.get())) {
             throw new ServiceException(failure.get());
         }
         if (answer.isEmpty()) {
             throw new ServiceException("AI 助手未返回可播报内容");
         }
-        return new AiChatTurnResult(resolvedConversationId.get(), answer.toString(), sourceType.get());
+        return new AiChatTurnResult(resolvedConversationId.get(), answer.toString(), sourceType.get(), retrievalSummary.get());
     }
 
     private Retrieval retrieve(AiAgent agent, String question) {
@@ -322,10 +344,12 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         if (exact.isPresent()) {
             Hit hit = exact.get();
             if (directRetrieval || "DIRECT".equals(hit.answerMode()))
-                return new Retrieval("FAQ_EXACT", hit.content(), List.of(hit), false);
-            return new Retrieval("FAQ_EXACT", null, List.of(hit), false);
+                return new Retrieval("FAQ_EXACT", hit.content(), List.of(hit), false, 1D, null,
+                    agent.getFaqScoreThreshold().doubleValue(), agent.getScoreThreshold().doubleValue(), "HIT");
+            return new Retrieval("FAQ_EXACT", null, List.of(hit), false, 1D, null,
+                agent.getFaqScoreThreshold().doubleValue(), agent.getScoreThreshold().doubleValue(), "HIT");
         }
-        if (bindings.isEmpty()) return noKnowledge(agent, null, null);
+        if (bindings.isEmpty()) return noKnowledge(agent, null, null, "NO_KNOWLEDGE_BASE");
         Long embeddingModelId = bindings.get(0).base().getEmbeddingModelId();
         if (bindings.stream().anyMatch(item -> !Objects.equals(embeddingModelId, item.base().getEmbeddingModelId()))) {
             throw new ServiceException("AI 助手绑定的知识库向量模型不一致，请重新配置");
@@ -351,8 +375,10 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         if (faq.isPresent()) {
             Hit hit = faq.get();
             if (directRetrieval || "DIRECT".equals(hit.answerMode()))
-                return new Retrieval("FAQ_SEMANTIC", hit.content(), List.of(hit), false, bestFaqScore, null);
-            return new Retrieval("FAQ_SEMANTIC", null, List.of(hit), false, bestFaqScore, null);
+                return new Retrieval("FAQ_SEMANTIC", hit.content(), List.of(hit), false, bestFaqScore, null,
+                    faqThreshold, agent.getScoreThreshold().doubleValue(), "HIT");
+            return new Retrieval("FAQ_SEMANTIC", null, List.of(hit), false, bestFaqScore, null,
+                faqThreshold, agent.getScoreThreshold().doubleValue(), "HIT");
         }
         List<VectorSearchHit> docs = vectorStore.search(collection, embedding.vectors().get(0),
             Map.of("tenantId", TenantHelper.getTenantId(), "knowledgeBaseId", kbIds, "sourceType", "DOCUMENT", "indexState", "ACTIVE"),
@@ -364,17 +390,21 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
             .map(this::hit).sorted(hitComparator(bindings)).limit(agent.getTopK()).toList();
         if (!hits.isEmpty()) {
             String directAnswer = directRetrieval ? hits.get(0).content() : null;
-            return new Retrieval(directRetrieval ? "DOCUMENT_DIRECT" : "DOCUMENT", directAnswer, hits, false, bestFaqScore, bestDocumentScore);
+            return new Retrieval(directRetrieval ? "DOCUMENT_DIRECT" : "DOCUMENT", directAnswer, hits, false,
+                bestFaqScore, bestDocumentScore, faqThreshold, agent.getScoreThreshold().doubleValue(), "HIT");
         }
-        return noKnowledge(agent, bestFaqScore, bestDocumentScore);
+        return noKnowledge(agent, bestFaqScore, bestDocumentScore, "BELOW_THRESHOLD");
     }
 
-    private Retrieval noKnowledge(AiAgent agent, Double bestFaqScore, Double bestDocumentScore) {
+    private Retrieval noKnowledge(AiAgent agent, Double bestFaqScore, Double bestDocumentScore, String reason) {
+        double faqThreshold = agent.getFaqScoreThreshold().doubleValue();
+        double documentThreshold = agent.getScoreThreshold().doubleValue();
         if ("FALLBACK_MODEL".equals(agent.getRetrievalFailurePolicy())) {
-            return new Retrieval("MODEL", null, List.of(), true, bestFaqScore, bestDocumentScore);
+            return new Retrieval("MODEL", null, List.of(), true, bestFaqScore, bestDocumentScore,
+                faqThreshold, documentThreshold, reason);
         }
         return new Retrieval("STRICT", "抱歉，当前知识库中没有找到可以支持该问题的内容。", List.of(), false,
-            bestFaqScore, bestDocumentScore);
+            bestFaqScore, bestDocumentScore, faqThreshold, documentThreshold, reason);
     }
 
     private Optional<Hit> exactFaq(List<Binding> bindings, String normalized) {
@@ -806,18 +836,32 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
     }
 
     private record Retrieval(String sourceType, String directAnswer, List<Hit> hits, boolean fallback,
-                             Double bestFaqScore, Double bestDocumentScore) {
-        Retrieval(String sourceType, String directAnswer, List<Hit> hits, boolean fallback) {
-            this(sourceType, directAnswer, hits, fallback, null, null);
-        }
+                             Double bestFaqScore, Double bestDocumentScore, Double faqThreshold,
+                             Double documentThreshold, String reason) {
 
         Map<String, Object> summary() {
             Map<String, Object> value = new LinkedHashMap<>();
             value.put("sourceType", sourceType);
             value.put("hitCount", hits.size());
+            value.put("hit", !hits.isEmpty());
             value.put("fallback", fallback);
+            value.put("reason", reason);
             if (bestFaqScore != null) value.put("bestFaqScore", bestFaqScore);
             if (bestDocumentScore != null) value.put("bestDocumentScore", bestDocumentScore);
+            if (faqThreshold != null) value.put("faqThreshold", faqThreshold);
+            if (documentThreshold != null) value.put("documentThreshold", documentThreshold);
+            if (sourceType.startsWith("FAQ") && bestFaqScore != null) {
+                value.put("score", bestFaqScore);
+                value.put("threshold", faqThreshold);
+            } else if (sourceType.startsWith("DOCUMENT") && bestDocumentScore != null) {
+                value.put("score", bestDocumentScore);
+                value.put("threshold", documentThreshold);
+            } else {
+                Double bestScore = bestDocumentScore != null ? bestDocumentScore : bestFaqScore;
+                Double effectiveThreshold = bestDocumentScore != null ? documentThreshold : faqThreshold;
+                if (bestScore != null) value.put("score", bestScore);
+                if (effectiveThreshold != null) value.put("threshold", effectiveThreshold);
+            }
             return value;
         }
     }

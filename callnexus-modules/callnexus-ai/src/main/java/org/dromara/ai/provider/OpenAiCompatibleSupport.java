@@ -15,23 +15,43 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 final class OpenAiCompatibleSupport {
-    private static final Map<Integer, HttpClient> CLIENTS = new ConcurrentHashMap<>();
+    static final long CLIENT_IDLE_REUSE_NANOS = Duration.ofSeconds(5).toNanos();
+    private static final Map<ClientKey, ClientHolder> CLIENTS = new ConcurrentHashMap<>();
 
     private OpenAiCompatibleSupport() {}
 
     static HttpClient client(AiModelProvider provider) {
-        int connectTimeoutSeconds = defaultValue(provider.getConnectTimeoutSeconds(), 10);
-        return CLIENTS.computeIfAbsent(connectTimeoutSeconds, timeout -> HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(timeout))
-            // OpenAI 兼容服务、反向代理和 SSH 隧道对 HTTP/2 长连接的支持并不一致。
-            // HTTP/1.1 可避免空闲连接被网关关闭后首次请求频繁出现 Connection reset。
-            .version(HttpClient.Version.HTTP_1_1)
-            .build());
+        return client(provider, System.nanoTime());
     }
 
-    static void invalidateClient(AiModelProvider provider) {
+    static HttpClient client(AiModelProvider provider, long nowNanos) {
+        ClientKey key = clientKey(provider);
+        ClientHolder holder = CLIENTS.compute(key, (ignored, current) -> {
+            if (current == null || nowNanos - current.lastBorrowNanos() > CLIENT_IDLE_REUSE_NANOS) {
+                return new ClientHolder(createClient(key.connectTimeoutSeconds()), nowNanos);
+            }
+            return new ClientHolder(current.client(), nowNanos);
+        });
+        return holder.client();
+    }
+
+    private static HttpClient createClient(int connectTimeoutSeconds) {
+        return HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(connectTimeoutSeconds))
+            // OpenAI 兼容服务、反向代理和 SSH 隧道对 HTTP/2 长连接的支持并不一致。
+            .version(HttpClient.Version.HTTP_1_1)
+            .build();
+    }
+
+    static void invalidateClient(AiModelProvider provider, HttpClient failedClient) {
+        ClientKey key = clientKey(provider);
+        CLIENTS.computeIfPresent(key, (ignored, current) -> current.client() == failedClient ? null : current);
+    }
+
+    private static ClientKey clientKey(AiModelProvider provider) {
         int connectTimeoutSeconds = defaultValue(provider.getConnectTimeoutSeconds(), 10);
-        CLIENTS.remove(connectTimeoutSeconds);
+        String baseUrl = provider.getBaseUrl() == null ? "" : provider.getBaseUrl().replaceAll("/+$", "");
+        return new ClientKey(baseUrl, connectTimeoutSeconds);
     }
 
     static HttpRequest request(AiModelProvider provider, String path, Object body) {
@@ -71,4 +91,8 @@ final class OpenAiCompatibleSupport {
     static int defaultValue(Integer value, int fallback) {
         return value == null || value <= 0 ? fallback : value;
     }
+
+    private record ClientKey(String baseUrl, int connectTimeoutSeconds) {}
+
+    private record ClientHolder(HttpClient client, long lastBorrowNanos) {}
 }

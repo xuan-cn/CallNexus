@@ -245,7 +245,24 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
             if (availableAgentIds.isEmpty()) {
                 throw new ServiceException("所选技能组没有启用的坐席");
             }
-            return availableAgentIds;
+            if (request.getAgentIds() == null) {
+                return availableAgentIds;
+            }
+            List<Long> requestedAgentIds = request.getAgentIds().stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+            if (requestedAgentIds.isEmpty()) {
+                throw new ServiceException("请选择参与平均分配的坐席");
+            }
+            Set<Long> availableAgentIdSet = new HashSet<>(availableAgentIds);
+            if (!availableAgentIdSet.containsAll(requestedAgentIds)) {
+                throw new ServiceException("所选坐席包含不属于当前技能组或已停用的坐席");
+            }
+            Set<Long> requestedAgentIdSet = new HashSet<>(requestedAgentIds);
+            return availableAgentIds.stream()
+                .filter(requestedAgentIdSet::contains)
+                .toList();
         }
         if (request.getAgentId() == null) {
             return List.of();

@@ -8,6 +8,8 @@ import java.util.List;
 @Data
 public class AiIntentResponse {
     private Long id;
+    private Long groupId;
+    private String groupName;
     private String intentCode;
     private String intentName;
     private String intentType;
