@@ -28,6 +28,9 @@ public class AiTicketPolicy extends TenantEntity {
     private String afterCreateAction;
     private Long customerTemplateId;
     private Long defaultSkillGroupId;
+    private Boolean customerSummaryEnabled;
+    private Long customerSummaryTemplateId;
+    private String customerSummaryFieldCode;
     private String defaultValuesJson;
     private Long activePromptVersionId;
     @Version private Integer version;

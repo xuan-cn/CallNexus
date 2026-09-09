@@ -8,6 +8,10 @@ public record AiWorkflowNodeContext(
     JsonNode node,
     Map<String, Object> variables,
     String currentInput,
-    Long aiAgentId
+    Long aiAgentId,
+    String channelType
 ) {
+    public AiWorkflowNodeContext(JsonNode node, Map<String, Object> variables, String currentInput, Long aiAgentId) {
+        this(node, variables, currentInput, aiAgentId, null);
+    }
 }

@@ -108,6 +108,56 @@ class AiWorkflowApplicationServiceTest {
         assertThat(result.getErrors()).anyMatch(item -> item.contains("REJECT_GENERAL"));
     }
 
+    @Test
+    void acceptsCycleControlledByLoopLimit() {
+        mockDraft("""
+            {"schemaVersion":"1.0","nodes":[
+              {"id":"start","type":"START","config":{}},
+              {"id":"wait","type":"WAIT_INPUT","config":{"timeoutSeconds":15}},
+              {"id":"intent","type":"INTENT_ROUTE","config":{"intentCodes":["CONFIRM_AGREE","REJECT_GENERAL"]}},
+              {"id":"knowledge","type":"KNOWLEDGE_QUERY","config":{"queryTemplate":"{{conversation.currentInput}}"}},
+              {"id":"limit","type":"LOOP_LIMIT","config":{"maxIterations":3}},
+              {"id":"end","type":"END","config":{}}
+            ],"edges":[
+              {"source":"start","target":"wait"},
+              {"source":"wait","target":"intent"},
+              {"source":"intent","target":"end","condition":"CONFIRM_AGREE"},
+              {"source":"intent","target":"end","condition":"REJECT_GENERAL"},
+              {"source":"intent","target":"knowledge","condition":"FALLBACK"},
+              {"source":"knowledge","target":"limit"},
+              {"source":"limit","target":"wait","condition":"CONTINUE"},
+              {"source":"limit","target":"end","condition":"LIMIT"}
+            ]}
+            """);
+
+        AiWorkflowValidationResponse result = service.validateDraft(1L);
+
+        assertThat(result.isValid()).isTrue();
+        assertThat(result.getErrors()).isEmpty();
+    }
+
+    @Test
+    void rejectsLoopLimitWhoseLimitBranchReturnsToCycle() {
+        mockDraft("""
+            {"schemaVersion":"1.0","nodes":[
+              {"id":"start","type":"START","config":{}},
+              {"id":"wait","type":"WAIT_INPUT","config":{"timeoutSeconds":15}},
+              {"id":"limit","type":"LOOP_LIMIT","config":{"maxIterations":2}},
+              {"id":"end","type":"END","config":{}}
+            ],"edges":[
+              {"source":"start","target":"wait"},
+              {"source":"wait","target":"limit"},
+              {"source":"limit","target":"wait","condition":"CONTINUE"},
+              {"source":"limit","target":"wait","condition":"LIMIT"}
+            ]}
+            """);
+
+        AiWorkflowValidationResponse result = service.validateDraft(1L);
+
+        assertThat(result.isValid()).isFalse();
+        assertThat(result.getErrors()).anyMatch(item -> item.contains("达到上限") && item.contains("离开循环"));
+    }
+
     private void mockDraft(String definitionJson) {
         AiWorkflow workflow = new AiWorkflow();
         workflow.setId(1L);

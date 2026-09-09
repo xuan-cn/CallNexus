@@ -45,7 +45,7 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     private static final Set<String> SCENE_TYPES = Set.of("VOICE_INBOUND", "VOICE_OUTBOUND", "ONLINE_CHAT", "COMMON");
     private static final Set<String> BINDING_SCENES = Set.of("VOICE_INBOUND", "VOICE_OUTBOUND", "ONLINE_CHAT");
     private static final Set<String> NODE_TYPES = Set.of(
-        "START", "END", "WAIT_INPUT", "SET_VARIABLE", "CONDITION", "TEMPLATE_REPLY",
+        "START", "END", "WAIT_INPUT", "SET_VARIABLE", "CONDITION", "LOOP_LIMIT", "TEMPLATE_REPLY",
         "KNOWLEDGE_QUERY", "MODEL_REPLY", "INTENT_ROUTE", "SLOT_EXTRACT", "CONFIRM",
         "CUSTOMER_QUERY", "CUSTOMER_UPDATE", "FOLLOW_UP_CREATE", "TICKET_DRAFT_CREATE",
         "TICKET_CREATE", "AUTO_OUTBOUND_WRITEBACK", "DO_NOT_CALL_ADD", "HTTP_REQUEST",
@@ -313,11 +313,15 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             outgoing.computeIfAbsent(source, key -> new HashSet<>()).add(target);
             String sourceType = nodes.get(source).path("type").asText();
             String condition = edge.path("condition").asText("").trim();
-            if (("CONDITION".equals(sourceType) || "INTENT_ROUTE".equals(sourceType)) && condition.isEmpty()) {
+            if (("CONDITION".equals(sourceType) || "INTENT_ROUTE".equals(sourceType) || "LOOP_LIMIT".equals(sourceType))
+                && condition.isEmpty()) {
                 result.getErrors().add("判断节点的连线必须配置分支条件：" + source);
             }
             if ("CONDITION".equals(sourceType) && !condition.isEmpty() && !Set.of("TRUE", "FALSE").contains(condition)) {
                 result.getErrors().add("条件判断分支只能选择“条件成立”或“条件不成立”：" + source);
+            }
+            if ("LOOP_LIMIT".equals(sourceType) && !condition.isEmpty() && !Set.of("CONTINUE", "LIMIT").contains(condition)) {
+                result.getErrors().add("次数限制分支只能选择“继续循环”或“达到上限”：" + source);
             }
             if ("INTENT_ROUTE".equals(sourceType) && !condition.isEmpty() && !"FALLBACK".equals(condition)
                 && !configuredIntentCodes(nodes.get(source).path("config")).contains(condition)) {
@@ -343,6 +347,15 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
                     result.getErrors().add("意图判断节点缺少“未命中任何意图”连线：" + entry.getKey());
                 }
             }
+            if ("LOOP_LIMIT".equals(type)) {
+                Set<String> configuredBranches = conditions.getOrDefault(entry.getKey(), Set.of());
+                if (!configuredBranches.contains("CONTINUE")) {
+                    result.getErrors().add("次数限制节点缺少“继续循环”连线：" + entry.getKey());
+                }
+                if (!configuredBranches.contains("LIMIT")) {
+                    result.getErrors().add("次数限制节点缺少“达到上限”连线：" + entry.getKey());
+                }
+            }
         }
         if (startIds.size() == 1) {
             Set<String> reachable = reachable(startIds.get(0), outgoing);
@@ -350,7 +363,10 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
                 if (!reachable.contains(nodeId)) result.getErrors().add("存在从开始节点不可达的节点：" + nodeId);
             }
             if (hasCycle(startIds.get(0), outgoing, new HashSet<>(), new HashSet<>())) {
-                result.getErrors().add("阶段一暂不支持循环连线，请改为有限分支");
+                Map<String, Set<String>> unsafeOutgoing = outgoingWithoutControlledLoopEdges(edgesNode, nodes);
+                if (hasCycle(startIds.get(0), unsafeOutgoing, new HashSet<>(), new HashSet<>())) {
+                    result.getErrors().add("循环连线必须经过次数限制节点的“继续循环”分支，且“达到上限”分支必须离开循环");
+                }
             }
         }
         if (nodes.values().stream().noneMatch(node -> TERMINAL_TYPES.contains(node.path("type").asText()))) {
@@ -374,6 +390,12 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             if (!CONDITION_OPERATORS.contains(operator)) result.getErrors().add("条件判断节点未选择有效判断方式：" + nodeId);
             if (!Set.of("EMPTY", "NOT_EMPTY").contains(operator) && config.path("compareValue").asText("").isBlank()) {
                 result.getErrors().add("条件判断节点未填写比较值：" + nodeId);
+            }
+        }
+        if ("LOOP_LIMIT".equals(type)) {
+            int maximum = config.path("maxIterations").asInt(0);
+            if (maximum < 1 || maximum > 20) {
+                result.getErrors().add("次数限制节点的最大循环次数必须在 1 到 20 之间：" + nodeId);
             }
         }
         if ("SET_VARIABLE".equals(type)) {
@@ -442,6 +464,20 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
         visiting.remove(node);
         visited.add(node);
         return false;
+    }
+
+    private Map<String, Set<String>> outgoingWithoutControlledLoopEdges(JsonNode edgesNode, Map<String, JsonNode> nodes) {
+        Map<String, Set<String>> result = new HashMap<>();
+        for (JsonNode edge : edgesNode) {
+            String source = edge.path("source").asText();
+            String target = edge.path("target").asText();
+            if (!nodes.containsKey(source) || !nodes.containsKey(target)) continue;
+            String sourceType = nodes.get(source).path("type").asText();
+            String condition = edge.path("condition").asText("").trim();
+            if ("LOOP_LIMIT".equals(sourceType) && "CONTINUE".equals(condition)) continue;
+            result.computeIfAbsent(source, key -> new HashSet<>()).add(target);
+        }
+        return result;
     }
 
     private JsonNode parseDefinition(String definitionJson) {

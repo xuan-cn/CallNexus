@@ -8,10 +8,12 @@ import org.dromara.agent.domain.AgentCallOperation;
 import org.dromara.agent.domain.AgentCallPhase;
 import org.dromara.agent.domain.AgentPresence;
 import org.dromara.agent.domain.AgentPresenceStatus;
+import org.dromara.agent.domain.AgentPresenceChangeSource;
 import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
 import org.dromara.agent.service.AgentRealtimeQueryService;
 import org.dromara.agent.runtime.AgentQueueRuntimeStatus;
 import org.dromara.agent.service.CallQueueRuntimeSyncService;
+import org.dromara.agent.service.AgentPresenceLogService;
 import org.dromara.ai.service.AiRealtimeMrcpEventService;
 import org.dromara.call.constant.EslEventNames;
 import org.dromara.call.constant.EslHeaders;
@@ -76,6 +78,7 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final TelephonyCommandGateway telephonyCommandGateway;
     private final CallQueueRuntimeSyncService queueRuntimeSyncService;
+    private final AgentPresenceLogService presenceLogService;
     private final CallRecordApplicationService callRecordApplicationService;
     private final CallStateRuntimeService callStateRuntimeService;
     private final DispatchCallTaskService dispatchCallTaskService;
@@ -1415,11 +1418,19 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         String key = PRESENCE_KEY_PREFIX + target.getTenantId() + ":" + target.getAgentId();
         AgentPresence presence = RedisUtils.getCacheObject(key);
         if (presence == null) return;
+        LocalDateTime now = LocalDateTime.now();
         presence.setStatus(status);
-        presence.setUpdatedAt(LocalDateTime.now());
+        presence.setUpdatedAt(now);
         // AFTER_CALL 记录本次通话 channel UUID 用于话后整理时长计算；其余状态清空，避免残留。
         presence.setHandlingCallId(AgentPresenceStatus.AFTER_CALL.equals(status) ? handlingCallId : null);
         RedisUtils.setCacheObject(key, presence, PRESENCE_TTL);
+        try {
+            presenceLogService.recordTransition(target.getTenantId(), target.getAgentId(), status,
+                AgentPresenceChangeSource.TELEPHONY_EVENT, handlingCallId, now);
+        } catch (Exception exception) {
+            log.warn("通话事件记录坐席状态轨迹失败，不影响通话状态，agentId={}，status={}，error={}",
+                target.getAgentId(), status, exception.getMessage());
+        }
         syncQueueStatus(target, status);
     }
 

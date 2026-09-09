@@ -5,15 +5,18 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.dromara.agent.domain.Agent;
 import org.dromara.agent.domain.AgentExtension;
+import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.CallQueue;
 import org.dromara.agent.domain.SkillGroupMember;
 import org.dromara.agent.domain.request.*;
 import org.dromara.agent.domain.response.AgentResponse;
+import org.dromara.agent.domain.response.CurrentAgentResponse;
 import org.dromara.agent.mapper.AgentExtensionMapper;
 import org.dromara.agent.mapper.AgentMapper;
 import org.dromara.agent.mapper.CallQueueMapper;
 import org.dromara.agent.mapper.SkillGroupMemberMapper;
 import org.dromara.agent.service.AgentApplicationService;
+import org.dromara.agent.service.AgentSessionApplicationService;
 import org.dromara.ai.domain.request.GenerateAgentPromptRequest;
 import org.dromara.ai.domain.response.AiGeneratedMediaResponse;
 import org.dromara.ai.service.AiSpeechApplicationService;
@@ -42,6 +45,7 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
     private final SipAccountQueryService sipAccountQueryService;
     private final SipAccountMapper sipAccountMapper;
     private final AiSpeechApplicationService aiSpeechApplicationService;
+    private final AgentSessionApplicationService agentSessionApplicationService;
 
     @Override
     public TableDataInfo<AgentResponse> page(AgentPageQuery query, PageQuery pageQuery) {
@@ -90,6 +94,8 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         ensureUserUnique(request.getUserId(), id);
         Agent agent = agentMapper.selectById(id);
         if (agent == null) throw new ServiceException("坐席不存在");
+        boolean disabling = Boolean.TRUE.equals(agent.getEnabled()) && Boolean.FALSE.equals(request.getEnabled());
+        if (disabling) ensureCanDisable(id);
         agent.setAgentCode(request.getAgentCode());
         agent.setAgentName(request.getAgentName());
         agent.setUserId(request.getUserId());
@@ -97,6 +103,24 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
         agent.setEnabled(request.getEnabled());
         agent.setVersion(request.getVersion());
         if (agentMapper.updateById(agent) != 1) throw new ServiceException("坐席信息已被其他用户修改，请刷新后重试");
+        if (disabling) agentSessionApplicationService.signOut(id);
+        markQueuesNotSynced(id);
+    }
+
+    @Override
+    public void updateEnabled(Long id, UpdateAgentEnabledRequest request) {
+        Agent agent = agentMapper.selectById(id);
+        if (agent == null) throw new ServiceException("坐席不存在");
+        if (request.getEnabled().equals(agent.getEnabled())) return;
+
+        boolean disabling = Boolean.FALSE.equals(request.getEnabled());
+        if (disabling) ensureCanDisable(id);
+        agent.setEnabled(request.getEnabled());
+        agent.setVersion(request.getVersion());
+        if (agentMapper.updateById(agent) != 1) {
+            throw new ServiceException("坐席状态已被其他用户修改，请刷新后重试");
+        }
+        if (disabling) agentSessionApplicationService.signOut(id);
         markQueuesNotSynced(id);
     }
 
@@ -219,6 +243,13 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
             .eq(Agent::getUserId, userId)
             .ne(excludedId != null, Agent::getId, excludedId));
         if (exists) throw new ServiceException("该用户已绑定其他坐席");
+    }
+
+    private void ensureCanDisable(Long agentId) {
+        CurrentAgentResponse session = agentSessionApplicationService.get(agentId);
+        if (session.getActiveCallId() != null || session.getStatus() == AgentPresenceStatus.BUSY) {
+            throw new ServiceException("坐席正在通话或呼叫处理中，不能停用");
+        }
     }
 
     private Map<Long, Long> findExtensionBindings(List<Long> agentIds) {

@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS cc_agent_presence_log (
+    id BIGINT NOT NULL COMMENT '主键',
+    tenant_id VARCHAR(20) NOT NULL COMMENT '租户编号',
+    agent_id BIGINT NOT NULL COMMENT '坐席ID',
+    previous_status VARCHAR(32) DEFAULT NULL COMMENT '变更前状态',
+    status VARCHAR(32) NOT NULL COMMENT '当前状态',
+    source VARCHAR(32) NOT NULL COMMENT '变更来源',
+    business_call_id VARCHAR(64) DEFAULT NULL COMMENT '关联通话标识',
+    started_at DATETIME NOT NULL COMMENT '状态开始时间',
+    ended_at DATETIME DEFAULT NULL COMMENT '状态结束时间',
+    duration_seconds BIGINT NOT NULL DEFAULT 0 COMMENT '状态持续秒数',
+    create_dept BIGINT DEFAULT NULL,
+    create_by BIGINT DEFAULT NULL,
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_by BIGINT DEFAULT NULL,
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_presence_log_agent_started (tenant_id, agent_id, started_at),
+    KEY idx_presence_log_open (tenant_id, agent_id, ended_at),
+    KEY idx_presence_log_status_started (tenant_id, status, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='坐席状态轨迹';

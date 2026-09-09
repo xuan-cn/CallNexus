@@ -219,6 +219,11 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         streamChat(agentId, userId, request, eventConsumer, true);
     }
 
+    @Override
+    public void streamChatModel(Long agentId, Long userId, AiChatRequest request, BiConsumer<String, Object> eventConsumer) {
+        streamChat(agentId, userId, request, eventConsumer, false);
+    }
+
     private void streamChat(Long agentId, Long userId, AiChatRequest request,
                             BiConsumer<String, Object> eventConsumer, boolean knowledgeEnabled) {
         AiAgent agent = requireEnabledAgent(agentId);

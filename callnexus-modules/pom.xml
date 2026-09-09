@@ -25,6 +25,7 @@
         <module>callnexus-outbound</module>
         <module>callnexus-chat</module>
         <module>callnexus-openapi</module>
+        <module>callnexus-report</module>
     </modules>
 
     <artifactId>callnexus-modules</artifactId>

@@ -24,6 +24,9 @@ public class AiTicketPolicyResponse {
     private String afterCreateAction;
     private Long customerTemplateId;
     private Long defaultSkillGroupId;
+    private Boolean customerSummaryEnabled;
+    private Long customerSummaryTemplateId;
+    private String customerSummaryFieldCode;
     private Map<String, Object> defaultValues = new LinkedHashMap<>();
     private Long activePromptVersionId;
     private Integer version;

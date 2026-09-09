@@ -82,6 +82,13 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
         return submission == null ? null : submission.getTemplateId();
     }
 
+    @Override
+    public void delete(FormBusinessType businessType, Long businessId) {
+        submissionMapper.delete(new LambdaQueryWrapper<FormSubmission>()
+            .eq(FormSubmission::getBusinessType, businessType)
+            .eq(FormSubmission::getBusinessId, businessId));
+    }
+
     private FormSubmission selectLatestSubmission(FormBusinessType businessType, Long businessId) {
         return submissionMapper.selectOne(new LambdaQueryWrapper<FormSubmission>()
             .eq(FormSubmission::getBusinessType, businessType)

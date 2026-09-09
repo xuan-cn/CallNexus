@@ -186,16 +186,12 @@ public class CallRealtimeTranscriptEventService {
         transcriptMapper.updateById(transcript);
 
         transcriptStreamService.publishSegment(tenantId, source.getId(), transcript.getId(), segment);
-        agentAssistStreamService.publishSegment(tenantId, source.getBusinessCallId(), transcriptResponse(segment));
-        triggerAgentAssist(tenantId, source, segment);
+        publishAgentAssist(tenantId, source, segment);
         log.info("Realtime call transcript segment saved, sessionId={}, businessCallId={}, legUuid={}, speaker={}, sentenceIndex={}",
             source.getId(), source.getBusinessCallId(), leg.getLegUuid(), segment.getSpeaker(), segment.getSentenceIndex());
     }
 
-    private void triggerAgentAssist(String tenantId, AiCallRecordingSource source, AiCallTranscriptSegment segment) {
-        if (!SPEAKER_CUSTOMER.equals(segment.getSpeaker()) || !Boolean.TRUE.equals(segment.getFinalResult())) {
-            return;
-        }
+    private void publishAgentAssist(String tenantId, AiCallRecordingSource source, AiCallTranscriptSegment segment) {
         CallSession callSession = callSessionMapper.selectById(source.getId());
         if (callSession == null) {
             return;
@@ -203,6 +199,10 @@ public class CallRealtimeTranscriptEventService {
         Long agentId = firstNonNull(callSession.getOwnerAgentId(), callSession.getAgentId());
         SkillGroup group = resolveAssistGroup(callSession.getHandlingQueueId(), agentId);
         if (group == null || !Boolean.TRUE.equals(group.getAssistEnabled()) || group.getAssistAgentId() == null) {
+            return;
+        }
+        agentAssistStreamService.publishSegment(tenantId, source.getBusinessCallId(), transcriptResponse(segment));
+        if (!SPEAKER_CUSTOMER.equals(segment.getSpeaker()) || !Boolean.TRUE.equals(segment.getFinalResult())) {
             return;
         }
         agentAssistService.accept(new AiAgentAssistSegmentRequest(

@@ -141,7 +141,8 @@ public class CallQueueMonitorService {
         agents.forEach(agent -> fillAgentPresence(tenantId, agent));
         long online = agents.stream().filter(agent -> !"OFFLINE".equals(agent.getStatus())).count();
         long idle = agents.stream().filter(agent -> "IDLE".equals(agent.getStatus())).count();
-        long busy = agents.stream().filter(agent -> "BUSY".equals(agent.getStatus()) || "AFTER_CALL".equals(agent.getStatus())).count();
+        long busy = agents.stream().filter(agent -> "NOT_READY".equals(agent.getStatus())
+            || "BUSY".equals(agent.getStatus()) || "AFTER_CALL".equals(agent.getStatus())).count();
         queue.setTotalAgentCount((long) agents.size());
         queue.setOnlineAgentCount(online);
         queue.setIdleAgentCount(idle);
@@ -195,6 +196,7 @@ public class CallQueueMonitorService {
     private String statusText(AgentPresenceStatus status) {
         return switch (status) {
             case IDLE -> "空闲";
+            case NOT_READY -> "示忙";
             case BUSY -> "通话中";
             case AFTER_CALL -> "话后整理";
             case OFFLINE -> "离线";

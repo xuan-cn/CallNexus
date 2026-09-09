@@ -11,5 +11,6 @@ public class CallRecordPageQuery {
     private String calledNumber;
     private String direction;
     private String callStatus;
+    private String answerResult;
     private String hangupCause;
 }

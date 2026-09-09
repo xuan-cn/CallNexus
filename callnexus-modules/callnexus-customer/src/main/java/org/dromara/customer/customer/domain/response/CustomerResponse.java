@@ -22,6 +22,7 @@ public class CustomerResponse {
     private String tags;
     private Long skillGroupId;
     private Long agentId;
+    private String agentName;
     private String assignmentSource;
     private Long importBatchId;
     private String assignmentRemark;

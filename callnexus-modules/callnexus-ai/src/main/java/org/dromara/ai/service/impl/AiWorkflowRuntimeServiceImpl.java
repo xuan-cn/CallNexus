@@ -16,6 +16,7 @@ import org.dromara.ai.domain.request.AiWorkflowTestStartRequest;
 import org.dromara.ai.domain.response.AiWorkflowNodeTraceResponse;
 import org.dromara.ai.domain.response.AiWorkflowTestExecutionResponse;
 import org.dromara.ai.domain.response.AiWorkflowVoiceExecutionResponse;
+import org.dromara.ai.domain.response.AiChatTurnResult;
 import org.dromara.ai.mapper.AiAgentWorkflowBindingMapper;
 import org.dromara.ai.mapper.AiWorkflowExecutionMapper;
 import org.dromara.ai.mapper.AiWorkflowMapper;
@@ -212,7 +213,7 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
             AiWorkflowNodeResult result;
             try {
                 result = handlerRegistry.require(nodeType).execute(new AiWorkflowNodeContext(
-                    node, context.variables, context.lastInput, execution.getAiAgentId()));
+                    node, context.variables, context.lastInput, execution.getAiAgentId(), execution.getChannelType()));
                 context.variables.putAll(result.variableUpdates());
                 if ("SPEAK".equals(result.status()) && result.output() != null) context.outputMessages.add(result.output());
                 logNode(execution, node, result, context.lastInput, startedAt, null);
@@ -233,6 +234,18 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                         execution.setStatus("WAITING_TTS");
                         createWait(execution, node, "TTS", 120);
                     }
+                }
+                case "STREAM_AI" -> {
+                    execution.setCurrentNodeId(nextNodeId(definition, node.path("id").asText(), result.branchValue()));
+                    if ("TEST".equals(execution.getChannelType())) {
+                        fail(execution, "INVALID_NODE_RESULT", "测试流程不能返回流式语音动作");
+                        break;
+                    }
+                    context.pendingActionType = "STREAM_AI";
+                    context.pendingActionText = result.output();
+                    context.pendingActionTarget = result.waitType();
+                    execution.setStatus("WAITING_TTS");
+                    createWait(execution, node, "TTS", 120);
                 }
                 case "WAIT_INPUT" -> {
                     execution.setStatus("WAITING_INPUT");
@@ -263,6 +276,47 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         }
         execution.setContextJson(writeContext(context));
         updateExecution(execution);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void voiceStreamCompleted(String executionId, AiChatTurnResult result) {
+        AiWorkflowExecution execution = requireExecution(executionId);
+        RuntimeContext context = readContext(execution.getContextJson());
+        if (!"WAITING_TTS".equals(execution.getStatus()) || !"STREAM_AI".equals(context.pendingActionType)) {
+            throw new ServiceException("当前工作流不在流式回答状态");
+        }
+        if (result.conversationId() != null) {
+            context.variables.put("ai.conversationId", result.conversationId());
+        }
+        context.variables.put("ai.answerSource", result.sourceType());
+        context.variables.put("ai.lastAnswer", result.answer());
+        context.outputMessages.add(result.answer());
+        if ("KNOWLEDGE_QUERY".equals(context.pendingActionTarget)) {
+            Map<String, Object> retrieval = result.retrieval() == null ? Map.of() : result.retrieval();
+            context.variables.put("knowledge.source", result.sourceType());
+            context.variables.put("knowledge.answer", result.answer());
+            copyVariable(retrieval, context.variables, "hit", "knowledge.hit");
+            copyVariable(retrieval, context.variables, "score", "knowledge.score");
+            copyVariable(retrieval, context.variables, "threshold", "knowledge.threshold");
+            copyVariable(retrieval, context.variables, "hitCount", "knowledge.hitCount");
+            copyVariable(retrieval, context.variables, "fallback", "knowledge.fallback");
+            copyVariable(retrieval, context.variables, "reason", "knowledge.reason");
+            copyVariable(retrieval, context.variables, "bestFaqScore", "knowledge.bestFaqScore");
+            copyVariable(retrieval, context.variables, "faqThreshold", "knowledge.faqThreshold");
+            copyVariable(retrieval, context.variables, "bestDocumentScore", "knowledge.bestDocumentScore");
+            copyVariable(retrieval, context.variables, "documentThreshold", "knowledge.documentThreshold");
+        }
+        execution.setContextJson(writeContext(context));
+        execution.setLastActiveAt(LocalDateTime.now());
+        updateExecution(execution);
+    }
+
+    private void copyVariable(Map<String, Object> source, Map<String, Object> target,
+                              String sourceKey, String targetKey) {
+        if (source.containsKey(sourceKey) && source.get(sourceKey) != null) {
+            target.put(targetKey, source.get(sourceKey));
+        }
     }
 
     private void resumeInput(AiWorkflowExecution execution, AiWorkflowVersion version, RuntimeContext context,

@@ -12,6 +12,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -83,5 +84,23 @@ class AiReplyNodeHandlerTest {
             .containsEntry("knowledge.fallback", true)
             .containsEntry("knowledge.reason", "BELOW_THRESHOLD")
             .containsEntry("knowledge.source", "MODEL");
+    }
+
+    @Test
+    void shouldDeferVoiceKnowledgeReplyToRealtimeStreaming() throws Exception {
+        AiAgentApplicationService agentService = mock(AiAgentApplicationService.class);
+        AiWorkflowTemplateResolver resolver = mock(AiWorkflowTemplateResolver.class);
+        Map<String, Object> variables = Map.of("conversation.currentInput", "怎么购买");
+        when(resolver.resolve("{{conversation.currentInput}}", variables)).thenReturn("怎么购买");
+        AiReplyNodeHandler handler = new AiReplyNodeHandler(agentService, resolver);
+
+        var result = handler.execute(new AiWorkflowNodeContext(
+            OBJECT_MAPPER.readTree("{\"type\":\"KNOWLEDGE_QUERY\",\"config\":{\"queryTemplate\":\"{{conversation.currentInput}}\"}}"),
+            variables, "怎么购买", 8L, "VOICE_INBOUND"));
+
+        assertThat(result.status()).isEqualTo("STREAM_AI");
+        assertThat(result.output()).isEqualTo("怎么购买");
+        assertThat(result.waitType()).isEqualTo("KNOWLEDGE_QUERY");
+        verify(agentService, never()).chatOnce(8L, null, "怎么购买");
     }
 }

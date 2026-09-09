@@ -10,16 +10,21 @@ import org.dromara.customer.customer.domain.Customer;
 import org.dromara.customer.customer.mapper.CustomerMapper;
 import org.dromara.customer.form.domain.FormField;
 import org.dromara.customer.form.domain.FormFieldOption;
+import org.dromara.customer.form.domain.FormBusinessType;
+import org.dromara.customer.form.domain.FormFieldType;
 import org.dromara.customer.form.domain.FormTemplate;
 import org.dromara.customer.form.mapper.FormFieldMapper;
 import org.dromara.customer.form.mapper.FormFieldOptionMapper;
 import org.dromara.customer.form.mapper.FormTemplateMapper;
+import org.dromara.customer.form.service.DynamicFormSubmissionService;
 import org.dromara.customer.ticket.domain.Ticket;
 import org.dromara.customer.ticket.mapper.TicketMapper;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Component
@@ -30,6 +35,7 @@ public class AiTicketBusinessContextProviderImpl implements AiTicketBusinessCont
     private final FormFieldOptionMapper optionMapper;
     private final CustomerMapper customerMapper;
     private final TicketMapper ticketMapper;
+    private final DynamicFormSubmissionService formSubmissionService;
 
     @Override
     public AiTicketTemplateContext load(Long ticketTemplateId, String callerNumber) {
@@ -63,5 +69,39 @@ public class AiTicketBusinessContextProviderImpl implements AiTicketBusinessCont
     public boolean hasFormalTicket(String businessCallId) {
         return StringUtils.isNotBlank(businessCallId) && ticketMapper.selectCount(
             new LambdaQueryWrapper<Ticket>().eq(Ticket::getSourceCallId, businessCallId)) > 0;
+    }
+
+    @Override
+    public boolean writeCustomerSummary(Long customerId, Long templateId, String fieldCode, String summary) {
+        if (customerId == null || templateId == null || StringUtils.isBlank(fieldCode) || StringUtils.isBlank(summary)) return false;
+        Customer customer = customerMapper.selectById(customerId);
+        if (customer == null) return false;
+        FormTemplate template = templateMapper.selectById(templateId);
+        if (template == null || !Boolean.TRUE.equals(template.getEnabled()) || template.getBusinessType() != FormBusinessType.CUSTOMER) {
+            throw new ServiceException("客户资料回写模板不存在或已停用");
+        }
+        if (customer.getTemplateId() != null && !customer.getTemplateId().equals(templateId)) {
+            throw new ServiceException("客户当前使用的资料模板与回写模板不一致");
+        }
+        FormField field = fieldMapper.selectOne(new LambdaQueryWrapper<FormField>()
+            .eq(FormField::getTemplateId, templateId)
+            .eq(FormField::getFieldCode, fieldCode)
+            .eq(FormField::getEnabled, true)
+            .last("LIMIT 1"));
+        if (field == null || !Set.of(FormFieldType.INPUT, FormFieldType.TEXTAREA).contains(field.getFieldType())) {
+            throw new ServiceException("客户资料回写字段不存在或不是文本字段");
+        }
+        Long submissionTemplateId = formSubmissionService.getLatestTemplateId(FormBusinessType.CUSTOMER, customerId);
+        if (submissionTemplateId != null && !submissionTemplateId.equals(templateId)) {
+            throw new ServiceException("客户已有资料使用了其他模板，不能自动覆盖");
+        }
+        Map<String, Object> values = new LinkedHashMap<>(formSubmissionService.getFormData(FormBusinessType.CUSTOMER, customerId));
+        values.put(fieldCode, summary);
+        formSubmissionService.validateAndSave(templateId, FormBusinessType.CUSTOMER, customerId, values);
+        if (customer.getTemplateId() == null) {
+            customer.setTemplateId(templateId);
+            customerMapper.updateById(customer);
+        }
+        return true;
     }
 }

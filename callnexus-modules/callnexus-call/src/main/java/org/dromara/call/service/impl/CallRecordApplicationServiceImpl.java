@@ -120,6 +120,10 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             .like(StringUtils.isNotBlank(query.getCalledNumber()), CallSession::getCalledNumber, query.getCalledNumber())
             .eq(StringUtils.isNotBlank(query.getDirection()), CallSession::getDirection, query.getDirection())
             .eq(StringUtils.isNotBlank(query.getCallStatus()), CallSession::getCallStatus, query.getCallStatus())
+            .isNotNull("ANSWERED".equals(query.getAnswerResult()), CallSession::getAnsweredAt)
+            .eq("MISSED".equals(query.getAnswerResult()), CallSession::getDirection, "INBOUND")
+            .eq("MISSED".equals(query.getAnswerResult()), CallSession::getCallStatus, "ENDED")
+            .isNull("MISSED".equals(query.getAnswerResult()), CallSession::getAnsweredAt)
             .eq(StringUtils.isNotBlank(query.getHangupCause()), CallSession::getHangupCause, query.getHangupCause())
             .orderByDesc(CallSession::getStartedAt);
         Page<CallSession> page = sessionMapper.selectPage(pageQuery.build(), wrapper);

@@ -10,6 +10,7 @@ import org.dromara.common.core.exception.ServiceException;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.ObjectProvider;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -59,7 +60,7 @@ class AiAgentAssistTicketDraftTest {
 
         assertThat(service.updateTicketDraft("call-1", 10L, request)).isSameAs(saved);
         verify(reviewService).update(10L, request);
-        verify(streamService).publishTicketDraft(anyString(), eq("call-1"), same(saved));
+        verify(streamService).publishTicketDraft(nullable(String.class), eq("call-1"), same(saved));
 
         assertThatThrownBy(() -> service.updateTicketDraft("call-2", 10L, request))
             .isInstanceOf(ServiceException.class);
@@ -76,6 +77,8 @@ class AiAgentAssistTicketDraftTest {
         return new AiAgentAssistServiceImpl(mock(AiAgentAssistSessionMapper.class),
             mock(AiAgentAssistSuggestionMapper.class), mock(AiCallTranscriptSegmentMapper.class), draftMapper,
             mock(AiAgentMapper.class), mock(AiAgentApplicationService.class), streamService,
-            reviewService);
+            reviewService, mock(AiTicketPolicyMapper.class), mock(AiCallTranscriptMapper.class),
+            mock(AiCallRecordingSourceMapper.class), mock(org.dromara.ai.service.impl.AiTicketDraftGenerator.class),
+            mock(ObjectProvider.class), mock(ObjectProvider.class));
     }
 }

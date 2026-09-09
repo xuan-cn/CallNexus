@@ -19,6 +19,7 @@ public interface AiAgentApplicationService {
     void deleteConversation(Long conversationId);
     void deleteConversations(Long agentId);
     void streamChat(Long agentId, Long userId, AiChatRequest request, BiConsumer<String, Object> eventConsumer);
+    void streamChatModel(Long agentId, Long userId, AiChatRequest request, BiConsumer<String, Object> eventConsumer);
     AiConversationStartResponse startRealtimeConversation(Long agentId);
     AiChatTurnResult chatOnce(Long agentId, Long conversationId, String message);
     AiChatTurnResult chatOnceModel(Long agentId, Long conversationId, String message);

@@ -113,9 +113,11 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         List<Long> customerIds = page.getRecords().stream().map(Customer::getId).toList();
         Map<Long, List<CustomerPhoneResponse>> phonesByCustomer = loadPhones(customerIds);
         Map<Long, CustomerAssignment> assignmentsByCustomer = loadActiveAssignments(customerIds);
-        return new TableDataInfo<>(page.getRecords().stream()
+        List<CustomerResponse> responses = page.getRecords().stream()
             .map(customer -> toResponse(customer, phonesByCustomer.get(customer.getId()), assignmentsByCustomer.get(customer.getId())))
-            .toList(), page.getTotal());
+            .toList();
+        applyAgentNames(responses);
+        return new TableDataInfo<>(responses, page.getTotal());
     }
 
     @Override
@@ -160,6 +162,20 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         formSubmissionService.validateAndSave(request.getTemplateId(), FormBusinessType.CUSTOMER, customer.getId(), request.getFormData());
         callBusinessAssociationService.associateCustomer(request.getSourceCallId(), customer.getId());
         return customer.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void delete(Long id) {
+        Customer customer = requireVisibleCustomer(id);
+        customerPhoneMapper.delete(new LambdaQueryWrapper<CustomerPhone>()
+            .eq(CustomerPhone::getCustomerId, id));
+        customerAssignmentMapper.delete(new LambdaQueryWrapper<CustomerAssignment>()
+            .eq(CustomerAssignment::getCustomerId, id));
+        followUpMapper.delete(new LambdaQueryWrapper<CustomerFollowUp>()
+            .eq(CustomerFollowUp::getCustomerId, id));
+        formSubmissionService.delete(FormBusinessType.CUSTOMER, id);
+        customerMapper.deleteById(customer);
     }
 
     @Override
@@ -617,7 +633,9 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     }
 
     private CustomerResponse toResponse(Customer customer) {
-        return toResponse(customer, listPhoneResponses(customer.getId()), loadActiveAssignment(customer.getId()));
+        CustomerResponse response = toResponse(customer, listPhoneResponses(customer.getId()), loadActiveAssignment(customer.getId()));
+        applyAgentNames(List.of(response));
+        return response;
     }
 
     private CustomerResponse toResponse(Customer customer, List<CustomerPhoneResponse> phones, CustomerAssignment assignment) {
@@ -652,6 +670,19 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         response.setAssignmentSource(assignment.getAssignmentSource());
         response.setImportBatchId(assignment.getImportBatchId());
         response.setAssignmentRemark(assignment.getRemark());
+    }
+
+    private void applyAgentNames(List<CustomerResponse> responses) {
+        Set<Long> agentIds = responses.stream()
+            .map(CustomerResponse::getAgentId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        if (agentIds.isEmpty()) {
+            return;
+        }
+        Map<Long, String> agentNames = agentMapper.selectBatchIds(agentIds).stream()
+            .collect(Collectors.toMap(Agent::getId, Agent::getAgentName));
+        responses.forEach(response -> response.setAgentName(agentNames.get(response.getAgentId())));
     }
 
     private CustomerAssignment loadActiveAssignment(Long customerId) {
@@ -726,6 +757,23 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
             }
         });
         return true;
+    }
+
+    private Customer requireVisibleCustomer(Long customerId) {
+        Customer customer = customerMapper.selectById(customerId);
+        if (customer == null) {
+            throw new ServiceException("客户不存在");
+        }
+        if (isAssignmentAdmin()) {
+            return customer;
+        }
+        LambdaQueryWrapper<CustomerAssignment> wrapper = activeAssignmentQuery()
+            .eq(CustomerAssignment::getCustomerId, customerId);
+        applyVisibleScope(wrapper);
+        if (customerAssignmentMapper.selectCount(wrapper) == 0) {
+            throw new ServiceException("无权删除该客户资料");
+        }
+        return customer;
     }
 
     private boolean isAssignmentAdmin() {

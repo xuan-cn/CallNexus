@@ -7,6 +7,7 @@ import java.util.List;
 
 @Data
 public class AiAgentAssistDetailResponse {
+    private Boolean assistEnabled;
     private Long sessionId;
     private Long callSessionId;
     private String businessCallId;

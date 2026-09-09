@@ -70,6 +70,13 @@ public class CustomerController {
         return R.ok();
     }
 
+    @DeleteMapping("/{id}")
+    @SaCheckPermission("callcenter:customer:delete")
+    public R<Void> delete(@PathVariable Long id) {
+        applicationService.delete(id);
+        return R.ok();
+    }
+
     @PostMapping("/{id}/claim-current-agent")
     public R<Void> claimCurrentAgent(@PathVariable Long id, @Valid @RequestBody ClaimCustomerRequest request) {
         applicationService.claimCurrentAgent(id, request.getBusinessCallId());

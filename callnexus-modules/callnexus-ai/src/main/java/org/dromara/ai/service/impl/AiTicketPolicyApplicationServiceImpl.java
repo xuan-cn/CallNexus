@@ -257,6 +257,10 @@ public class AiTicketPolicyApplicationServiceImpl implements AiTicketPolicyAppli
             && request.getTicketTemplateId() == null) {
             throw new ServiceException("自动提交工作流前必须选择工单模板");
         }
+        if (Boolean.TRUE.equals(request.getCustomerSummaryEnabled())
+            && (request.getCustomerSummaryTemplateId() == null || StringUtils.isBlank(request.getCustomerSummaryFieldCode()))) {
+            throw new ServiceException("启用客户资料回写前必须选择客户模板和目标字段");
+        }
     }
 
     private void fill(AiTicketPolicy policy, AiTicketPolicyRequest request) {
@@ -273,6 +277,9 @@ public class AiTicketPolicyApplicationServiceImpl implements AiTicketPolicyAppli
         policy.setAfterCreateAction(request.getAfterCreateAction());
         policy.setCustomerTemplateId(request.getCustomerTemplateId());
         policy.setDefaultSkillGroupId(request.getDefaultSkillGroupId());
+        policy.setCustomerSummaryEnabled(Boolean.TRUE.equals(request.getCustomerSummaryEnabled()));
+        policy.setCustomerSummaryTemplateId(request.getCustomerSummaryTemplateId());
+        policy.setCustomerSummaryFieldCode(StringUtils.trim(request.getCustomerSummaryFieldCode()));
         policy.setDefaultValuesJson(JsonUtils.toJsonString(request.getDefaultValues() == null ? Map.of() : request.getDefaultValues()));
     }
 
@@ -288,6 +295,7 @@ public class AiTicketPolicyApplicationServiceImpl implements AiTicketPolicyAppli
         response.setDuplicatePolicy(defaults.getDuplicatePolicy());
         response.setDuplicateWindowHours(defaults.getDuplicateWindowHours());
         response.setAfterCreateAction(defaults.getAfterCreateAction());
+        response.setCustomerSummaryEnabled(false);
         response.setVersion(0);
         return response;
     }
@@ -301,6 +309,9 @@ public class AiTicketPolicyApplicationServiceImpl implements AiTicketPolicyAppli
         response.setMissingRequiredAction(policy.getMissingRequiredAction()); response.setDuplicatePolicy(policy.getDuplicatePolicy());
         response.setDuplicateWindowHours(policy.getDuplicateWindowHours()); response.setAfterCreateAction(policy.getAfterCreateAction());
         response.setCustomerTemplateId(policy.getCustomerTemplateId()); response.setDefaultSkillGroupId(policy.getDefaultSkillGroupId());
+        response.setCustomerSummaryEnabled(Boolean.TRUE.equals(policy.getCustomerSummaryEnabled()));
+        response.setCustomerSummaryTemplateId(policy.getCustomerSummaryTemplateId());
+        response.setCustomerSummaryFieldCode(policy.getCustomerSummaryFieldCode());
         response.setDefaultValues(readMap(policy.getDefaultValuesJson())); response.setActivePromptVersionId(policy.getActivePromptVersionId());
         response.setVersion(policy.getVersion());
         return response;

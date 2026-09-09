@@ -2,16 +2,19 @@ package org.dromara.ai.service;
 
 import org.dromara.ai.domain.AiAgent;
 import org.dromara.ai.domain.request.AiTicketPromptRequest;
+import org.dromara.ai.domain.request.AiTicketPolicyRequest;
 import org.dromara.ai.domain.response.AiTicketPromptValidationResponse;
 import org.dromara.ai.mapper.AiAgentMapper;
 import org.dromara.ai.mapper.AiTicketPolicyMapper;
 import org.dromara.ai.mapper.AiTicketPromptVersionMapper;
 import org.dromara.ai.service.impl.AiTicketPolicyApplicationServiceImpl;
+import org.dromara.common.core.exception.ServiceException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -51,6 +54,16 @@ class AiTicketPolicyApplicationServiceTest {
         assertThat(response.getErrors())
             .contains("未知变量：{{unsafeValue}}", "缺少必需变量：{{ticketTemplateSchema}}");
         assertThat(response.getCompiledPreview()).isNull();
+    }
+
+    @Test
+    void enabledCustomerSummaryShouldRequireTemplateAndField() {
+        AiTicketPolicyRequest request = new AiTicketPolicyRequest();
+        request.setCustomerSummaryEnabled(true);
+
+        assertThatThrownBy(() -> service.savePolicy(1L, request))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("客户模板和目标字段");
     }
 
     private AiTicketPromptRequest request(String content) {

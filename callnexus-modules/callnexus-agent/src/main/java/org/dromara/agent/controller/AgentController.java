@@ -44,6 +44,13 @@ public class AgentController {
         return R.ok();
     }
 
+    @PutMapping("/{id}/status")
+    @SaCheckPermission("callcenter:agent:update")
+    public R<Void> updateEnabled(@PathVariable Long id, @Valid @RequestBody UpdateAgentEnabledRequest request) {
+        applicationService.updateEnabled(id, request);
+        return R.ok();
+    }
+
     @DeleteMapping("/{id}")
     @SaCheckPermission("callcenter:agent:delete")
     public R<Void> delete(@PathVariable Long id) {

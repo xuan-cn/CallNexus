@@ -15,6 +15,7 @@ import org.dromara.ai.domain.request.AiChatRequest;
 import org.dromara.ai.domain.request.AiIntentRecognitionRequest;
 import org.dromara.ai.domain.request.AiRealtimeTtsRequest;
 import org.dromara.ai.domain.response.AiConversationStartResponse;
+import org.dromara.ai.domain.response.AiChatTurnResult;
 import org.dromara.ai.domain.response.AiIntentRecognitionResponse;
 import org.dromara.ai.domain.response.AiWorkflowCustomerContext;
 import org.dromara.ai.domain.response.AiWorkflowVoiceExecutionResponse;
@@ -1111,6 +1112,9 @@ public class AiRealtimeMrcpEventService {
         if (turn != null && turn.getSequenceNo() != null) {
             return "turn-" + turn.getSequenceNo();
         }
+        if (runtime.workflowStreamingReply.get() && StringUtils.isNotBlank(runtime.workflowStreamTurnId)) {
+            return runtime.workflowStreamTurnId;
+        }
         return "opening";
     }
 
@@ -1122,7 +1126,7 @@ public class AiRealtimeMrcpEventService {
      * </ul>
      */
     private boolean isTurnEnd(RuntimeSession runtime, AiRealtimeCallTurn turn) {
-        if (turn == null) {
+        if (turn == null && !runtime.workflowStreamingReply.get()) {
             return true;
         }
         if (runtime.llmStreaming.get()) {
@@ -1187,6 +1191,7 @@ public class AiRealtimeMrcpEventService {
         }
         if (runtime.workflowActive.get() && runtime.workflowSpeak.compareAndSet(true, false)) {
             try {
+                runtime.workflowStreamingReply.set(false);
                 handleWorkflowAction(runtime, workflowRuntimeService.voiceTtsCompleted(runtime.workflowExecutionId));
             } catch (Exception exception) {
                 fail(runtime, "AI 语音工作流恢复失败：" + exception.getMessage(), exception);
@@ -1295,7 +1300,7 @@ public class AiRealtimeMrcpEventService {
         log.info("AI UniMRCP 分句派发，sessionId={}，businessCallId={}，turn={}，text={}",
             runtime.entity.getId(), runtime.businessCallId,
             turn == null ? null : turn.getSequenceNo(), next);
-        speak(runtime, next, turn);
+        speak(runtime, next, turn, turn == null && !runtime.workflowStreamingReply.get());
     }
 
     private void finishTurn(RuntimeSession runtime, AiRealtimeCallTurn turn) {
@@ -1585,6 +1590,7 @@ public class AiRealtimeMrcpEventService {
             runtime.turnGeneration.incrementAndGet();
             runtime.waitingSpeakComplete.set(false);
             runtime.workflowSpeak.set(false);
+            runtime.workflowStreamingReply.set(false);
             runtime.llmStreaming.set(false);
             runtime.postPlaybackAction.set(null);
             synchronized (runtime.pendingSpeakSegments) {
@@ -1732,6 +1738,7 @@ public class AiRealtimeMrcpEventService {
         if (runtime.closed.get()) return;
         String actionType = StringUtils.blankToDefault(result.getActionType(), result.getStatus());
         switch (actionType) {
+            case "STREAM_AI" -> streamWorkflowReply(runtime, result);
             case "SPEAK" -> {
                 if (StringUtils.isBlank(result.getText())) {
                     handleWorkflowAction(runtime, workflowRuntimeService.voiceTtsCompleted(result.getExecutionId()));
@@ -1760,12 +1767,146 @@ public class AiRealtimeMrcpEventService {
         }
     }
 
+    private void streamWorkflowReply(RuntimeSession runtime, AiWorkflowVoiceExecutionResponse action) {
+        String prompt = action.getText();
+        if (StringUtils.isBlank(prompt)) {
+            fail(runtime, "AI 语音工作流流式回答内容为空", null);
+            return;
+        }
+        long generation = runtime.turnGeneration.get();
+        runtime.workflowSpeak.set(true);
+        runtime.workflowStreamingReply.set(true);
+        runtime.workflowStreamTurnId = "workflow-" + runtime.workflowStreamSequence.incrementAndGet();
+        runtime.segmenter = new SentenceSegmenter();
+        synchronized (runtime.pendingSpeakSegments) {
+            runtime.pendingSpeakSegments.clear();
+        }
+        runtime.speakSegmentSeq.set(0);
+        runtime.llmStreaming.set(true);
+        updateState(runtime, "THINKING", null);
+
+        AiChatRequest request = new AiChatRequest();
+        request.setConversationId(runtime.entity.getConversationId());
+        request.setMessage(prompt);
+        StringBuilder fullAnswer = new StringBuilder();
+        AtomicReference<Long> conversationId = new AtomicReference<>(runtime.entity.getConversationId());
+        AtomicReference<String> sourceType = new AtomicReference<>("MODEL");
+        AtomicReference<Map<String, Object>> retrieval = new AtomicReference<>(Map.of());
+        AtomicReference<String> failure = new AtomicReference<>();
+        AtomicLong firstDeltaNanos = new AtomicLong();
+        AtomicLong firstSpeakReadyNanos = new AtomicLong();
+        long startedNanos = System.nanoTime();
+
+        BiConsumer<String, Object> consumer = (event, data) -> {
+            if (runtime.closed.get() || generation != runtime.turnGeneration.get() || !(data instanceof Map<?, ?> values)) {
+                return;
+            }
+            switch (event) {
+                case "conversation" -> {
+                    if (values.get("conversationId") != null) {
+                        conversationId.set(Long.valueOf(String.valueOf(values.get("conversationId"))));
+                    }
+                }
+                case "retrieval" -> {
+                    Map<String, Object> summary = new LinkedHashMap<>();
+                    values.forEach((key, value) -> summary.put(String.valueOf(key), value));
+                    retrieval.set(summary);
+                }
+                case "delta" -> {
+                    Object content = values.get("content");
+                    if (content == null) return;
+                    String piece = String.valueOf(content);
+                    firstDeltaNanos.compareAndSet(0L, System.nanoTime());
+                    fullAnswer.append(piece);
+                    List<String> sentences = runtime.segmenter.append(piece);
+                    if (!sentences.isEmpty() && firstSpeakReadyNanos.compareAndSet(0L, System.nanoTime())) {
+                        log.info("AI 工作流首个可播句已生成，sessionId={}，businessCallId={}，firstDeltaMs={}，firstSpeakReadyMs={}，segmentLength={}",
+                            runtime.entity.getId(), runtime.businessCallId,
+                            (firstDeltaNanos.get() - startedNanos) / 1_000_000L,
+                            (firstSpeakReadyNanos.get() - startedNanos) / 1_000_000L,
+                            sentences.get(0).length());
+                    }
+                    for (String sentence : sentences) {
+                        enqueueSpeak(runtime, sentence, generation);
+                        appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_AI, SOURCE_AI_GENERATED,
+                            sentence, LocalDateTime.now(), runtime.agentId);
+                    }
+                }
+                case "completed" -> {
+                    if (values.get("sourceType") != null) {
+                        sourceType.set(String.valueOf(values.get("sourceType")));
+                    }
+                }
+                case "error" -> failure.set(String.valueOf(values.get("message")));
+                default -> {
+                }
+            }
+        };
+
+        try {
+            if ("MODEL_REPLY".equals(action.getTarget())) {
+                agentService.streamChatModel(runtime.agentId, 0L, request, consumer);
+            } else {
+                agentService.streamChat(runtime.agentId, 0L, request, consumer);
+            }
+            if (runtime.closed.get() || generation != runtime.turnGeneration.get()) {
+                return;
+            }
+            if (StringUtils.isNotBlank(failure.get())) {
+                throw new ServiceException(failure.get());
+            }
+            String tail = runtime.segmenter.drain();
+            if (StringUtils.isNotBlank(tail)) {
+                enqueueSpeak(runtime, tail, generation);
+                appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_AI, SOURCE_AI_GENERATED,
+                    tail, LocalDateTime.now(), runtime.agentId);
+            }
+            if (fullAnswer.isEmpty()) {
+                throw new ServiceException("AI 助手未返回可播报内容");
+            }
+            AiChatTurnResult turn = new AiChatTurnResult(conversationId.get(), fullAnswer.toString(),
+                sourceType.get(), retrieval.get());
+            workflowRuntimeService.voiceStreamCompleted(action.getExecutionId(), turn);
+            runtime.entity.setConversationId(conversationId.get());
+            sessionMapper.updateById(runtime.entity);
+            runtime.lastAssistantText = fullAnswer.toString();
+            runtime.llmStreaming.set(false);
+            prewarmPendingSegments(runtime);
+            log.info("AI 工作流流式回答生成完成，sessionId={}，businessCallId={}，sourceType={}，answerLength={}，firstDeltaMs={}，firstSpeakReadyMs={}，totalMs={}",
+                runtime.entity.getId(), runtime.businessCallId, sourceType.get(), fullAnswer.length(),
+                firstDeltaNanos.get() == 0L ? null : (firstDeltaNanos.get() - startedNanos) / 1_000_000L,
+                firstSpeakReadyNanos.get() == 0L ? null : (firstSpeakReadyNanos.get() - startedNanos) / 1_000_000L,
+                elapsedMillis(startedNanos));
+            completeWorkflowStreamIfIdle(runtime);
+        } catch (Exception exception) {
+            runtime.llmStreaming.set(false);
+            runtime.workflowStreamingReply.set(false);
+            runtime.workflowSpeak.set(false);
+            fail(runtime, "AI 语音工作流流式回答失败：" + exception.getMessage(), exception);
+        }
+    }
+
+    private void completeWorkflowStreamIfIdle(RuntimeSession runtime) {
+        boolean pending;
+        synchronized (runtime.pendingSpeakSegments) {
+            pending = !runtime.pendingSpeakSegments.isEmpty();
+        }
+        if (pending || runtime.activeSpeak.get() != null || runtime.waitingSpeakComplete.get()) {
+            return;
+        }
+        if (runtime.workflowSpeak.compareAndSet(true, false)) {
+            runtime.workflowStreamingReply.set(false);
+            handleWorkflowAction(runtime, workflowRuntimeService.voiceTtsCompleted(runtime.workflowExecutionId));
+        }
+    }
+
     private void continueWithDefaultConversation(RuntimeSession runtime) {
         AiConversationStartResponse start = agentService.startRealtimeConversation(runtime.agentId);
         runtime.entity.setConversationId(Long.valueOf(String.valueOf(start.getConversation().getId())));
         sessionMapper.updateById(runtime.entity);
         runtime.workflowActive.set(false);
         runtime.workflowSpeak.set(false);
+        runtime.workflowStreamingReply.set(false);
         markListening(runtime);
         tryRecognize(runtime);
         log.info("AI 语音工作流正常结束，已交回默认 AI 对话，sessionId={}，businessCallId={}，executionId={}",
@@ -2210,6 +2351,8 @@ public class AiRealtimeMrcpEventService {
         final AtomicBoolean llmStreaming = new AtomicBoolean();
         final AtomicBoolean workflowActive = new AtomicBoolean();
         final AtomicBoolean workflowSpeak = new AtomicBoolean();
+        final AtomicBoolean workflowStreamingReply = new AtomicBoolean();
+        final AtomicInteger workflowStreamSequence = new AtomicInteger();
         final AtomicReference<ScheduledFuture<?>> pendingSpeakTimer = new AtomicReference<>();
         final AtomicReference<ScheduledFuture<?>> channelProbe = new AtomicReference<>();
         final AtomicReference<ScheduledFuture<?>> pendingActionTimer = new AtomicReference<>();
@@ -2219,6 +2362,7 @@ public class AiRealtimeMrcpEventService {
         private volatile String lastRecognition;
         private volatile String lastAssistantText;
         private volatile String workflowExecutionId;
+        private volatile String workflowStreamTurnId;
         private volatile LocalDateTime lastActivityAt;
 
         private RuntimeSession(String tenantId, Long nodeId, Long agentId, String businessCallId,

@@ -78,10 +78,15 @@ public class OpenApiAgentController {
     public OpenApiAgentResponse changeStatus(@PathVariable Long agentId,
                                               @Valid @RequestBody OpenApiAgentStatusRequest request) {
         OpenApiContext.requireScope("agent.status.write");
-        if (request.status() != AgentPresenceStatus.IDLE && request.status() != AgentPresenceStatus.BUSY) {
-            throw new ServiceException("OpenAPI 仅允许将坐席设置为 IDLE 或 BUSY");
+        if (request.status() != AgentPresenceStatus.IDLE
+            && request.status() != AgentPresenceStatus.NOT_READY
+            && request.status() != AgentPresenceStatus.BUSY) {
+            throw new ServiceException("OpenAPI 仅允许将坐席设置为 IDLE 或 NOT_READY");
         }
-        CurrentAgentResponse session = sessionService.changeStatus(agentId, request.status());
+        // 兼容旧调用方的 BUSY 入参；人工示忙统一落为 NOT_READY，BUSY 只由通话事件维护。
+        AgentPresenceStatus status = request.status() == AgentPresenceStatus.BUSY
+            ? AgentPresenceStatus.NOT_READY : request.status();
+        CurrentAgentResponse session = sessionService.changeStatus(agentId, status);
         return OpenApiAgentResponse.from(agentService.get(agentId), session);
     }
 

@@ -3,6 +3,7 @@ package org.dromara.ai.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.dromara.ai.domain.*;
 import org.dromara.ai.mapper.*;
 import org.dromara.ai.provider.*;
@@ -28,6 +29,7 @@ import java.util.*;
 
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class AiTicketDraftGenerator {
     private final AiTicketPolicyMapper policyMapper;
     private final AiTicketPromptVersionMapper promptMapper;
@@ -66,7 +68,9 @@ public class AiTicketDraftGenerator {
         String promptContent = promptVersion == null ? AiTicketPromptProtocol.DEFAULT_PROMPT : promptVersion.getPromptContent();
         String conversation = conversation(transcript);
         IntentInfo intent = intent(task.getBusinessCallId());
-        enforceIntentPolicy(policy, intent);
+        if (!"MANUAL_TICKET".equals(task.getTriggerType())) {
+            enforceIntentPolicy(policy, intent);
+        }
         Map<String, Object> defaults = readMap(policy.getDefaultValuesJson());
         String compiled = promptProtocol.compile(promptContent, Map.of(
             "agentName", StringUtils.blankToDefault(agent.getAgentName(), "AI助手"),
@@ -78,7 +82,9 @@ public class AiTicketDraftGenerator {
             "callContext", callContext(source, task)
         ));
         AiTicketModelOutput output = invoke(agent, compiled);
-        if (!output.shouldCreate()) throw new SkipGenerationException("模型判断本次通话无需创建工单");
+        if (!output.shouldCreate() && !"MANUAL_TICKET".equals(task.getTriggerType())) {
+            throw new SkipGenerationException("模型判断本次通话无需创建工单");
+        }
         ValidatedOutput validated = validateOutput(output, template, defaults);
         if (!validated.missingFields().isEmpty() && "REJECT_DRAFT".equals(policy.getMissingRequiredAction())
             && !"AUTO_CREATE".equals(policy.getCreationMode())) {
@@ -240,6 +246,23 @@ public class AiTicketDraftGenerator {
             List.of(new ChatMessage("system", prompt), new ChatMessage("user", "请生成本次通话的待审核工单草稿。")),
             agent.getTemperature(), agent.getMaxOutputTokens()));
         return parse(result.content());
+    }
+
+    public String summarizeCustomer(Long aiAgentId, String conversation) {
+        AiAgent agent = require(agentMapper.selectById(aiAgentId), "AI 助手不存在");
+        AiModel model = require(modelMapper.selectById(agent.getChatModelId()), "AI 助手未配置聊天模型");
+        if (!Boolean.TRUE.equals(model.getEnabled()) || !"CHAT".equals(model.getCapability())) {
+            throw new ServiceException("AI 助手聊天模型不可用");
+        }
+        AiModelProvider provider = require(providerMapper.selectById(model.getProviderId()), "AI 模型服务商不存在");
+        ChatResult result = chatRegistry.get(provider.getProviderType()).chat(new ChatRequest(provider, model,
+            List.of(
+                new ChatMessage("system", "请将人工坐席与客户的通话整理成简洁、客观的客户资料摘要。保留客户诉求、关键事实、明确意向和后续事项；不要编造，不要使用 Markdown，只输出摘要正文。"),
+                new ChatMessage("user", conversation)
+            ), agent.getTemperature(), agent.getMaxOutputTokens()));
+        String summary = result == null ? null : result.content();
+        if (StringUtils.isBlank(summary)) throw new ServiceException("AI 未生成可用的客户总结");
+        return limit(summary.trim(), 4000);
     }
 
     private AiTicketModelOutput parse(String content) {

@@ -42,6 +42,10 @@ public class AiReplyNodeHandler implements AiWorkflowNodeHandler {
             throw new ServiceException("AI 回答节点没有可提交的查询内容");
         }
 
+        if (StringUtils.startsWith(context.channelType(), "VOICE_")) {
+            return new AiWorkflowNodeResult("STREAM_AI", null, prompt, nodeType, Map.of());
+        }
+
         Long conversationId = longValue(context.variables().get("ai.conversationId"));
         AiChatTurnResult turn = "MODEL_REPLY".equals(nodeType)
             ? agentService.chatOnceModel(context.aiAgentId(), conversationId, prompt)

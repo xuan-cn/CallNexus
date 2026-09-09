@@ -10,4 +10,6 @@ public interface DynamicFormSubmissionService {
     Map<String, Object> getFormData(FormBusinessType businessType, Long businessId);
 
     Long getLatestTemplateId(FormBusinessType businessType, Long businessId);
+
+    void delete(FormBusinessType businessType, Long businessId);
 }

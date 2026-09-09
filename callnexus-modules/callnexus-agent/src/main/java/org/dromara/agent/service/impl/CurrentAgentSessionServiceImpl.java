@@ -7,6 +7,7 @@ import org.dromara.agent.domain.AgentActiveCall;
 import org.dromara.agent.domain.Agent;
 import org.dromara.agent.domain.AgentExtension;
 import org.dromara.agent.domain.AgentPresence;
+import org.dromara.agent.domain.AgentPresenceChangeSource;
 import org.dromara.agent.domain.AgentPresenceStatus;
 import org.dromara.agent.domain.CallQueue;
 import org.dromara.agent.domain.SkillGroupMember;
@@ -21,6 +22,7 @@ import org.dromara.agent.service.CallQueueRuntimeSyncService;
 import org.dromara.agent.service.CurrentAgentSessionService;
 import org.dromara.agent.service.HandlingQueueResolver;
 import org.dromara.agent.service.AgentSessionApplicationService;
+import org.dromara.agent.service.AgentPresenceLogService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
@@ -51,6 +53,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     private final SipAccountQueryService sipAccountQueryService;
     private final CallQueueRuntimeSyncService queueRuntimeSyncService;
     private final HandlingQueueResolver handlingQueueResolver;
+    private final AgentPresenceLogService presenceLogService;
 
     @Override
     public CurrentAgentResponse current() {
@@ -61,7 +64,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
             response.setStatus(AgentPresenceStatus.OFFLINE);
             return response;
         }
-        return buildResponse(agent, normalizeAfterCallStatus(agent, getPresence(agent.getId())));
+        return buildResponse(agent, refreshPresence(agent, getPresence(agent.getId())));
     }
 
     @Override
@@ -94,7 +97,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     @Override
     public CurrentAgentResponse get(Long agentId) {
         Agent agent = requireAgent(agentId);
-        return buildResponse(agent, normalizeAfterCallStatus(agent, getPresence(agent.getId())));
+        return buildResponse(agent, refreshPresence(agent, getPresence(agent.getId())));
     }
 
     @Override
@@ -111,17 +114,25 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
         presence.setSignedInAt(now);
         presence.setUpdatedAt(now);
         savePresence(agent.getId(), presence);
+        recordPresence(agent.getId(), AgentPresenceStatus.IDLE, AgentPresenceChangeSource.SIGN_IN, null, now);
         syncQueueStatus(agent, AgentPresenceStatus.IDLE);
         return buildResponse(agent, presence);
     }
 
     @Override
     public CurrentAgentResponse changeStatus(AgentPresenceStatus status) {
-        return changeStatus(requireCurrentAgent().getId(), status);
+        if (status == AgentPresenceStatus.BUSY) {
+            throw new ServiceException("通话中状态由系统自动维护，人工示忙请使用 NOT_READY");
+        }
+        return changeStatus(requireCurrentAgent().getId(), status, AgentPresenceChangeSource.MANUAL);
     }
 
     @Override
     public CurrentAgentResponse changeStatus(Long agentId, AgentPresenceStatus status) {
+        return changeStatus(agentId, status, AgentPresenceChangeSource.API);
+    }
+
+    private CurrentAgentResponse changeStatus(Long agentId, AgentPresenceStatus status, AgentPresenceChangeSource source) {
         if (status == null) {
             throw new ServiceException("坐席状态不能为空");
         }
@@ -133,9 +144,11 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
         if (presence == null) {
             throw new ServiceException("坐席未签入，请先签入");
         }
+        LocalDateTime now = LocalDateTime.now();
         presence.setStatus(status);
-        presence.setUpdatedAt(LocalDateTime.now());
+        presence.setUpdatedAt(now);
         savePresence(agent.getId(), presence);
+        recordPresence(agent.getId(), status, source, presence.getHandlingCallId(), now);
         syncQueueStatus(agent, status);
         return buildResponse(agent, presence);
     }
@@ -148,6 +161,7 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     @Override
     public void signOut(Long agentId) {
         Agent agent = requireAgent(agentId);
+        recordPresence(agent.getId(), AgentPresenceStatus.OFFLINE, AgentPresenceChangeSource.SIGN_OUT, null, LocalDateTime.now());
         syncQueueStatus(agent, AgentPresenceStatus.OFFLINE);
         RedisUtils.deleteObject(presenceKey(agent.getId()));
     }
@@ -252,9 +266,11 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
     private AgentPresence normalizeAfterCallStatus(Agent agent, AgentPresence presence) {
         if (presence == null || presence.getStatus() != AgentPresenceStatus.AFTER_CALL) return presence;
         if (afterCallRemainingSeconds(agent, presence) > 0) return presence;
+        LocalDateTime now = LocalDateTime.now();
         presence.setStatus(AgentPresenceStatus.IDLE);
-        presence.setUpdatedAt(LocalDateTime.now());
+        presence.setUpdatedAt(now);
         savePresence(agent.getId(), presence);
+        recordPresence(agent.getId(), AgentPresenceStatus.IDLE, AgentPresenceChangeSource.SYSTEM_AUTO, presence.getHandlingCallId(), now);
         syncQueueStatus(agent, AgentPresenceStatus.IDLE);
         log.info("坐席话后整理计时结束，已自动恢复示闲，agentId={}", agent.getId());
         return presence;
@@ -334,6 +350,30 @@ public class CurrentAgentSessionServiceImpl implements CurrentAgentSessionServic
         } catch (Exception exception) {
             log.warn("同步 FreeSWITCH 队列坐席状态失败，不影响坐席本地状态，agentId={}，status={}，error={}",
                 agent.getId(), status, exception.getMessage());
+        }
+    }
+
+    private AgentPresence refreshPresence(Agent agent, AgentPresence presence) {
+        if (presence == null) {
+            recordPresence(agent.getId(), AgentPresenceStatus.OFFLINE,
+                AgentPresenceChangeSource.SYSTEM_AUTO, null, LocalDateTime.now());
+            return null;
+        }
+        AgentPresence normalized = normalizeAfterCallStatus(agent, presence);
+        savePresence(agent.getId(), normalized);
+        return normalized;
+    }
+
+    private void recordPresence(Long agentId,
+                                AgentPresenceStatus status,
+                                AgentPresenceChangeSource source,
+                                String businessCallId,
+                                LocalDateTime occurredAt) {
+        try {
+            presenceLogService.recordTransition(LoginHelper.getTenantId(), agentId, status, source, businessCallId, occurredAt);
+        } catch (Exception exception) {
+            log.warn("记录坐席状态轨迹失败，不影响坐席状态切换，agentId={}，status={}，source={}，error={}",
+                agentId, status, source, exception.getMessage());
         }
     }
 }

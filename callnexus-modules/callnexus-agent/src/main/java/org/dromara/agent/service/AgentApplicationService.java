@@ -12,6 +12,7 @@ public interface AgentApplicationService {
     AgentResponse get(Long id);
     Long create(CreateAgentRequest request);
     void update(Long id, UpdateAgentRequest request);
+    void updateEnabled(Long id, UpdateAgentEnabledRequest request);
     void delete(Long id);
     void bindExtension(Long agentId, BindAgentExtensionRequest request);
     void unbindExtension(Long agentId);

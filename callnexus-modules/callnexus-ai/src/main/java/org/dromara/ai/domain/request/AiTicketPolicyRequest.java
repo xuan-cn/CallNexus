@@ -4,6 +4,7 @@ import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -28,5 +29,9 @@ public class AiTicketPolicyRequest {
     private String afterCreateAction = "CREATE_ONLY";
     private Long customerTemplateId;
     private Long defaultSkillGroupId;
+    private Boolean customerSummaryEnabled = false;
+    private Long customerSummaryTemplateId;
+    @Size(max = 64)
+    private String customerSummaryFieldCode;
     private Map<String, Object> defaultValues = new LinkedHashMap<>();
 }

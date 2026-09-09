@@ -5,7 +5,9 @@ import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.ai.domain.response.AiAgentAssistDetailResponse;
+import org.dromara.ai.domain.response.AiAgentAssistCustomerSummaryResponse;
 import org.dromara.ai.domain.response.AiTicketDraftResponse;
+import org.dromara.ai.domain.request.AiAgentAssistCustomerSummaryRequest;
 import org.dromara.ai.domain.request.AiTicketDraftUpdateRequest;
 import org.dromara.ai.service.AiAgentAssistService;
 import org.dromara.ai.service.AiAgentAssistStreamService;
@@ -49,6 +51,20 @@ public class AiAgentAssistController {
     public R<Void> regenerate(@PathVariable String businessCallId, @PathVariable Long suggestionId) {
         service.regenerate(businessCallId, suggestionId);
         return R.ok();
+    }
+
+    @PostMapping("/ticket-drafts/generate")
+    @SaCheckPermission("callcenter:customer:query")
+    public R<AiTicketDraftResponse> generateTicketDraft(@PathVariable String businessCallId) {
+        return R.ok(service.generateTicketDraft(businessCallId));
+    }
+
+    @PostMapping("/customer-summary")
+    @SaCheckPermission("callcenter:customer:query")
+    public R<AiAgentAssistCustomerSummaryResponse> summarizeCustomer(
+        @PathVariable String businessCallId,
+        @Valid @RequestBody AiAgentAssistCustomerSummaryRequest request) {
+        return R.ok(service.summarizeCustomer(businessCallId, request));
     }
 
     @PostMapping("/ticket-drafts/{draftId}/approve")
