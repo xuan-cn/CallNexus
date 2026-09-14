@@ -13,6 +13,7 @@ import org.dromara.customer.form.domain.FormBusinessType;
 import org.dromara.customer.form.domain.FormTemplate;
 import org.dromara.customer.form.mapper.FormTemplateMapper;
 import org.dromara.customer.form.service.DynamicFormSubmissionService;
+import org.dromara.customer.form.service.DynamicFormQueryService;
 import org.dromara.customer.ticket.domain.Ticket;
 import org.dromara.customer.ticket.domain.TicketStatus;
 import org.dromara.customer.ticket.domain.request.CreateTicketRequest;
@@ -32,6 +33,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -41,17 +43,33 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
     private final TicketMapper ticketMapper;
     private final FormTemplateMapper formTemplateMapper;
     private final DynamicFormSubmissionService formSubmissionService;
+    private final DynamicFormQueryService formQueryService;
     private final CallBusinessAssociationService callBusinessAssociationService;
     private final ObjectProvider<WorkflowService> workflowServiceProvider;
 
     @Override
     public TableDataInfo<TicketResponse> page(TicketPageQuery query, PageQuery pageQuery) {
-        Page<Ticket> page = ticketMapper.selectPage(pageQuery.build(), new LambdaQueryWrapper<Ticket>()
-            .like(query.getTicketNo() != null && !query.getTicketNo().isBlank(), Ticket::getTicketNo, query.getTicketNo())
-            .like(query.getCallerNumber() != null && !query.getCallerNumber().isBlank(), Ticket::getCallerNumber, query.getCallerNumber())
-            .eq(query.getTicketStatus() != null, Ticket::getTicketStatus, query.getTicketStatus())
-            .orderByDesc(Ticket::getCreateTime));
-        return new TableDataInfo<>(page.getRecords().stream().map(this::toResponse).toList(), page.getTotal());
+        TicketPageQuery safeQuery = query == null ? new TicketPageQuery() : query;
+        LambdaQueryWrapper<Ticket> wrapper = new LambdaQueryWrapper<Ticket>()
+            .like(safeQuery.getTicketNo() != null && !safeQuery.getTicketNo().isBlank(), Ticket::getTicketNo, safeQuery.getTicketNo())
+            .like(safeQuery.getCallerNumber() != null && !safeQuery.getCallerNumber().isBlank(), Ticket::getCallerNumber, safeQuery.getCallerNumber())
+            .eq(safeQuery.getTicketStatus() != null, Ticket::getTicketStatus, safeQuery.getTicketStatus())
+            .eq(safeQuery.getTemplateId() != null, Ticket::getTemplateId, safeQuery.getTemplateId())
+            .orderByDesc(Ticket::getCreateTime);
+        DynamicFormQueryService.QueryCondition dynamicCondition = formQueryService.build(
+            FormBusinessType.TICKET, safeQuery.getTemplateId(), safeQuery.getDynamicFilters(), "cc_ticket");
+        if (!dynamicCondition.isEmpty()) {
+            wrapper.apply(dynamicCondition.sql(), dynamicCondition.parameters());
+        }
+        Page<Ticket> page = ticketMapper.selectPage(pageQuery.build(), wrapper);
+        List<Long> ticketIds = page.getRecords().stream().map(Ticket::getId).toList();
+        Map<Long, Map<String, Object>> formDataByTicket = formSubmissionService.getFormData(FormBusinessType.TICKET, ticketIds);
+        List<TicketResponse> responses = page.getRecords().stream().map(ticket -> {
+            TicketResponse response = toResponse(ticket);
+            response.setFormData(formDataByTicket.getOrDefault(ticket.getId(), Map.of()));
+            return response;
+        }).toList();
+        return new TableDataInfo<>(responses, page.getTotal());
     }
 
     @Override

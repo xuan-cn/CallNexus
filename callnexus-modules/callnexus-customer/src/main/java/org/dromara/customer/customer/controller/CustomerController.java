@@ -17,6 +17,7 @@ import org.dromara.customer.customer.domain.request.CustomerPhoneRequest;
 import org.dromara.customer.customer.domain.response.CustomerResponse;
 import org.dromara.customer.customer.domain.response.CustomerFollowUpResponse;
 import org.dromara.customer.customer.domain.response.CustomerPhoneResponse;
+import org.dromara.customer.form.service.BusinessDataExportService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.dromara.customer.customer.service.CustomerApplicationService;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -34,11 +35,27 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/customers")
 @RequiredArgsConstructor
 public class CustomerController {
+    private static final int MAX_EXPORT_ROWS = 5000;
     private final CustomerApplicationService applicationService;
+    private final BusinessDataExportService exportService;
 
     @GetMapping
     public TableDataInfo<CustomerResponse> page(CustomerPageQuery query, PageQuery pageQuery) {
         return applicationService.page(query, pageQuery);
+    }
+
+    @PostMapping("/search")
+    public TableDataInfo<CustomerResponse> search(@RequestBody CustomerPageQuery query) {
+        return applicationService.page(query, new PageQuery(normalizePageSize(query.getPageSize()), normalizePageNum(query.getPageNum())));
+    }
+
+    @PostMapping("/export")
+    public void export(@RequestBody CustomerPageQuery query, jakarta.servlet.http.HttpServletResponse response) {
+        TableDataInfo<CustomerResponse> data = applicationService.page(query, new PageQuery(MAX_EXPORT_ROWS, 1));
+        if (data.getTotal() > MAX_EXPORT_ROWS) {
+            throw new org.dromara.common.core.exception.ServiceException("单次最多导出 " + MAX_EXPORT_ROWS + " 条客户资料，请缩小查询范围");
+        }
+        exportService.exportCustomers(data.getRows(), query.getTemplateId(), response);
     }
 
     @GetMapping("/{id}")
@@ -75,6 +92,14 @@ public class CustomerController {
     public R<Void> delete(@PathVariable Long id) {
         applicationService.delete(id);
         return R.ok();
+    }
+
+    private int normalizePageNum(Integer pageNum) {
+        return pageNum == null || pageNum < 1 ? 1 : pageNum;
+    }
+
+    private int normalizePageSize(Integer pageSize) {
+        return pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 200);
     }
 
     @PostMapping("/{id}/claim-current-agent")

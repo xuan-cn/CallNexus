@@ -37,6 +37,7 @@ import org.dromara.customer.customer.service.CustomerApplicationService;
 import org.dromara.customer.customer.service.CustomerPhoneNormalizer;
 import org.dromara.customer.form.domain.FormBusinessType;
 import org.dromara.customer.form.service.DynamicFormSubmissionService;
+import org.dromara.customer.form.service.DynamicFormQueryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.dromara.common.satoken.utils.LoginHelper;
@@ -67,6 +68,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     private final SkillGroupMemberMapper skillGroupMemberMapper;
     private final CustomerPhoneNormalizer phoneNormalizer;
     private final DynamicFormSubmissionService formSubmissionService;
+    private final DynamicFormQueryService formQueryService;
     private final CallBusinessAssociationService callBusinessAssociationService;
 
     @Override
@@ -86,7 +88,13 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         }
         LambdaQueryWrapper<Customer> wrapper = new LambdaQueryWrapper<Customer>()
             .like(safeQuery.getCustomerName() != null && !safeQuery.getCustomerName().isBlank(), Customer::getCustomerName, safeQuery.getCustomerName())
+            .eq(safeQuery.getTemplateId() != null, Customer::getTemplateId, safeQuery.getTemplateId())
             .orderByDesc(Customer::getCreateTime);
+        DynamicFormQueryService.QueryCondition dynamicCondition = formQueryService.build(
+            FormBusinessType.CUSTOMER, safeQuery.getTemplateId(), safeQuery.getDynamicFilters(), "cc_customer");
+        if (!dynamicCondition.isEmpty()) {
+            wrapper.apply(dynamicCondition.sql(), dynamicCondition.parameters());
+        }
         if (importCustomerIds != null) {
             wrapper.in(Customer::getId, importCustomerIds);
         }
@@ -113,8 +121,13 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         List<Long> customerIds = page.getRecords().stream().map(Customer::getId).toList();
         Map<Long, List<CustomerPhoneResponse>> phonesByCustomer = loadPhones(customerIds);
         Map<Long, CustomerAssignment> assignmentsByCustomer = loadActiveAssignments(customerIds);
+        Map<Long, Map<String, Object>> formDataByCustomer = formSubmissionService.getFormData(FormBusinessType.CUSTOMER, customerIds);
         List<CustomerResponse> responses = page.getRecords().stream()
-            .map(customer -> toResponse(customer, phonesByCustomer.get(customer.getId()), assignmentsByCustomer.get(customer.getId())))
+            .map(customer -> {
+                CustomerResponse response = toResponse(customer, phonesByCustomer.get(customer.getId()), assignmentsByCustomer.get(customer.getId()));
+                response.setFormData(formDataByCustomer.getOrDefault(customer.getId(), Map.of()));
+                return response;
+            })
             .toList();
         applyAgentNames(responses);
         return new TableDataInfo<>(responses, page.getTotal());
@@ -649,10 +662,6 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
             .atZone(ZoneId.systemDefault())
             .toLocalDateTime());
         response.setPhones(phones == null || phones.isEmpty() ? legacyPhone(customer) : phones);
-        Long templateId = customer.getTemplateId();
-        if (templateId != null) {
-            response.setFormData(formSubmissionService.getFormData(FormBusinessType.CUSTOMER, customer.getId()));
-        }
         applyAssignment(response, assignment);
         return response;
     }

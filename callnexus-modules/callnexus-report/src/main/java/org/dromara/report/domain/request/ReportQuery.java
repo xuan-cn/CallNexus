@@ -13,4 +13,7 @@ public class ReportQuery {
     private Long agentId;
     private Long skillGroupId;
     private Long queueId;
+    private Long taskId;
+    private String taskType;
+    private String resultCode;
 }

@@ -141,6 +141,7 @@ public interface AiWorkflowContextMapper {
         WHERE tenant_id = #{tenantId}
             AND template_id = #{templateId}
             AND enabled = 1
+            AND ai_fill_enabled = 1
             AND deleted = 0
         ORDER BY sort_order ASC, id ASC
         """)

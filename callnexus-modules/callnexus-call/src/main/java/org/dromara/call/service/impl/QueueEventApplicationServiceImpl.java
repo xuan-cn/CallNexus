@@ -20,6 +20,7 @@ import org.dromara.call.mapper.CallLegMapper;
 import org.dromara.call.mapper.CallRecordMapper;
 import org.dromara.call.mapper.CallSessionMapper;
 import org.dromara.call.mapper.CallSatisfactionMapper;
+import org.dromara.call.mapper.QueueEntryFactMapper;
 import org.dromara.call.service.QueueEventApplicationService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
@@ -58,6 +59,7 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
     private final CallLegMapper legMapper;
     private final CallSessionMapper sessionMapper;
     private final CallEventMapper eventMapper;
+    private final QueueEntryFactMapper queueEntryFactMapper;
     private final CallSatisfactionMapper satisfactionMapper;
     private final CallCenterResourceQueryService resourceQueryService;
     private final QueueAnswerActionExecutor queueAnswerActionExecutor;
@@ -199,8 +201,16 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         if (eventType == null) {
             return;
         }
+        String metadataJson = JsonUtils.toJsonString(event.headers());
+        if ("QUEUE_IN".equals(eventType)) {
+            CallCenterResourceQueryService.QueueInfo queue = resourceQueryService.findQueueByCode(
+                event.headers().get(EslHeaders.CC_QUEUE), event.nodeId());
+            if (queue != null) {
+                metadataJson = buildQueueEntryMetadata(queue, event.nodeId(), "esl_custom");
+            }
+        }
         appendQueueTimelineEvent(sessionId, callerUuid, event.headers().get(EslHeaders.CC_AGENT),
-            eventType, event.headers().get(EslHeaders.CC_QUEUE), null, JsonUtils.toJsonString(event.headers()));
+            eventType, event.headers().get(EslHeaders.CC_QUEUE), null, metadataJson);
     }
 
     // ==================== ESL CHANNEL_BRIDGE 路径：记录坐席接听 ====================
@@ -274,7 +284,9 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
 
         boolean hasAgentAnswer = eventMapper.exists(new LambdaQueryWrapper<CallEvent>()
             .eq(CallEvent::getSessionId, sessionId)
-            .eq(CallEvent::getEventType, "AGENT_ANSWER"));
+            .eq(CallEvent::getEventType, "AGENT_ANSWER")
+            .ge(entry == null || entry.occurredAt() == null ? false : true,
+                CallEvent::getOccurredAt, entry == null ? null : entry.occurredAt()));
         if (hasAgentAnswer) {
             queueAnswerActionExecutor.executeAfterAgentAnswer(sessionId, customerLeg, stableAgentLeg, queueId, queueName);
             return queueId;
@@ -344,9 +356,12 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
             .eq(CallEvent::getSessionId, sessionId)
             .eq(CallEvent::getEventType, "QUEUE_IN"));
         if (!hasQueueIn) return;
+        QueueEntryInfo latestEntry = readQueueEntryFromTimeline(sessionId);
         boolean hasAgentAnswer = eventMapper.exists(new LambdaQueryWrapper<CallEvent>()
             .eq(CallEvent::getSessionId, sessionId)
-            .eq(CallEvent::getEventType, "AGENT_ANSWER"));
+            .eq(CallEvent::getEventType, "AGENT_ANSWER")
+            .ge(latestEntry != null && latestEntry.occurredAt() != null,
+                CallEvent::getOccurredAt, latestEntry == null ? null : latestEntry.occurredAt()));
         if (hasAgentAnswer) return;
         String eventType = resolveUnansweredQueueTerminationType(sessionId, hangupCause);
         appendQueueTimelineEvent(sessionId, channelUuid, null, eventType, null, hangupCause,
@@ -584,16 +599,14 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
      * 把队列生命周期事件写入 cc_call_event 时间线。
      * 对单次发生事件（QUEUE_IN/AGENT_ANSWER）按 session+eventType 去重，避免重复落库。
      */
-    private void appendQueueTimelineEvent(Long sessionId, String channelUuid, String relatedChannelUuid,
-                                          String eventType, String fromTarget, String toTarget, String metadataJson) {
-        if (isSingleOccurrenceEvent(eventType)) {
-            boolean exists = eventMapper.exists(new LambdaQueryWrapper<CallEvent>()
-                .eq(CallEvent::getSessionId, sessionId)
-                .eq(CallEvent::getEventType, eventType));
-            if (exists) {
-                log.info("队列时间线事件已存在，跳过重复落库，sessionId={}，eventType={}", sessionId, eventType);
-                return;
-            }
+    private CallEvent appendQueueTimelineEvent(Long sessionId, String channelUuid, String relatedChannelUuid,
+                                               String eventType, String fromTarget, String toTarget, String metadataJson) {
+        CallEvent duplicate = findRecentDuplicate(sessionId, channelUuid, eventType);
+        if (duplicate != null) {
+            log.info("队列时间线事件已存在，跳过重复落库，sessionId={}，eventType={}，eventId={}",
+                sessionId, eventType, duplicate.getId());
+            syncQueueEntryFact(duplicate);
+            return duplicate;
         }
         CallEvent timelineEvent = new CallEvent();
         timelineEvent.setSessionId(sessionId);
@@ -605,10 +618,64 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         timelineEvent.setOccurredAt(LocalDateTime.now());
         timelineEvent.setMetadataJson(metadataJson);
         eventMapper.insert(timelineEvent);
+        syncQueueEntryFact(timelineEvent);
+        return timelineEvent;
     }
 
-    private boolean isSingleOccurrenceEvent(String eventType) {
-        return "QUEUE_IN".equals(eventType) || "AGENT_ANSWER".equals(eventType);
+    private CallEvent findRecentDuplicate(Long sessionId, String channelUuid, String eventType) {
+        if (!"QUEUE_IN".equals(eventType) && !"AGENT_ANSWER".equals(eventType)) return null;
+        return eventMapper.selectOne(new LambdaQueryWrapper<CallEvent>()
+            .eq(CallEvent::getSessionId, sessionId)
+            .eq(CallEvent::getEventType, eventType)
+            .eq(StringUtils.isNotBlank(channelUuid), CallEvent::getChannelUuid, channelUuid)
+            .ge(CallEvent::getOccurredAt, LocalDateTime.now().minusSeconds(5))
+            .orderByDesc(CallEvent::getOccurredAt)
+            .last("limit 1"));
+    }
+
+    /** 报表事实写入失败不得影响实时呼叫，时间线仍是最终补算依据。 */
+    private void syncQueueEntryFact(CallEvent event) {
+        if (event == null || event.getId() == null || event.getSessionId() == null) return;
+        try {
+            String tenantId = StringUtils.defaultIfBlank(event.getTenantId(), TenantHelper.getTenantId());
+            Map<String, Object> metadata = StringUtils.isBlank(event.getMetadataJson())
+                ? Map.of() : JsonUtils.parseMap(event.getMetadataJson());
+            switch (event.getEventType()) {
+                case "QUEUE_IN" -> {
+                    Long queueId = longValue(metadata.get("queueId"));
+                    if (queueId == null) return;
+                    queueEntryFactMapper.insertEntry(tenantId, event.getSessionId(), event.getId(), queueId,
+                        stringValue(metadata.get("queueCode")), stringValue(metadata.get("queueName")),
+                        longValue(metadata.get("nodeId")), event.getChannelUuid(), event.getOccurredAt());
+                }
+                case "AGENT_ANSWER" -> queueEntryFactMapper.markAnswered(
+                    tenantId, event.getSessionId(), longValue(metadata.get("queueId")),
+                    longValue(metadata.get("agentId")), stringValue(metadata.get("agentExtension")), event.getOccurredAt());
+                case "ABANDON" -> queueEntryFactMapper.markTerminated(
+                    tenantId, event.getSessionId(), "ABANDONED", event.getOccurredAt());
+                case "QUEUE_TIMEOUT" -> queueEntryFactMapper.markTerminated(
+                    tenantId, event.getSessionId(), "TIMEOUT", event.getOccurredAt());
+                default -> {
+                    // 其他时间线事件不改变队列进入事实。
+                }
+            }
+        } catch (Exception exception) {
+            log.error("同步队列进入事实失败，不影响呼叫流程，sessionId={}，eventId={}，eventType={}",
+                event.getSessionId(), event.getId(), event.getEventType(), exception);
+        }
+    }
+
+    private Long longValue(Object value) {
+        if (value == null || value.toString().isBlank() || "null".equalsIgnoreCase(value.toString())) return null;
+        try {
+            return Long.valueOf(value.toString());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private String stringValue(Object value) {
+        return value == null || "null".equalsIgnoreCase(value.toString()) ? null : value.toString();
     }
 
     // ==================== 辅助方法 ====================
@@ -691,6 +758,16 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
         metadata.put("queueCode", event.queueCode());
         metadata.put("queueName", event.queueName());
         metadata.put("nodeId", event.nodeId());
+        return JsonUtils.toJsonString(metadata);
+    }
+
+    private String buildQueueEntryMetadata(CallCenterResourceQueryService.QueueInfo queue, Long nodeId, String source) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("source", source);
+        metadata.put("queueId", queue.queueId());
+        metadata.put("queueCode", queue.queueCode());
+        metadata.put("queueName", queue.queueName());
+        metadata.put("nodeId", nodeId);
         return JsonUtils.toJsonString(metadata);
     }
 

@@ -46,6 +46,7 @@ public class AiTicketBusinessContextProviderImpl implements AiTicketBusinessCont
         List<FormField> fields = fieldMapper.selectList(new LambdaQueryWrapper<FormField>()
             .eq(FormField::getTemplateId, ticketTemplateId)
             .eq(FormField::getEnabled, true)
+            .eq(FormField::getAiFillEnabled, true)
             .orderByAsc(FormField::getSortOrder));
         List<Long> fieldIds = fields.stream().map(FormField::getId).toList();
         Map<Long, List<String>> options = fieldIds.isEmpty() ? Map.of() : optionMapper.selectList(
@@ -87,6 +88,7 @@ public class AiTicketBusinessContextProviderImpl implements AiTicketBusinessCont
             .eq(FormField::getTemplateId, templateId)
             .eq(FormField::getFieldCode, fieldCode)
             .eq(FormField::getEnabled, true)
+            .eq(FormField::getAiFillEnabled, true)
             .last("LIMIT 1"));
         if (field == null || !Set.of(FormFieldType.INPUT, FormFieldType.TEXTAREA).contains(field.getFieldType())) {
             throw new ServiceException("客户资料回写字段不存在或不是文本字段");

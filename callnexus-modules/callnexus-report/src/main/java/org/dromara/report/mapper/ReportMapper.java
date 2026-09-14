@@ -4,9 +4,14 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.report.domain.response.AgentReportResponse;
+import org.dromara.report.domain.response.AgentPresenceLogResponse;
 import org.dromara.report.domain.response.CallDetailResponse;
 import org.dromara.report.domain.response.CallDistributionResponse;
 import org.dromara.report.domain.response.OverviewKpiResponse;
+import org.dromara.report.domain.response.OutboundAttemptDetailResponse;
+import org.dromara.report.domain.response.OutboundReportSummaryResponse;
+import org.dromara.report.domain.response.OutboundTaskReportResponse;
+import org.dromara.report.domain.response.OutboundTrendPointResponse;
 import org.dromara.report.domain.response.QueueReportResponse;
 import org.dromara.report.domain.response.ReportTrendPointResponse;
 
@@ -183,28 +188,71 @@ public interface ReportMapper {
                                            @Param("keyword") String keyword);
 
     @Select("""
+        SELECT id, previous_status AS previousStatus, status, source,
+               business_call_id AS businessCallId, started_at AS startedAt, ended_at AS endedAt,
+               GREATEST(0, TIMESTAMPDIFF(SECOND, GREATEST(started_at, #{startAt}),
+                   LEAST(COALESCE(ended_at, #{nowAt}), #{endAt}))) AS durationSeconds
+        FROM cc_agent_presence_log
+        WHERE tenant_id = #{tenantId} AND agent_id = #{agentId}
+          AND started_at < #{endAt} AND COALESCE(ended_at, #{nowAt}) > #{startAt}
+        ORDER BY started_at DESC, id DESC
+        """)
+    Page<AgentPresenceLogResponse> selectAgentPresenceLogs(Page<AgentPresenceLogResponse> page,
+                                                            @Param("tenantId") String tenantId,
+                                                            @Param("agentId") Long agentId,
+                                                            @Param("startAt") LocalDateTime startAt,
+                                                            @Param("endAt") LocalDateTime endAt,
+                                                            @Param("nowAt") LocalDateTime nowAt);
+
+    @Select("""
+        SELECT leg.id, leg.business_call_id AS businessCallId, session.direction,
+               CASE WHEN session.direction = 'INBOUND' THEN session.caller_number ELSE session.called_number END AS customerNumber,
+               agent.agent_name AS agentName,
+               (SELECT sip.extension FROM cc_agent_extension extension
+                JOIN cc_sip_account sip ON sip.tenant_id = extension.tenant_id
+                     AND sip.id = extension.sip_account_id AND sip.deleted = 0
+                WHERE extension.tenant_id = leg.tenant_id AND extension.agent_id = leg.agent_id
+                  AND extension.deleted = 0 ORDER BY extension.id ASC LIMIT 1) AS agentExtension,
+               session.handling_queue_name AS queueName, leg.leg_state AS callStatus,
+               COALESCE(leg.ringing_at, leg.answered_at, leg.create_time) AS startedAt,
+               leg.answered_at AS answeredAt, leg.ended_at AS endedAt,
+               CASE WHEN leg.answered_at IS NULL OR leg.ringing_at IS NULL THEN 0
+                    ELSE GREATEST(0, TIMESTAMPDIFF(SECOND, leg.ringing_at, leg.answered_at)) END AS waitSeconds,
+               CASE WHEN leg.answered_at IS NULL THEN 0
+                    ELSE GREATEST(0, TIMESTAMPDIFF(SECOND, leg.answered_at, COALESCE(leg.ended_at, #{nowAt}))) END AS talkSeconds,
+               leg.hangup_cause AS hangupCause
+        FROM cc_call_leg leg
+        LEFT JOIN cc_call_session session ON session.tenant_id = leg.tenant_id AND session.id = leg.session_id
+        LEFT JOIN cc_agent agent ON agent.tenant_id = leg.tenant_id AND agent.id = leg.agent_id AND agent.deleted = 0
+        WHERE leg.tenant_id = #{tenantId} AND leg.agent_id = #{agentId}
+          AND COALESCE(leg.ringing_at, leg.answered_at, leg.create_time) >= #{startAt}
+          AND COALESCE(leg.ringing_at, leg.answered_at, leg.create_time) < #{endAt}
+        ORDER BY COALESCE(leg.ringing_at, leg.answered_at, leg.create_time) DESC, leg.id DESC
+        """)
+    Page<CallDetailResponse> selectAgentCalls(Page<CallDetailResponse> page,
+                                               @Param("tenantId") String tenantId,
+                                               @Param("agentId") Long agentId,
+                                               @Param("startAt") LocalDateTime startAt,
+                                               @Param("endAt") LocalDateTime endAt,
+                                               @Param("nowAt") LocalDateTime nowAt);
+
+    @Select("""
         <script>
         SELECT q.id AS queueId, q.queue_code AS queueCode, q.queue_name AS queueName, sg.group_name AS skillGroupName,
-               COUNT(DISTINCT qin.id) AS enteredCount,
-               COUNT(DISTINCT CASE WHEN answer.id IS NOT NULL THEN qin.id END) AS answeredCount,
-               COUNT(DISTINCT CASE WHEN abandon.id IS NOT NULL THEN qin.id END) AS abandonedCount,
-               COUNT(DISTINCT CASE WHEN timeout_event.id IS NOT NULL THEN qin.id END) AS timeoutCount,
-               COALESCE(ROUND(COUNT(DISTINCT CASE WHEN answer.id IS NOT NULL THEN qin.id END) * 100.0 / NULLIF(COUNT(DISTINCT qin.id), 0), 2), 0) AS answerRate,
-               COALESCE(ROUND(COUNT(DISTINCT CASE WHEN abandon.id IS NOT NULL THEN qin.id END) * 100.0 / NULLIF(COUNT(DISTINCT qin.id), 0), 2), 0) AS abandonRate,
-               COALESCE(ROUND(AVG(CASE WHEN answer.id IS NOT NULL THEN GREATEST(0, TIMESTAMPDIFF(SECOND, qin.occurred_at, answer.occurred_at)) END)), 0) AS averageWaitSeconds,
-               COALESCE(MAX(CASE WHEN answer.id IS NOT NULL THEN GREATEST(0, TIMESTAMPDIFF(SECOND, qin.occurred_at, answer.occurred_at)) END), 0) AS maximumWaitSeconds,
-               COALESCE(ROUND(COUNT(DISTINCT CASE WHEN answer.id IS NOT NULL AND TIMESTAMPDIFF(SECOND, qin.occurred_at, answer.occurred_at) &lt;= 20 THEN qin.id END) * 100.0 / NULLIF(COUNT(DISTINCT qin.id), 0), 2), 0) AS serviceLevel
+               COUNT(fact.id) AS enteredCount,
+               COALESCE(SUM(fact.outcome = 'ANSWERED'), 0) AS answeredCount,
+               COALESCE(SUM(fact.outcome = 'ABANDONED'), 0) AS abandonedCount,
+               COALESCE(SUM(fact.outcome = 'TIMEOUT'), 0) AS timeoutCount,
+               COALESCE(ROUND(SUM(fact.outcome = 'ANSWERED') * 100.0 / NULLIF(COUNT(fact.id), 0), 2), 0) AS answerRate,
+               COALESCE(ROUND(SUM(fact.outcome = 'ABANDONED') * 100.0 / NULLIF(COUNT(fact.id), 0), 2), 0) AS abandonRate,
+               COALESCE(ROUND(AVG(CASE WHEN fact.outcome = 'ANSWERED' THEN fact.wait_seconds END)), 0) AS averageWaitSeconds,
+               COALESCE(MAX(CASE WHEN fact.outcome = 'ANSWERED' THEN fact.wait_seconds END), 0) AS maximumWaitSeconds,
+               COALESCE(ROUND(SUM(fact.outcome = 'ANSWERED' AND fact.wait_seconds &lt;= 20) * 100.0
+                    / NULLIF(COUNT(fact.id), 0), 2), 0) AS serviceLevel
         FROM cc_call_queue q
         LEFT JOIN cc_skill_group sg ON sg.tenant_id = q.tenant_id AND sg.id = q.skill_group_id AND sg.deleted = 0
-        LEFT JOIN cc_call_event qin ON qin.tenant_id = q.tenant_id AND qin.event_type = 'QUEUE_IN'
-             AND CAST(JSON_UNQUOTE(JSON_EXTRACT(qin.metadata_json, '$.queueId')) AS UNSIGNED) = q.id
-             AND qin.occurred_at &gt;= #{startAt} AND qin.occurred_at &lt; #{endAt}
-        LEFT JOIN cc_call_event answer ON answer.tenant_id = qin.tenant_id AND answer.session_id = qin.session_id
-             AND answer.event_type = 'AGENT_ANSWER' AND answer.occurred_at &gt;= qin.occurred_at
-        LEFT JOIN cc_call_event abandon ON abandon.tenant_id = qin.tenant_id AND abandon.session_id = qin.session_id
-             AND abandon.event_type = 'ABANDON' AND abandon.occurred_at &gt;= qin.occurred_at
-        LEFT JOIN cc_call_event timeout_event ON timeout_event.tenant_id = qin.tenant_id AND timeout_event.session_id = qin.session_id
-             AND timeout_event.event_type = 'QUEUE_TIMEOUT' AND timeout_event.occurred_at &gt;= qin.occurred_at
+        LEFT JOIN cc_queue_entry_fact fact ON fact.tenant_id = q.tenant_id AND fact.queue_id = q.id
+             AND fact.entered_at &gt;= #{startAt} AND fact.entered_at &lt; #{endAt}
         WHERE q.tenant_id = #{tenantId} AND q.deleted = 0
         <if test="queueId != null">AND q.id = #{queueId}</if>
         <if test="skillGroupId != null">AND q.skill_group_id = #{skillGroupId}</if>
@@ -219,4 +267,215 @@ public interface ReportMapper {
                                            @Param("queueId") Long queueId,
                                            @Param("skillGroupId") Long skillGroupId,
                                            @Param("keyword") String keyword);
+
+    @Select("""
+        <script>
+        SELECT COUNT(DISTINCT member.id)
+        FROM cc_outbound_member member
+        JOIN cc_outbound_task task ON task.tenant_id = member.tenant_id AND task.id = member.task_id AND task.deleted = 0
+        WHERE member.tenant_id = #{tenantId} AND member.deleted = 0
+        <if test="taskId != null">AND task.id = #{taskId}</if>
+        <if test="taskType != null and taskType != ''">AND task.task_type = #{taskType}</if>
+        <if test="keyword != null and keyword != ''">
+          AND (task.task_name LIKE CONCAT('%', #{keyword}, '%') OR task.task_code LIKE CONCAT('%', #{keyword}, '%')
+               OR member.customer_name LIKE CONCAT('%', #{keyword}, '%') OR member.phone_number LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        </script>
+        """)
+    Long selectOutboundMemberCount(@Param("tenantId") String tenantId,
+                                   @Param("taskId") Long taskId,
+                                   @Param("taskType") String taskType,
+                                   @Param("keyword") String keyword);
+
+    @Select("""
+        <script>
+        SELECT COUNT(DISTINCT member.id)
+        FROM cc_outbound_member member
+        JOIN cc_outbound_task task ON task.tenant_id = member.tenant_id AND task.id = member.task_id AND task.deleted = 0
+        WHERE member.tenant_id = #{tenantId} AND member.deleted = 0 AND COALESCE(member.attempt_count, 0) = 0
+        <if test="taskId != null">AND task.id = #{taskId}</if>
+        <if test="taskType != null and taskType != ''">AND task.task_type = #{taskType}</if>
+        <if test="keyword != null and keyword != ''">
+          AND (task.task_name LIKE CONCAT('%', #{keyword}, '%') OR task.task_code LIKE CONCAT('%', #{keyword}, '%')
+               OR member.customer_name LIKE CONCAT('%', #{keyword}, '%') OR member.phone_number LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        </script>
+        """)
+    Long selectOutboundUndialedMemberCount(@Param("tenantId") String tenantId,
+                                            @Param("taskId") Long taskId,
+                                            @Param("taskType") String taskType,
+                                            @Param("keyword") String keyword);
+
+    @Select("""
+        <script>
+        SELECT COUNT(*) AS attemptCount,
+               COUNT(DISTINCT attempt.member_id) AS dialedMemberCount,
+               COALESCE(SUM(attempt.answered_at IS NOT NULL), 0) AS answeredCount,
+               COUNT(DISTINCT CASE WHEN attempt.result_code IN ('INTERESTED', 'TRANSFERRED') THEN attempt.member_id END) AS businessSuccessCount,
+               COALESCE(SUM(attempt.attempt_no &gt; 1), 0) AS retryAttemptCount,
+               COALESCE(SUM(attempt.billable_seconds), 0) AS totalTalkSeconds,
+               COALESCE(ROUND(COUNT(*) * 1.0 / NULLIF(COUNT(DISTINCT attempt.member_id), 0), 2), 0) AS averageAttempts,
+               COALESCE(ROUND(SUM(attempt.answered_at IS NOT NULL) * 100.0 / NULLIF(COUNT(*), 0), 2), 0) AS answerRate,
+               COALESCE(ROUND(COUNT(DISTINCT CASE WHEN attempt.result_code IN ('INTERESTED', 'TRANSFERRED') THEN attempt.member_id END) * 100.0
+                    / NULLIF(COUNT(DISTINCT CASE WHEN attempt.answered_at IS NOT NULL THEN attempt.member_id END), 0), 2), 0) AS conversionRate
+        FROM cc_outbound_attempt attempt
+        JOIN cc_outbound_task task ON task.tenant_id = attempt.tenant_id AND task.id = attempt.task_id AND task.deleted = 0
+        WHERE attempt.tenant_id = #{tenantId} AND attempt.deleted = 0
+          AND attempt.started_at &gt;= #{startAt} AND attempt.started_at &lt; #{endAt}
+        <if test="taskId != null">AND task.id = #{taskId}</if>
+        <if test="taskType != null and taskType != ''">AND task.task_type = #{taskType}</if>
+        <if test="resultCode != null and resultCode != ''">AND COALESCE(attempt.result_code, attempt.suggested_result_code) = #{resultCode}</if>
+        <if test="keyword != null and keyword != ''">
+          AND (task.task_name LIKE CONCAT('%', #{keyword}, '%') OR attempt.customer_name LIKE CONCAT('%', #{keyword}, '%')
+               OR attempt.phone_number LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        </script>
+        """)
+    OutboundReportSummaryResponse selectOutboundSummary(@Param("tenantId") String tenantId,
+                                                         @Param("startAt") LocalDateTime startAt,
+                                                         @Param("endAt") LocalDateTime endAt,
+                                                         @Param("taskId") Long taskId,
+                                                         @Param("taskType") String taskType,
+                                                         @Param("resultCode") String resultCode,
+                                                         @Param("keyword") String keyword);
+
+    @Select("""
+        <script>
+        SELECT CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(attempt.started_at, '%Y-%m-%d %H:00')
+                    ELSE DATE_FORMAT(attempt.started_at, '%Y-%m-%d') END AS bucket,
+               COUNT(*) AS attemptCount,
+               COALESCE(SUM(attempt.answered_at IS NOT NULL), 0) AS answeredCount,
+               COUNT(DISTINCT CASE WHEN attempt.result_code IN ('INTERESTED', 'TRANSFERRED') THEN attempt.member_id END) AS businessSuccessCount
+        FROM cc_outbound_attempt attempt
+        JOIN cc_outbound_task task ON task.tenant_id = attempt.tenant_id AND task.id = attempt.task_id AND task.deleted = 0
+        WHERE attempt.tenant_id = #{tenantId} AND attempt.deleted = 0
+          AND attempt.started_at &gt;= #{startAt} AND attempt.started_at &lt; #{endAt}
+        <if test="taskId != null">AND task.id = #{taskId}</if>
+        <if test="taskType != null and taskType != ''">AND task.task_type = #{taskType}</if>
+        <if test="resultCode != null and resultCode != ''">AND COALESCE(attempt.result_code, attempt.suggested_result_code) = #{resultCode}</if>
+        <if test="keyword != null and keyword != ''">
+          AND (task.task_name LIKE CONCAT('%', #{keyword}, '%') OR attempt.customer_name LIKE CONCAT('%', #{keyword}, '%')
+               OR attempt.phone_number LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        GROUP BY CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(attempt.started_at, '%Y-%m-%d %H:00')
+                      ELSE DATE_FORMAT(attempt.started_at, '%Y-%m-%d') END
+        ORDER BY bucket
+        </script>
+        """)
+    List<OutboundTrendPointResponse> selectOutboundTrend(@Param("tenantId") String tenantId,
+                                                          @Param("startAt") LocalDateTime startAt,
+                                                          @Param("endAt") LocalDateTime endAt,
+                                                          @Param("granularity") String granularity,
+                                                          @Param("taskId") Long taskId,
+                                                          @Param("taskType") String taskType,
+                                                          @Param("resultCode") String resultCode,
+                                                          @Param("keyword") String keyword);
+
+    @Select("""
+        <script>
+        SELECT COALESCE(attempt.result_code, attempt.suggested_result_code,
+                 CASE WHEN attempt.answered_at IS NOT NULL THEN 'CONNECTED'
+                      WHEN attempt.hangup_cause = 'USER_BUSY' THEN 'BUSY'
+                      WHEN attempt.hangup_cause IN ('NO_ANSWER', 'NO_USER_RESPONSE', 'ORIGINATOR_CANCEL') THEN 'NO_ANSWER'
+                      WHEN attempt.hangup_cause IN ('UNALLOCATED_NUMBER', 'INVALID_NUMBER_FORMAT') THEN 'INVALID_NUMBER'
+                      ELSE 'FAILED' END) AS category,
+               COUNT(*) AS count
+        FROM cc_outbound_attempt attempt
+        JOIN cc_outbound_task task ON task.tenant_id = attempt.tenant_id AND task.id = attempt.task_id AND task.deleted = 0
+        WHERE attempt.tenant_id = #{tenantId} AND attempt.deleted = 0
+          AND attempt.started_at &gt;= #{startAt} AND attempt.started_at &lt; #{endAt}
+        <if test="taskId != null">AND task.id = #{taskId}</if>
+        <if test="taskType != null and taskType != ''">AND task.task_type = #{taskType}</if>
+        <if test="resultCode != null and resultCode != ''">AND COALESCE(attempt.result_code, attempt.suggested_result_code) = #{resultCode}</if>
+        <if test="keyword != null and keyword != ''">
+          AND (task.task_name LIKE CONCAT('%', #{keyword}, '%') OR attempt.customer_name LIKE CONCAT('%', #{keyword}, '%')
+               OR attempt.phone_number LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        GROUP BY category ORDER BY count DESC
+        </script>
+        """)
+    List<CallDistributionResponse> selectOutboundDistribution(@Param("tenantId") String tenantId,
+                                                               @Param("startAt") LocalDateTime startAt,
+                                                               @Param("endAt") LocalDateTime endAt,
+                                                               @Param("taskId") Long taskId,
+                                                               @Param("taskType") String taskType,
+                                                               @Param("resultCode") String resultCode,
+                                                               @Param("keyword") String keyword);
+
+    @Select("""
+        <script>
+        SELECT task.id AS taskId, task.task_name AS taskName, task.task_type AS taskType, task.status,
+               COALESCE(member_stats.member_count, 0) AS memberCount,
+               COALESCE(attempt_stats.dialed_member_count, 0) AS dialedMemberCount,
+               COALESCE(attempt_stats.attempt_count, 0) AS attemptCount,
+               COALESCE(attempt_stats.answered_count, 0) AS answeredCount,
+               COALESCE(attempt_stats.business_success_count, 0) AS businessSuccessCount,
+               COALESCE(ROUND(attempt_stats.answered_count * 100.0 / NULLIF(attempt_stats.attempt_count, 0), 2), 0) AS answerRate,
+               COALESCE(ROUND(attempt_stats.business_success_count * 100.0 / NULLIF(attempt_stats.answered_member_count, 0), 2), 0) AS conversionRate
+        FROM cc_outbound_task task
+        LEFT JOIN (
+          SELECT task_id, COUNT(*) AS member_count
+          FROM cc_outbound_member WHERE tenant_id = #{tenantId} AND deleted = 0 GROUP BY task_id
+        ) member_stats ON member_stats.task_id = task.id
+        LEFT JOIN (
+          SELECT task_id, COUNT(*) AS attempt_count, COUNT(DISTINCT member_id) AS dialed_member_count,
+                 SUM(answered_at IS NOT NULL) AS answered_count,
+                 COUNT(DISTINCT CASE WHEN result_code IN ('INTERESTED', 'TRANSFERRED') THEN member_id END) AS business_success_count,
+                 COUNT(DISTINCT CASE WHEN answered_at IS NOT NULL THEN member_id END) AS answered_member_count
+          FROM cc_outbound_attempt
+          WHERE tenant_id = #{tenantId} AND deleted = 0 AND started_at &gt;= #{startAt} AND started_at &lt; #{endAt}
+          GROUP BY task_id
+        ) attempt_stats ON attempt_stats.task_id = task.id
+        WHERE task.tenant_id = #{tenantId} AND task.deleted = 0
+        <if test="taskId != null">AND task.id = #{taskId}</if>
+        <if test="taskType != null and taskType != ''">AND task.task_type = #{taskType}</if>
+        <if test="keyword != null and keyword != ''">
+          AND (task.task_name LIKE CONCAT('%', #{keyword}, '%') OR task.task_code LIKE CONCAT('%', #{keyword}, '%')
+               OR EXISTS (SELECT 1 FROM cc_outbound_member keyword_member
+                    WHERE keyword_member.tenant_id = task.tenant_id AND keyword_member.task_id = task.id
+                      AND keyword_member.deleted = 0 AND (keyword_member.customer_name LIKE CONCAT('%', #{keyword}, '%')
+                           OR keyword_member.phone_number LIKE CONCAT('%', #{keyword}, '%'))))
+        </if>
+        ORDER BY attemptCount DESC, task.create_time DESC
+        </script>
+        """)
+    List<OutboundTaskReportResponse> selectOutboundTasks(@Param("tenantId") String tenantId,
+                                                          @Param("startAt") LocalDateTime startAt,
+                                                          @Param("endAt") LocalDateTime endAt,
+                                                          @Param("taskId") Long taskId,
+                                                          @Param("taskType") String taskType,
+                                                          @Param("keyword") String keyword);
+
+    @Select("""
+        <script>
+        SELECT attempt.id, attempt.task_id AS taskId, task.task_name AS taskName, task.task_type AS taskType,
+               attempt.customer_name AS customerName, attempt.phone_number AS phoneNumber,
+               agent.agent_name AS agentName, attempt.attempt_no AS attemptNo, attempt.status,
+               COALESCE(attempt.result_code, attempt.suggested_result_code) AS resultCode,
+               attempt.started_at AS startedAt, attempt.answered_at AS answeredAt, attempt.ended_at AS endedAt,
+               attempt.duration_seconds AS durationSeconds, attempt.billable_seconds AS billableSeconds,
+               attempt.hangup_cause AS hangupCause, attempt.failure_category AS failureCategory
+        FROM cc_outbound_attempt attempt
+        JOIN cc_outbound_task task ON task.tenant_id = attempt.tenant_id AND task.id = attempt.task_id AND task.deleted = 0
+        LEFT JOIN cc_agent agent ON agent.tenant_id = attempt.tenant_id AND agent.id = attempt.agent_id AND agent.deleted = 0
+        WHERE attempt.tenant_id = #{tenantId} AND attempt.deleted = 0
+          AND attempt.started_at &gt;= #{startAt} AND attempt.started_at &lt; #{endAt}
+        <if test="taskId != null">AND task.id = #{taskId}</if>
+        <if test="taskType != null and taskType != ''">AND task.task_type = #{taskType}</if>
+        <if test="resultCode != null and resultCode != ''">AND COALESCE(attempt.result_code, attempt.suggested_result_code) = #{resultCode}</if>
+        <if test="keyword != null and keyword != ''">
+          AND (task.task_name LIKE CONCAT('%', #{keyword}, '%') OR attempt.customer_name LIKE CONCAT('%', #{keyword}, '%')
+               OR attempt.phone_number LIKE CONCAT('%', #{keyword}, '%') OR agent.agent_name LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        ORDER BY attempt.started_at DESC, attempt.id DESC
+        </script>
+        """)
+    Page<OutboundAttemptDetailResponse> selectOutboundAttempts(Page<OutboundAttemptDetailResponse> page,
+                                                                @Param("tenantId") String tenantId,
+                                                                @Param("startAt") LocalDateTime startAt,
+                                                                @Param("endAt") LocalDateTime endAt,
+                                                                @Param("taskId") Long taskId,
+                                                                @Param("taskType") String taskType,
+                                                                @Param("resultCode") String resultCode,
+                                                                @Param("keyword") String keyword);
 }

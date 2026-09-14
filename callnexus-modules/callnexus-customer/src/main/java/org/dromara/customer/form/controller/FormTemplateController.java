@@ -7,6 +7,7 @@ import org.dromara.common.core.domain.R;
 import org.dromara.customer.form.domain.FormBusinessType;
 import org.dromara.customer.form.domain.request.SaveFormTemplateRequest;
 import org.dromara.customer.form.domain.response.FormTemplateResponse;
+import org.dromara.customer.form.domain.response.FormQuerySchemaResponse;
 import org.dromara.customer.form.service.FormTemplateApplicationService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,6 +36,11 @@ public class FormTemplateController {
     @GetMapping("/{id}")
     public R<FormTemplateResponse> get(@PathVariable Long id) {
         return R.ok(applicationService.get(id));
+    }
+
+    @GetMapping("/{id}/query-schema")
+    public R<FormQuerySchemaResponse> getQuerySchema(@PathVariable Long id) {
+        return R.ok(applicationService.getQuerySchema(id));
     }
 
     @PostMapping

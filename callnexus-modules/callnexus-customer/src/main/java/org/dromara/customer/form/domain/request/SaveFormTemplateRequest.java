@@ -10,6 +10,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 import org.dromara.customer.form.domain.FormBusinessType;
 import org.dromara.customer.form.domain.FormFieldType;
+import org.dromara.customer.form.domain.FormQueryMode;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -54,6 +55,18 @@ public class SaveFormTemplateRequest {
         @Size(max = 1000)
         private String validationRules;
         private Boolean listVisible;
+        private Boolean queryEnabled;
+        private FormQueryMode queryMode;
+        @Min(0)
+        @Max(999)
+        private Integer queryOrder;
+        @Size(max = 500)
+        private String fieldRemark;
+        private Boolean importEnabled;
+        private Boolean exportEnabled;
+        private Boolean aiFillEnabled;
+        private Boolean dialEnabled;
+        private Boolean enabled;
         @Valid
         private List<OptionRequest> options = new ArrayList<>();
     }

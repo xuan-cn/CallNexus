@@ -25,6 +25,14 @@ public class FormField extends TenantEntity {
     private String placeholderText;
     private String validationRules;
     private Boolean listVisible;
+    private Boolean queryEnabled;
+    private FormQueryMode queryMode;
+    private Integer queryOrder;
+    private String fieldRemark;
+    private Boolean importEnabled;
+    private Boolean exportEnabled;
+    private Boolean aiFillEnabled;
+    private Boolean dialEnabled;
     private Boolean enabled;
     @Version
     private Integer version;

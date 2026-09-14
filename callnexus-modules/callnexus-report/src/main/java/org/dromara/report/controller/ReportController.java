@@ -7,13 +7,19 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.report.domain.request.ReportQuery;
 import org.dromara.report.domain.response.AgentReportResponse;
+import org.dromara.report.domain.response.AgentPresenceLogResponse;
 import org.dromara.report.domain.response.CallDetailResponse;
 import org.dromara.report.domain.response.CallDistributionResponse;
 import org.dromara.report.domain.response.OverviewKpiResponse;
+import org.dromara.report.domain.response.OutboundAttemptDetailResponse;
+import org.dromara.report.domain.response.OutboundReportSummaryResponse;
+import org.dromara.report.domain.response.OutboundTaskReportResponse;
+import org.dromara.report.domain.response.OutboundTrendPointResponse;
 import org.dromara.report.domain.response.QueueReportResponse;
 import org.dromara.report.domain.response.ReportTrendPointResponse;
 import org.dromara.report.service.ReportService;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -73,9 +79,55 @@ public class ReportController {
         return R.ok(service.agents(query));
     }
 
+    @GetMapping("/agents/{agentId}/presence-logs")
+    @SaCheckPermission("callcenter:report-agent:view")
+    public TableDataInfo<AgentPresenceLogResponse> agentPresenceLogs(@PathVariable Long agentId,
+                                                                     ReportQuery query,
+                                                                     PageQuery pageQuery) {
+        return service.agentPresenceLogs(agentId, query, pageQuery);
+    }
+
+    @GetMapping("/agents/{agentId}/calls")
+    @SaCheckPermission("callcenter:report-agent:view")
+    public TableDataInfo<CallDetailResponse> agentCalls(@PathVariable Long agentId,
+                                                        ReportQuery query,
+                                                        PageQuery pageQuery) {
+        return service.agentCalls(agentId, query, pageQuery);
+    }
+
     @GetMapping("/queues/summary")
     @SaCheckPermission("callcenter:report-queue:view")
     public R<List<QueueReportResponse>> queues(ReportQuery query) {
         return R.ok(service.queues(query));
+    }
+
+    @GetMapping("/outbound/summary")
+    @SaCheckPermission("callcenter:report-outbound:view")
+    public R<OutboundReportSummaryResponse> outboundSummary(ReportQuery query) {
+        return R.ok(service.outboundSummary(query));
+    }
+
+    @GetMapping("/outbound/trend")
+    @SaCheckPermission("callcenter:report-outbound:view")
+    public R<List<OutboundTrendPointResponse>> outboundTrend(ReportQuery query) {
+        return R.ok(service.outboundTrend(query));
+    }
+
+    @GetMapping("/outbound/distribution")
+    @SaCheckPermission("callcenter:report-outbound:view")
+    public R<List<CallDistributionResponse>> outboundDistribution(ReportQuery query) {
+        return R.ok(service.outboundDistribution(query));
+    }
+
+    @GetMapping("/outbound/tasks")
+    @SaCheckPermission("callcenter:report-outbound:view")
+    public R<List<OutboundTaskReportResponse>> outboundTasks(ReportQuery query) {
+        return R.ok(service.outboundTasks(query));
+    }
+
+    @GetMapping("/outbound/attempts")
+    @SaCheckPermission("callcenter:report-outbound:view")
+    public TableDataInfo<OutboundAttemptDetailResponse> outboundAttempts(ReportQuery query, PageQuery pageQuery) {
+        return service.outboundAttempts(query, pageQuery);
     }
 }

@@ -38,6 +38,8 @@ import org.dromara.customer.customer.service.CustomerApplicationService;
 import org.dromara.customer.customer.service.CustomerImportService;
 import org.dromara.customer.customer.service.CustomerPhoneNormalizer;
 import org.dromara.customer.form.domain.FormBusinessType;
+import org.dromara.customer.form.domain.FormField;
+import org.dromara.customer.form.mapper.FormFieldMapper;
 import org.dromara.customer.form.service.DynamicFormSubmissionService;
 import org.dromara.common.tenant.helper.TenantHelper;
 import jakarta.annotation.Resource;
@@ -48,6 +50,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -91,6 +94,7 @@ public class CustomerImportServiceImpl implements CustomerImportService {
     private final CustomerAssignmentMapper assignmentMapper;
     private final CustomerMapper customerMapper;
     private final DynamicFormSubmissionService dynamicFormSubmissionService;
+    private final FormFieldMapper formFieldMapper;
     @Resource(name = "customerImportExecutor")
     private Executor customerImportExecutor;
 
@@ -571,6 +575,7 @@ public class CustomerImportServiceImpl implements CustomerImportService {
             Row headerRow = sheet.getRow(sheet.getFirstRowNum());
             Map<Integer, String> headers = readHeaders(headerRow, formatter);
             Map<Integer, String> fields = mapFields(headers, parseFieldMapping(request.getFieldMappingJson()));
+            validateFormMappings(request, fields.values());
             if (!fields.containsValue("phone")) {
                 throw new ServiceException("Excel 必须包含手机号、电话、客户电话或号码列");
             }
@@ -635,6 +640,27 @@ public class CustomerImportServiceImpl implements CustomerImportService {
             }
         }
         return fields;
+    }
+
+    private void validateFormMappings(CustomerImportRequest request, Collection<String> mappedFields) {
+        Set<String> formFieldCodes = mappedFields.stream()
+            .filter(field -> field != null && field.startsWith("form:") && field.length() > 5)
+            .map(field -> field.substring(5))
+            .collect(java.util.stream.Collectors.toSet());
+        if (formFieldCodes.isEmpty()) return;
+        if (request.getFormTemplateId() == null) {
+            throw new ServiceException("自定义字段映射必须选择客户资料模板");
+        }
+        Set<String> allowed = formFieldMapper.selectList(new LambdaQueryWrapper<FormField>()
+                .eq(FormField::getTemplateId, request.getFormTemplateId())
+                .eq(FormField::getEnabled, true)
+                .eq(FormField::getImportEnabled, true)
+                .in(FormField::getFieldCode, formFieldCodes))
+            .stream().map(FormField::getFieldCode).collect(java.util.stream.Collectors.toSet());
+        List<String> invalid = formFieldCodes.stream().filter(code -> !allowed.contains(code)).sorted().toList();
+        if (!invalid.isEmpty()) {
+            throw new ServiceException("导入映射包含已停用或不允许导入的字段：" + String.join(",", invalid));
+        }
     }
 
     private Map<String, String> fixedValues(Map<String, String> values) {

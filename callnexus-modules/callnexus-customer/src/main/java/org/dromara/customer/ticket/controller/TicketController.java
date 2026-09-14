@@ -11,6 +11,7 @@ import org.dromara.customer.ticket.domain.request.CreateTicketRequest;
 import org.dromara.customer.ticket.domain.request.TicketPageQuery;
 import org.dromara.customer.ticket.domain.response.TicketResponse;
 import org.dromara.customer.ticket.service.TicketApplicationService;
+import org.dromara.customer.form.service.BusinessDataExportService;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -23,11 +24,27 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/tickets")
 @RequiredArgsConstructor
 public class TicketController {
+    private static final int MAX_EXPORT_ROWS = 5000;
     private final TicketApplicationService applicationService;
+    private final BusinessDataExportService exportService;
 
     @GetMapping
     public TableDataInfo<TicketResponse> page(TicketPageQuery query, PageQuery pageQuery) {
         return applicationService.page(query, pageQuery);
+    }
+
+    @PostMapping("/search")
+    public TableDataInfo<TicketResponse> search(@RequestBody TicketPageQuery query) {
+        return applicationService.page(query, new PageQuery(normalizePageSize(query.getPageSize()), normalizePageNum(query.getPageNum())));
+    }
+
+    @PostMapping("/export")
+    public void export(@RequestBody TicketPageQuery query, jakarta.servlet.http.HttpServletResponse response) {
+        TableDataInfo<TicketResponse> data = applicationService.page(query, new PageQuery(MAX_EXPORT_ROWS, 1));
+        if (data.getTotal() > MAX_EXPORT_ROWS) {
+            throw new org.dromara.common.core.exception.ServiceException("单次最多导出 " + MAX_EXPORT_ROWS + " 条工单，请缩小查询范围");
+        }
+        exportService.exportTickets(data.getRows(), query.getTemplateId(), response);
     }
 
     @GetMapping("/{id}")
@@ -58,5 +75,13 @@ public class TicketController {
     public R<Void> close(@PathVariable Long id) {
         applicationService.close(id);
         return R.ok();
+    }
+
+    private int normalizePageNum(Integer pageNum) {
+        return pageNum == null || pageNum < 1 ? 1 : pageNum;
+    }
+
+    private int normalizePageSize(Integer pageSize) {
+        return pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 200);
     }
 }

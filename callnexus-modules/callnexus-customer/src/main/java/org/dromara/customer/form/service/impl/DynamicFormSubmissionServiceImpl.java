@@ -83,6 +83,21 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
     }
 
     @Override
+    @SuppressWarnings("unchecked")
+    public Map<Long, Map<String, Object>> getFormData(FormBusinessType businessType, Collection<Long> businessIds) {
+        if (businessIds == null || businessIds.isEmpty()) return Map.of();
+        return submissionMapper.selectList(new LambdaQueryWrapper<FormSubmission>()
+                .eq(FormSubmission::getBusinessType, businessType)
+                .in(FormSubmission::getBusinessId, businessIds)
+                .orderByDesc(FormSubmission::getCreateTime))
+            .stream()
+            .collect(Collectors.toMap(FormSubmission::getBusinessId, submission -> {
+                Map<String, Object> data = JsonUtils.parseObject(submission.getFormData(), Map.class);
+                return data == null ? Map.of() : data;
+            }, (latest, ignored) -> latest));
+    }
+
+    @Override
     public void delete(FormBusinessType businessType, Long businessId) {
         submissionMapper.delete(new LambdaQueryWrapper<FormSubmission>()
             .eq(FormSubmission::getBusinessType, businessType)

@@ -3,6 +3,7 @@ package org.dromara.customer.form.domain.response;
 import lombok.Data;
 import org.dromara.customer.form.domain.FormBusinessType;
 import org.dromara.customer.form.domain.FormFieldType;
+import org.dromara.customer.form.domain.FormQueryMode;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,6 +32,15 @@ public class FormTemplateResponse {
         private String placeholder;
         private String validationRules;
         private Boolean listVisible;
+        private Boolean queryEnabled;
+        private FormQueryMode queryMode;
+        private Integer queryOrder;
+        private String fieldRemark;
+        private Boolean importEnabled;
+        private Boolean exportEnabled;
+        private Boolean aiFillEnabled;
+        private Boolean dialEnabled;
+        private Boolean enabled;
         private List<OptionResponse> options = new ArrayList<>();
     }
 
