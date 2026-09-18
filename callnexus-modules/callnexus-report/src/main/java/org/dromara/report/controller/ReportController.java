@@ -1,6 +1,7 @@
 package org.dromara.report.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import cn.dev33.satoken.annotation.SaMode;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.mybatis.core.page.PageQuery;
@@ -16,7 +17,14 @@ import org.dromara.report.domain.response.OutboundReportSummaryResponse;
 import org.dromara.report.domain.response.OutboundTaskReportResponse;
 import org.dromara.report.domain.response.OutboundTrendPointResponse;
 import org.dromara.report.domain.response.QueueReportResponse;
+import org.dromara.report.domain.response.ReportAgentOptionResponse;
+import org.dromara.report.domain.response.ReportQueueOptionResponse;
 import org.dromara.report.domain.response.ReportTrendPointResponse;
+import org.dromara.report.domain.response.SatisfactionDetailResponse;
+import org.dromara.report.domain.response.SatisfactionRankingResponse;
+import org.dromara.report.domain.response.SatisfactionScoreDistributionResponse;
+import org.dromara.report.domain.response.SatisfactionSummaryResponse;
+import org.dromara.report.domain.response.SatisfactionTrendPointResponse;
 import org.dromara.report.service.ReportService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,6 +38,55 @@ import java.util.List;
 @RequiredArgsConstructor
 public class ReportController {
     private final ReportService service;
+
+    @GetMapping("/agent-options")
+    @SaCheckPermission(value = {"callcenter:report-call:view", "callcenter:report-agent:view",
+        "callcenter:report-satisfaction:view"}, mode = SaMode.OR)
+    public R<List<ReportAgentOptionResponse>> agentOptions() {
+        return R.ok(service.agentOptions());
+    }
+
+    @GetMapping("/queue-options")
+    @SaCheckPermission(value = {"callcenter:report-queue:view", "callcenter:report-satisfaction:view"}, mode = SaMode.OR)
+    public R<List<ReportQueueOptionResponse>> queueOptions() {
+        return R.ok(service.queueOptions());
+    }
+
+    @GetMapping("/satisfaction/summary")
+    @SaCheckPermission("callcenter:report-satisfaction:view")
+    public R<SatisfactionSummaryResponse> satisfactionSummary(ReportQuery query) {
+        return R.ok(service.satisfactionSummary(query));
+    }
+
+    @GetMapping("/satisfaction/trend")
+    @SaCheckPermission("callcenter:report-satisfaction:view")
+    public R<List<SatisfactionTrendPointResponse>> satisfactionTrend(ReportQuery query) {
+        return R.ok(service.satisfactionTrend(query));
+    }
+
+    @GetMapping("/satisfaction/distribution")
+    @SaCheckPermission("callcenter:report-satisfaction:view")
+    public R<List<SatisfactionScoreDistributionResponse>> satisfactionDistribution(ReportQuery query) {
+        return R.ok(service.satisfactionDistribution(query));
+    }
+
+    @GetMapping("/satisfaction/queues")
+    @SaCheckPermission("callcenter:report-satisfaction:view")
+    public R<List<SatisfactionRankingResponse>> satisfactionQueues(ReportQuery query) {
+        return R.ok(service.satisfactionQueueRanking(query));
+    }
+
+    @GetMapping("/satisfaction/agents")
+    @SaCheckPermission("callcenter:report-satisfaction:view")
+    public R<List<SatisfactionRankingResponse>> satisfactionAgents(ReportQuery query) {
+        return R.ok(service.satisfactionAgentRanking(query));
+    }
+
+    @GetMapping("/satisfaction/details")
+    @SaCheckPermission("callcenter:report-satisfaction:view")
+    public TableDataInfo<SatisfactionDetailResponse> satisfactionDetails(ReportQuery query, PageQuery pageQuery) {
+        return service.satisfactionDetails(query, pageQuery);
+    }
 
     @GetMapping("/overview/kpis")
     @SaCheckPermission("callcenter:report-overview:view")

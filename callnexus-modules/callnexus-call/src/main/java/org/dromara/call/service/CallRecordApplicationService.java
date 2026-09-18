@@ -6,8 +6,12 @@ import org.dromara.call.domain.response.CallRecordResponse;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+
 public interface CallRecordApplicationService {
     void handleEvent(TelephonyEvent event);
     TableDataInfo<CallRecordResponse> page(CallRecordPageQuery query, PageQuery pageQuery);
     CallRecordResponse get(Long id);
+    void downloadRecording(Long id, HttpServletResponse response) throws IOException;
 }

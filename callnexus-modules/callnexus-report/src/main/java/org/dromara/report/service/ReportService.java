@@ -16,11 +16,19 @@ import org.dromara.report.domain.response.OutboundReportSummaryResponse;
 import org.dromara.report.domain.response.OutboundTaskReportResponse;
 import org.dromara.report.domain.response.OutboundTrendPointResponse;
 import org.dromara.report.domain.response.QueueReportResponse;
+import org.dromara.report.domain.response.ReportAgentOptionResponse;
+import org.dromara.report.domain.response.ReportQueueOptionResponse;
 import org.dromara.report.domain.response.ReportTrendPointResponse;
+import org.dromara.report.domain.response.SatisfactionDetailResponse;
+import org.dromara.report.domain.response.SatisfactionRankingResponse;
+import org.dromara.report.domain.response.SatisfactionScoreDistributionResponse;
+import org.dromara.report.domain.response.SatisfactionSummaryResponse;
+import org.dromara.report.domain.response.SatisfactionTrendPointResponse;
 import org.dromara.report.mapper.ReportMapper;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -31,22 +39,91 @@ import java.util.Map;
 public class ReportService {
     private final ReportMapper mapper;
 
+    public List<ReportAgentOptionResponse> agentOptions() {
+        return mapper.selectAgentOptions(TenantHelper.getTenantId());
+    }
+
+    public List<ReportQueueOptionResponse> queueOptions() {
+        return mapper.selectQueueOptions(TenantHelper.getTenantId());
+    }
+
+    public SatisfactionSummaryResponse satisfactionSummary(ReportQuery query) {
+        ReportRangeResolver.ReportRange range = range(query);
+        return mapper.selectSatisfactionSummary(TenantHelper.getTenantId(), range.startAt(), range.endAt(),
+            query.getQueueId(), query.getAgentId(), query.getSkillGroupId(),
+            query.getSatisfactionStatus(), query.getSatisfactionScore());
+    }
+
+    public List<SatisfactionTrendPointResponse> satisfactionTrend(ReportQuery query) {
+        ReportRangeResolver.ReportRange range = range(query);
+        String granularity = granularity(query, range);
+        List<SatisfactionTrendPointResponse> rows = mapper.selectSatisfactionTrend(
+            TenantHelper.getTenantId(), range.startAt(), range.endAt(), granularity,
+            query.getQueueId(), query.getAgentId(), query.getSkillGroupId(),
+            query.getSatisfactionStatus(), query.getSatisfactionScore());
+        Map<String, SatisfactionTrendPointResponse> existing = new HashMap<>();
+        rows.forEach(row -> existing.put(row.getBucket(), row));
+        List<SatisfactionTrendPointResponse> result = new ArrayList<>();
+        LocalDateTime cursor = range.startAt();
+        while (cursor.isBefore(range.endAt())) {
+            String bucket = "HOUR".equals(granularity)
+                ? String.format("%s %02d:00", cursor.toLocalDate(), cursor.getHour())
+                : cursor.toLocalDate().toString();
+            result.add(existing.getOrDefault(bucket, emptySatisfactionTrend(bucket)));
+            cursor = "HOUR".equals(granularity) ? cursor.plusHours(1) : cursor.plusDays(1);
+        }
+        return result;
+    }
+
+    public List<SatisfactionScoreDistributionResponse> satisfactionDistribution(ReportQuery query) {
+        ReportRangeResolver.ReportRange range = range(query);
+        return mapper.selectSatisfactionDistribution(TenantHelper.getTenantId(), range.startAt(), range.endAt(),
+            query.getQueueId(), query.getAgentId(), query.getSkillGroupId(),
+            query.getSatisfactionStatus(), query.getSatisfactionScore());
+    }
+
+    public List<SatisfactionRankingResponse> satisfactionQueueRanking(ReportQuery query) {
+        ReportRangeResolver.ReportRange range = range(query);
+        return mapper.selectSatisfactionQueueRanking(TenantHelper.getTenantId(), range.startAt(), range.endAt(),
+            query.getQueueId(), query.getAgentId(), query.getSkillGroupId(),
+            query.getSatisfactionStatus(), query.getSatisfactionScore());
+    }
+
+    public List<SatisfactionRankingResponse> satisfactionAgentRanking(ReportQuery query) {
+        ReportRangeResolver.ReportRange range = range(query);
+        return mapper.selectSatisfactionAgentRanking(TenantHelper.getTenantId(), range.startAt(), range.endAt(),
+            query.getQueueId(), query.getAgentId(), query.getSkillGroupId(),
+            query.getSatisfactionStatus(), query.getSatisfactionScore());
+    }
+
+    public TableDataInfo<SatisfactionDetailResponse> satisfactionDetails(ReportQuery query, PageQuery pageQuery) {
+        ReportRangeResolver.ReportRange range = range(query);
+        Page<SatisfactionDetailResponse> page = mapper.selectSatisfactionDetails(
+            pageQuery.build(), TenantHelper.getTenantId(), range.startAt(), range.endAt(),
+            query.getQueueId(), query.getAgentId(), query.getSkillGroupId(),
+            query.getSatisfactionStatus(), query.getSatisfactionScore());
+        return TableDataInfo.build(page);
+    }
+
     public OverviewKpiResponse overview(ReportQuery query) {
         ReportRangeResolver.ReportRange range = range(query);
-        return mapper.selectOverview(TenantHelper.getTenantId(), range.startAt(), range.endAt(), LocalDateTime.now());
+        return mapper.selectOverview(TenantHelper.getTenantId(), range.startAt(), range.endAt(), LocalDateTime.now(),
+            query.getDirection(), query.getAgentId(), query.getKeyword());
     }
 
     public List<ReportTrendPointResponse> trend(ReportQuery query) {
         ReportRangeResolver.ReportRange range = range(query);
         String granularity = granularity(query, range);
         List<ReportTrendPointResponse> rows = mapper.selectTrend(
-            TenantHelper.getTenantId(), range.startAt(), range.endAt(), granularity);
+            TenantHelper.getTenantId(), range.startAt(), range.endAt(), granularity,
+            query.getDirection(), query.getAgentId(), query.getKeyword());
         return fillTrend(rows, range, granularity);
     }
 
     public List<CallDistributionResponse> distribution(ReportQuery query) {
         ReportRangeResolver.ReportRange range = range(query);
-        return mapper.selectDistribution(TenantHelper.getTenantId(), range.startAt(), range.endAt(), query.getDirection());
+        return mapper.selectDistribution(TenantHelper.getTenantId(), range.startAt(), range.endAt(),
+            query.getDirection(), query.getAgentId(), query.getKeyword());
     }
 
     public TableDataInfo<CallDetailResponse> callDetails(ReportQuery query, PageQuery pageQuery) {
@@ -186,6 +263,18 @@ public class ReportService {
         point.setAttemptCount(0L);
         point.setAnsweredCount(0L);
         point.setBusinessSuccessCount(0L);
+        return point;
+    }
+
+    private SatisfactionTrendPointResponse emptySatisfactionTrend(String bucket) {
+        SatisfactionTrendPointResponse point = new SatisfactionTrendPointResponse();
+        point.setBucket(bucket);
+        point.setInvitationCount(0L);
+        point.setSubmittedCount(0L);
+        point.setSatisfiedCount(0L);
+        point.setAverageScore(BigDecimal.ZERO);
+        point.setParticipationRate(BigDecimal.ZERO);
+        point.setSatisfactionRate(BigDecimal.ZERO);
         return point;
     }
 

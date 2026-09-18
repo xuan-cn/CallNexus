@@ -8,6 +8,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.outbound.domain.request.AutoOutboundSourceRequest;
 import org.dromara.outbound.domain.request.AutoOutboundTaskRequest;
+import org.dromara.outbound.domain.request.AutoOutboundTaskQuery;
 import org.dromara.outbound.domain.response.AutoOutboundMaterializeResponse;
 import org.dromara.outbound.domain.response.AutoOutboundMemberResponse;
 import org.dromara.outbound.domain.response.AutoOutboundSourceResponse;
@@ -40,8 +41,8 @@ public class AutoOutboundTaskController {
 
     @GetMapping
     @SaCheckPermission("callcenter:auto-outbound-task:list")
-    public R<List<AutoOutboundTaskResponse>> list() {
-        return R.ok(service.list());
+    public TableDataInfo<AutoOutboundTaskResponse> page(AutoOutboundTaskQuery query, PageQuery pageQuery) {
+        return service.page(query, pageQuery);
     }
 
     @GetMapping("/{id}")

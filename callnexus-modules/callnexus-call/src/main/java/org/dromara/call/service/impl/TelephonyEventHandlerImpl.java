@@ -160,6 +160,14 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
         // Redis, target resolution, and WebSocket/SSE work.
         if (EslEventNames.CHANNEL_EXECUTE.equals(event.eventName())
             || EslEventNames.CHANNEL_EXECUTE_COMPLETE.equals(event.eventName())) {
+            if (EslEventNames.CHANNEL_EXECUTE.equals(event.eventName())) {
+                try {
+                    queueEventApplicationService.recordQueueEntryOnExecute(event);
+                } catch (Exception exception) {
+                    log.error("IVR 队列入队事件落库失败，不影响通话主流程，nodeId={}，uuid={}",
+                        event.nodeId(), event.uuid(), exception);
+                }
+            }
             return;
         }
         try {

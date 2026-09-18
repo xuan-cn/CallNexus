@@ -13,7 +13,14 @@ import org.dromara.report.domain.response.OutboundReportSummaryResponse;
 import org.dromara.report.domain.response.OutboundTaskReportResponse;
 import org.dromara.report.domain.response.OutboundTrendPointResponse;
 import org.dromara.report.domain.response.QueueReportResponse;
+import org.dromara.report.domain.response.ReportAgentOptionResponse;
+import org.dromara.report.domain.response.ReportQueueOptionResponse;
 import org.dromara.report.domain.response.ReportTrendPointResponse;
+import org.dromara.report.domain.response.SatisfactionDetailResponse;
+import org.dromara.report.domain.response.SatisfactionRankingResponse;
+import org.dromara.report.domain.response.SatisfactionScoreDistributionResponse;
+import org.dromara.report.domain.response.SatisfactionSummaryResponse;
+import org.dromara.report.domain.response.SatisfactionTrendPointResponse;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -21,16 +28,233 @@ import java.util.List;
 public interface ReportMapper {
 
     @Select("""
+        SELECT a.id, a.agent_code AS agentCode, a.agent_name AS agentName,
+               MIN(sip.extension) AS extension, a.enabled
+        FROM cc_agent a
+        LEFT JOIN cc_agent_extension ext ON ext.tenant_id = a.tenant_id
+            AND ext.agent_id = a.id AND ext.deleted = 0
+        LEFT JOIN cc_sip_account sip ON sip.tenant_id = a.tenant_id
+            AND sip.id = ext.sip_account_id AND sip.deleted = 0
+        WHERE a.tenant_id = #{tenantId} AND a.deleted = 0
+        GROUP BY a.id, a.agent_code, a.agent_name, a.enabled
+        ORDER BY a.enabled DESC, a.agent_code ASC
+        """)
+    List<ReportAgentOptionResponse> selectAgentOptions(@Param("tenantId") String tenantId);
+
+    @Select("""
+        SELECT id, queue_code AS queueCode, queue_name AS queueName, enabled
+        FROM cc_call_queue
+        WHERE tenant_id = #{tenantId} AND deleted = 0
+        ORDER BY enabled DESC, queue_code ASC
+        """)
+    List<ReportQueueOptionResponse> selectQueueOptions(@Param("tenantId") String tenantId);
+
+    @Select("""
+        <script>
+        SELECT COUNT(*) AS invitationCount,
+               COALESCE(SUM(sat.status = 'SUBMITTED'), 0) AS submittedCount,
+               COALESCE(SUM(sat.status = 'NO_INPUT'), 0) AS noInputCount,
+               COALESCE(ROUND(AVG(CASE WHEN sat.status = 'SUBMITTED' THEN sat.score END), 2), 0) AS averageScore,
+               COALESCE(ROUND(SUM(sat.status = 'SUBMITTED') * 100.0 / NULLIF(COUNT(*), 0), 2), 0) AS participationRate,
+               COALESCE(ROUND(SUM(sat.status = 'SUBMITTED' AND sat.score IN (4, 5)) * 100.0
+                    / NULLIF(SUM(sat.status = 'SUBMITTED'), 0), 2), 0) AS satisfactionRate,
+               COALESCE(ROUND(SUM(sat.status = 'SUBMITTED' AND sat.score IN (1, 2)) * 100.0
+                    / NULLIF(SUM(sat.status = 'SUBMITTED'), 0), 2), 0) AS dissatisfactionRate,
+               COALESCE(ROUND(SUM(sat.status = 'NO_INPUT') * 100.0 / NULLIF(COUNT(*), 0), 2), 0) AS noInputRate
+        FROM cc_call_satisfaction sat
+        LEFT JOIN cc_call_session session ON session.tenant_id = sat.tenant_id AND session.id = sat.session_id
+        LEFT JOIN cc_call_queue queue ON queue.tenant_id = sat.tenant_id AND queue.id = sat.queue_id AND queue.deleted = 0
+        WHERE sat.tenant_id = #{tenantId} AND sat.create_time &gt;= #{startAt} AND sat.create_time &lt; #{endAt}
+        <if test="queueId != null">AND sat.queue_id = #{queueId}</if>
+        <if test="agentId != null">AND COALESCE(session.owner_agent_id, session.agent_id) = #{agentId}</if>
+        <if test="skillGroupId != null">AND queue.skill_group_id = #{skillGroupId}</if>
+        <if test="status != null and status != ''">AND sat.status = #{status}</if>
+        <if test="score != null">AND sat.score = #{score}</if>
+        </script>
+        """)
+    SatisfactionSummaryResponse selectSatisfactionSummary(@Param("tenantId") String tenantId,
+                                                            @Param("startAt") LocalDateTime startAt,
+                                                            @Param("endAt") LocalDateTime endAt,
+                                                            @Param("queueId") Long queueId,
+                                                            @Param("agentId") Long agentId,
+                                                            @Param("skillGroupId") Long skillGroupId,
+                                                            @Param("status") String status,
+                                                            @Param("score") Integer score);
+
+    @Select("""
+        <script>
+        SELECT CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(sat.create_time, '%Y-%m-%d %H:00')
+                    ELSE DATE_FORMAT(sat.create_time, '%Y-%m-%d') END AS bucket,
+               COUNT(*) AS invitationCount,
+               COALESCE(SUM(sat.status = 'SUBMITTED'), 0) AS submittedCount,
+               COALESCE(SUM(sat.status = 'SUBMITTED' AND sat.score IN (4, 5)), 0) AS satisfiedCount,
+               COALESCE(ROUND(AVG(CASE WHEN sat.status = 'SUBMITTED' THEN sat.score END), 2), 0) AS averageScore,
+               COALESCE(ROUND(SUM(sat.status = 'SUBMITTED') * 100.0 / NULLIF(COUNT(*), 0), 2), 0) AS participationRate,
+               COALESCE(ROUND(SUM(sat.status = 'SUBMITTED' AND sat.score IN (4, 5)) * 100.0
+                    / NULLIF(SUM(sat.status = 'SUBMITTED'), 0), 2), 0) AS satisfactionRate
+        FROM cc_call_satisfaction sat
+        LEFT JOIN cc_call_session session ON session.tenant_id = sat.tenant_id AND session.id = sat.session_id
+        LEFT JOIN cc_call_queue queue ON queue.tenant_id = sat.tenant_id AND queue.id = sat.queue_id AND queue.deleted = 0
+        WHERE sat.tenant_id = #{tenantId} AND sat.create_time &gt;= #{startAt} AND sat.create_time &lt; #{endAt}
+        <if test="queueId != null">AND sat.queue_id = #{queueId}</if>
+        <if test="agentId != null">AND COALESCE(session.owner_agent_id, session.agent_id) = #{agentId}</if>
+        <if test="skillGroupId != null">AND queue.skill_group_id = #{skillGroupId}</if>
+        <if test="status != null and status != ''">AND sat.status = #{status}</if>
+        <if test="score != null">AND sat.score = #{score}</if>
+        GROUP BY bucket ORDER BY bucket
+        </script>
+        """)
+    List<SatisfactionTrendPointResponse> selectSatisfactionTrend(@Param("tenantId") String tenantId,
+                                                                  @Param("startAt") LocalDateTime startAt,
+                                                                  @Param("endAt") LocalDateTime endAt,
+                                                                  @Param("granularity") String granularity,
+                                                                  @Param("queueId") Long queueId,
+                                                                  @Param("agentId") Long agentId,
+                                                                  @Param("skillGroupId") Long skillGroupId,
+                                                                  @Param("status") String status,
+                                                                  @Param("score") Integer score);
+
+    @Select("""
+        <script>
+        SELECT sat.score, COUNT(*) AS count
+        FROM cc_call_satisfaction sat
+        LEFT JOIN cc_call_session session ON session.tenant_id = sat.tenant_id AND session.id = sat.session_id
+        LEFT JOIN cc_call_queue queue ON queue.tenant_id = sat.tenant_id AND queue.id = sat.queue_id AND queue.deleted = 0
+        WHERE sat.tenant_id = #{tenantId} AND sat.create_time &gt;= #{startAt} AND sat.create_time &lt; #{endAt}
+          AND sat.status = 'SUBMITTED' AND sat.score BETWEEN 1 AND 5
+        <if test="queueId != null">AND sat.queue_id = #{queueId}</if>
+        <if test="agentId != null">AND COALESCE(session.owner_agent_id, session.agent_id) = #{agentId}</if>
+        <if test="skillGroupId != null">AND queue.skill_group_id = #{skillGroupId}</if>
+        <if test="status != null and status != ''">AND sat.status = #{status}</if>
+        <if test="score != null">AND sat.score = #{score}</if>
+        GROUP BY sat.score ORDER BY sat.score
+        </script>
+        """)
+    List<SatisfactionScoreDistributionResponse> selectSatisfactionDistribution(@Param("tenantId") String tenantId,
+                                                                                 @Param("startAt") LocalDateTime startAt,
+                                                                                 @Param("endAt") LocalDateTime endAt,
+                                                                                 @Param("queueId") Long queueId,
+                                                                                 @Param("agentId") Long agentId,
+                                                                                 @Param("skillGroupId") Long skillGroupId,
+                                                                                 @Param("status") String status,
+                                                                                 @Param("score") Integer score);
+
+    @Select("""
+        <script>
+        SELECT sat.queue_id AS dimensionId, COALESCE(queue.queue_name, CONCAT('队列#', sat.queue_id)) AS dimensionName,
+               COUNT(*) AS invitationCount, COALESCE(SUM(sat.status = 'SUBMITTED'), 0) AS submittedCount,
+               COALESCE(ROUND(AVG(CASE WHEN sat.status = 'SUBMITTED' THEN sat.score END), 2), 0) AS averageScore,
+               COALESCE(ROUND(SUM(sat.status = 'SUBMITTED') * 100.0 / NULLIF(COUNT(*), 0), 2), 0) AS participationRate,
+               COALESCE(ROUND(SUM(sat.status = 'SUBMITTED' AND sat.score IN (4, 5)) * 100.0
+                    / NULLIF(SUM(sat.status = 'SUBMITTED'), 0), 2), 0) AS satisfactionRate
+        FROM cc_call_satisfaction sat
+        LEFT JOIN cc_call_session session ON session.tenant_id = sat.tenant_id AND session.id = sat.session_id
+        LEFT JOIN cc_call_queue queue ON queue.tenant_id = sat.tenant_id AND queue.id = sat.queue_id AND queue.deleted = 0
+        WHERE sat.tenant_id = #{tenantId} AND sat.create_time &gt;= #{startAt} AND sat.create_time &lt; #{endAt}
+        <if test="queueId != null">AND sat.queue_id = #{queueId}</if>
+        <if test="agentId != null">AND COALESCE(session.owner_agent_id, session.agent_id) = #{agentId}</if>
+        <if test="skillGroupId != null">AND queue.skill_group_id = #{skillGroupId}</if>
+        <if test="status != null and status != ''">AND sat.status = #{status}</if>
+        <if test="score != null">AND sat.score = #{score}</if>
+        GROUP BY sat.queue_id, queue.queue_name ORDER BY averageScore DESC, submittedCount DESC LIMIT 20
+        </script>
+        """)
+    List<SatisfactionRankingResponse> selectSatisfactionQueueRanking(@Param("tenantId") String tenantId,
+                                                                      @Param("startAt") LocalDateTime startAt,
+                                                                      @Param("endAt") LocalDateTime endAt,
+                                                                      @Param("queueId") Long queueId,
+                                                                      @Param("agentId") Long agentId,
+                                                                      @Param("skillGroupId") Long skillGroupId,
+                                                                      @Param("status") String status,
+                                                                      @Param("score") Integer score);
+
+    @Select("""
+        <script>
+        SELECT COALESCE(session.owner_agent_id, session.agent_id) AS dimensionId,
+               COALESCE(agent.agent_name, COALESCE(session.owner_agent_extension, session.agent_extension), '未识别坐席') AS dimensionName,
+               COUNT(*) AS invitationCount, COALESCE(SUM(sat.status = 'SUBMITTED'), 0) AS submittedCount,
+               COALESCE(ROUND(AVG(CASE WHEN sat.status = 'SUBMITTED' THEN sat.score END), 2), 0) AS averageScore,
+               COALESCE(ROUND(SUM(sat.status = 'SUBMITTED') * 100.0 / NULLIF(COUNT(*), 0), 2), 0) AS participationRate,
+               COALESCE(ROUND(SUM(sat.status = 'SUBMITTED' AND sat.score IN (4, 5)) * 100.0
+                    / NULLIF(SUM(sat.status = 'SUBMITTED'), 0), 2), 0) AS satisfactionRate
+        FROM cc_call_satisfaction sat
+        LEFT JOIN cc_call_session session ON session.tenant_id = sat.tenant_id AND session.id = sat.session_id
+        LEFT JOIN cc_agent agent ON agent.tenant_id = sat.tenant_id
+             AND agent.id = COALESCE(session.owner_agent_id, session.agent_id) AND agent.deleted = 0
+        LEFT JOIN cc_call_queue queue ON queue.tenant_id = sat.tenant_id AND queue.id = sat.queue_id AND queue.deleted = 0
+        WHERE sat.tenant_id = #{tenantId} AND sat.create_time &gt;= #{startAt} AND sat.create_time &lt; #{endAt}
+        <if test="queueId != null">AND sat.queue_id = #{queueId}</if>
+        <if test="agentId != null">AND COALESCE(session.owner_agent_id, session.agent_id) = #{agentId}</if>
+        <if test="skillGroupId != null">AND queue.skill_group_id = #{skillGroupId}</if>
+        <if test="status != null and status != ''">AND sat.status = #{status}</if>
+        <if test="score != null">AND sat.score = #{score}</if>
+        GROUP BY COALESCE(session.owner_agent_id, session.agent_id), agent.agent_name,
+                 session.owner_agent_extension, session.agent_extension
+        ORDER BY averageScore DESC, submittedCount DESC LIMIT 20
+        </script>
+        """)
+    List<SatisfactionRankingResponse> selectSatisfactionAgentRanking(@Param("tenantId") String tenantId,
+                                                                      @Param("startAt") LocalDateTime startAt,
+                                                                      @Param("endAt") LocalDateTime endAt,
+                                                                      @Param("queueId") Long queueId,
+                                                                      @Param("agentId") Long agentId,
+                                                                      @Param("skillGroupId") Long skillGroupId,
+                                                                      @Param("status") String status,
+                                                                      @Param("score") Integer score);
+
+    @Select("""
+        <script>
+        SELECT sat.id, sat.session_id AS sessionId, sat.business_call_id AS businessCallId,
+               COALESCE(sat.submitted_at, sat.create_time) AS evaluatedAt, session.started_at AS callStartedAt,
+               sat.queue_id AS queueId, COALESCE(queue.queue_name, session.handling_queue_name) AS queueName,
+               skill_group.group_name AS skillGroupName,
+               COALESCE(session.owner_agent_id, session.agent_id) AS agentId, agent.agent_name AS agentName,
+               COALESCE(session.owner_agent_extension, session.agent_extension) AS agentExtension,
+               CASE WHEN CHAR_LENGTH(CASE WHEN session.direction = 'INBOUND' THEN session.caller_number ELSE session.called_number END) &gt;= 7
+                    THEN CONCAT(LEFT(CASE WHEN session.direction = 'INBOUND' THEN session.caller_number ELSE session.called_number END, 3),
+                                '****', RIGHT(CASE WHEN session.direction = 'INBOUND' THEN session.caller_number ELSE session.called_number END, 4))
+                    ELSE CASE WHEN session.direction = 'INBOUND' THEN session.caller_number ELSE session.called_number END END AS customerNumber,
+               sat.score, sat.digit, sat.status,
+               CASE WHEN session.answered_at IS NULL THEN 0 ELSE COALESCE(NULLIF(session.billable_seconds, 0),
+                    GREATEST(0, TIMESTAMPDIFF(SECOND, session.answered_at, COALESCE(session.ended_at, session.answered_at)))) END AS talkSeconds
+        FROM cc_call_satisfaction sat
+        LEFT JOIN cc_call_session session ON session.tenant_id = sat.tenant_id AND session.id = sat.session_id
+        LEFT JOIN cc_agent agent ON agent.tenant_id = sat.tenant_id
+             AND agent.id = COALESCE(session.owner_agent_id, session.agent_id) AND agent.deleted = 0
+        LEFT JOIN cc_call_queue queue ON queue.tenant_id = sat.tenant_id AND queue.id = sat.queue_id AND queue.deleted = 0
+        LEFT JOIN cc_skill_group skill_group ON skill_group.tenant_id = queue.tenant_id
+             AND skill_group.id = queue.skill_group_id AND skill_group.deleted = 0
+        WHERE sat.tenant_id = #{tenantId} AND sat.create_time &gt;= #{startAt} AND sat.create_time &lt; #{endAt}
+        <if test="queueId != null">AND sat.queue_id = #{queueId}</if>
+        <if test="agentId != null">AND COALESCE(session.owner_agent_id, session.agent_id) = #{agentId}</if>
+        <if test="skillGroupId != null">AND queue.skill_group_id = #{skillGroupId}</if>
+        <if test="status != null and status != ''">AND sat.status = #{status}</if>
+        <if test="score != null">AND sat.score = #{score}</if>
+        ORDER BY sat.create_time DESC, sat.id DESC
+        </script>
+        """)
+    Page<SatisfactionDetailResponse> selectSatisfactionDetails(Page<SatisfactionDetailResponse> page,
+                                                                @Param("tenantId") String tenantId,
+                                                                @Param("startAt") LocalDateTime startAt,
+                                                                @Param("endAt") LocalDateTime endAt,
+                                                                @Param("queueId") Long queueId,
+                                                                @Param("agentId") Long agentId,
+                                                                @Param("skillGroupId") Long skillGroupId,
+                                                                @Param("status") String status,
+                                                                @Param("score") Integer score);
+
+    @Select("""
+        <script>
         SELECT COUNT(*) AS totalCalls,
-               SUM(direction = 'INBOUND') AS inboundCalls,
-               SUM(direction = 'OUTBOUND') AS outboundCalls,
-               SUM(answered_at IS NOT NULL) AS answeredCalls,
-               SUM(answered_at IS NULL) AS unansweredCalls,
-               COALESCE(ROUND(SUM(answered_at IS NOT NULL) * 100.0 / NULLIF(COUNT(*), 0), 2), 0) AS answerRate,
-               COALESCE(SUM(CASE WHEN answered_at IS NOT NULL THEN COALESCE(NULLIF(billable_seconds, 0),
-                    GREATEST(0, TIMESTAMPDIFF(SECOND, answered_at, COALESCE(ended_at, #{nowAt})))) ELSE 0 END), 0) AS totalTalkSeconds,
-               COALESCE(ROUND(AVG(CASE WHEN answered_at IS NOT NULL THEN COALESCE(NULLIF(billable_seconds, 0),
-                    GREATEST(0, TIMESTAMPDIFF(SECOND, answered_at, COALESCE(ended_at, #{nowAt})))) END)), 0) AS averageTalkSeconds,
+               SUM(s.direction = 'INBOUND') AS inboundCalls,
+               SUM(s.direction = 'OUTBOUND') AS outboundCalls,
+               SUM(s.answered_at IS NOT NULL) AS answeredCalls,
+               SUM(s.answered_at IS NULL) AS unansweredCalls,
+               COALESCE(ROUND(SUM(s.answered_at IS NOT NULL) * 100.0 / NULLIF(COUNT(*), 0), 2), 0) AS answerRate,
+               COALESCE(SUM(CASE WHEN s.answered_at IS NOT NULL THEN COALESCE(NULLIF(s.billable_seconds, 0),
+                    GREATEST(0, TIMESTAMPDIFF(SECOND, s.answered_at, COALESCE(s.ended_at, #{nowAt})))) ELSE 0 END), 0) AS totalTalkSeconds,
+               COALESCE(ROUND(AVG(CASE WHEN s.answered_at IS NOT NULL THEN COALESCE(NULLIF(s.billable_seconds, 0),
+                    GREATEST(0, TIMESTAMPDIFF(SECOND, s.answered_at, COALESCE(s.ended_at, #{nowAt})))) END)), 0) AS averageTalkSeconds,
                (SELECT COUNT(DISTINCT agent_id) FROM cc_agent_presence_log WHERE tenant_id = #{tenantId}
                     AND ended_at IS NULL AND status != 'OFFLINE') AS onlineAgents,
                (SELECT COUNT(DISTINCT qin.session_id) FROM cc_call_event qin
@@ -39,31 +263,54 @@ public interface ReportMapper {
                         AND answer.event_type = 'AGENT_ANSWER'
                     WHERE qin.tenant_id = #{tenantId} AND qin.event_type = 'QUEUE_IN'
                       AND answer.id IS NULL AND qs.call_status != 'ENDED') AS waitingCalls
-        FROM cc_call_session
-        WHERE tenant_id = #{tenantId} AND started_at >= #{startAt} AND started_at < #{endAt}
+        FROM cc_call_session s
+        LEFT JOIN cc_agent a ON a.tenant_id = s.tenant_id
+            AND a.id = COALESCE(s.owner_agent_id, s.agent_id) AND a.deleted = 0
+        WHERE s.tenant_id = #{tenantId} AND s.started_at &gt;= #{startAt} AND s.started_at &lt; #{endAt}
+        <if test="direction != null and direction != ''">AND s.direction = #{direction}</if>
+        <if test="agentId != null">AND COALESCE(s.owner_agent_id, s.agent_id) = #{agentId}</if>
+        <if test="keyword != null and keyword != ''">
+          AND (s.caller_number LIKE CONCAT('%', #{keyword}, '%') OR s.called_number LIKE CONCAT('%', #{keyword}, '%')
+               OR s.handling_queue_name LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        </script>
         """)
     OverviewKpiResponse selectOverview(@Param("tenantId") String tenantId,
                                         @Param("startAt") LocalDateTime startAt,
                                         @Param("endAt") LocalDateTime endAt,
-                                        @Param("nowAt") LocalDateTime nowAt);
+                                        @Param("nowAt") LocalDateTime nowAt,
+                                        @Param("direction") String direction,
+                                        @Param("agentId") Long agentId,
+                                        @Param("keyword") String keyword);
 
     @Select("""
-        SELECT CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(started_at, '%Y-%m-%d %H:00')
-                    ELSE DATE_FORMAT(started_at, '%Y-%m-%d') END AS bucket,
+        <script>
+        SELECT CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(s.started_at, '%Y-%m-%d %H:00')
+                    ELSE DATE_FORMAT(s.started_at, '%Y-%m-%d') END AS bucket,
                COUNT(*) AS totalCalls,
-               SUM(direction = 'INBOUND') AS inboundCalls,
-               SUM(direction = 'OUTBOUND') AS outboundCalls,
-               SUM(answered_at IS NOT NULL) AS answeredCalls
-        FROM cc_call_session
-        WHERE tenant_id = #{tenantId} AND started_at >= #{startAt} AND started_at < #{endAt}
-        GROUP BY CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(started_at, '%Y-%m-%d %H:00')
-                      ELSE DATE_FORMAT(started_at, '%Y-%m-%d') END
+               SUM(s.direction = 'INBOUND') AS inboundCalls,
+               SUM(s.direction = 'OUTBOUND') AS outboundCalls,
+               SUM(s.answered_at IS NOT NULL) AS answeredCalls
+        FROM cc_call_session s
+        WHERE s.tenant_id = #{tenantId} AND s.started_at &gt;= #{startAt} AND s.started_at &lt; #{endAt}
+        <if test="direction != null and direction != ''">AND s.direction = #{direction}</if>
+        <if test="agentId != null">AND COALESCE(s.owner_agent_id, s.agent_id) = #{agentId}</if>
+        <if test="keyword != null and keyword != ''">
+          AND (s.caller_number LIKE CONCAT('%', #{keyword}, '%') OR s.called_number LIKE CONCAT('%', #{keyword}, '%')
+               OR s.handling_queue_name LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        GROUP BY CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(s.started_at, '%Y-%m-%d %H:00')
+                      ELSE DATE_FORMAT(s.started_at, '%Y-%m-%d') END
         ORDER BY bucket
+        </script>
         """)
     List<ReportTrendPointResponse> selectTrend(@Param("tenantId") String tenantId,
                                                 @Param("startAt") LocalDateTime startAt,
                                                 @Param("endAt") LocalDateTime endAt,
-                                                @Param("granularity") String granularity);
+                                                @Param("granularity") String granularity,
+                                                @Param("direction") String direction,
+                                                @Param("agentId") Long agentId,
+                                                @Param("keyword") String keyword);
 
     @Select("""
         <script>
@@ -75,16 +322,23 @@ public interface ReportMapper {
                  ELSE 'FAILED'
                END AS category,
                COUNT(*) AS count
-        FROM cc_call_session
-        WHERE tenant_id = #{tenantId} AND started_at &gt;= #{startAt} AND started_at &lt; #{endAt}
-        <if test="direction != null and direction != ''">AND direction = #{direction}</if>
+        FROM cc_call_session s
+        WHERE s.tenant_id = #{tenantId} AND s.started_at &gt;= #{startAt} AND s.started_at &lt; #{endAt}
+        <if test="direction != null and direction != ''">AND s.direction = #{direction}</if>
+        <if test="agentId != null">AND COALESCE(s.owner_agent_id, s.agent_id) = #{agentId}</if>
+        <if test="keyword != null and keyword != ''">
+          AND (s.caller_number LIKE CONCAT('%', #{keyword}, '%') OR s.called_number LIKE CONCAT('%', #{keyword}, '%')
+               OR s.handling_queue_name LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
         GROUP BY category ORDER BY count DESC
         </script>
         """)
     List<CallDistributionResponse> selectDistribution(@Param("tenantId") String tenantId,
                                                        @Param("startAt") LocalDateTime startAt,
                                                        @Param("endAt") LocalDateTime endAt,
-                                                       @Param("direction") String direction);
+                                                       @Param("direction") String direction,
+                                                       @Param("agentId") Long agentId,
+                                                       @Param("keyword") String keyword);
 
     @Select("""
         <script>

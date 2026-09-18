@@ -1,6 +1,7 @@
 package org.dromara.outbound.service;
 
 import org.dromara.outbound.domain.request.AutoOutboundTaskRequest;
+import org.dromara.outbound.domain.request.AutoOutboundTaskQuery;
 import org.dromara.outbound.domain.request.AutoOutboundSourceRequest;
 import org.dromara.outbound.domain.response.AutoOutboundMaterializeResponse;
 import org.dromara.outbound.domain.response.AutoOutboundMemberResponse;
@@ -14,6 +15,7 @@ import java.util.List;
 
 public interface AutoOutboundTaskService {
     List<AutoOutboundTaskResponse> list();
+    TableDataInfo<AutoOutboundTaskResponse> page(AutoOutboundTaskQuery query, PageQuery pageQuery);
     AutoOutboundTaskResponse get(Long id);
     Long create(AutoOutboundTaskRequest request);
     void update(Long id, AutoOutboundTaskRequest request);

@@ -21,6 +21,7 @@ import org.dromara.outbound.domain.OutboundTaskRetryRule;
 import org.dromara.outbound.domain.OutboundTaskSource;
 import org.dromara.outbound.domain.request.AutoOutboundSourceRequest;
 import org.dromara.outbound.domain.request.AutoOutboundTaskRequest;
+import org.dromara.outbound.domain.request.AutoOutboundTaskQuery;
 import org.dromara.outbound.domain.response.AutoOutboundMaterializeResponse;
 import org.dromara.outbound.domain.response.AutoOutboundMonitorResponse;
 import org.dromara.outbound.domain.response.AutoOutboundMemberResponse;
@@ -91,6 +92,21 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
                 .eq(OutboundTask::getTaskType, TASK_TYPE)
                 .orderByDesc(OutboundTask::getCreateTime))
             .stream().map(this::toResponse).toList();
+    }
+
+    @Override
+    public TableDataInfo<AutoOutboundTaskResponse> page(AutoOutboundTaskQuery query, PageQuery pageQuery) {
+        LambdaQueryWrapper<OutboundTask> wrapper = new LambdaQueryWrapper<OutboundTask>()
+            .eq(OutboundTask::getTaskType, TASK_TYPE)
+            .and(StringUtils.isNotBlank(query.getKeyword()), condition -> condition
+                .like(OutboundTask::getTaskName, query.getKeyword())
+                .or()
+                .like(OutboundTask::getTaskCode, query.getKeyword()))
+            .eq(StringUtils.isNotBlank(query.getDialMode()), OutboundTask::getDialMode, query.getDialMode())
+            .eq(StringUtils.isNotBlank(query.getStatus()), OutboundTask::getStatus, query.getStatus())
+            .orderByDesc(OutboundTask::getCreateTime);
+        Page<OutboundTask> page = taskMapper.selectPage(pageQuery.build(), wrapper);
+        return new TableDataInfo<>(page.getRecords().stream().map(this::toResponse).toList(), page.getTotal());
     }
 
     @Override

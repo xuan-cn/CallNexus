@@ -15,6 +15,8 @@ public final class EslHeaders {
     public static final String VARIABLE_DIALED_USER = "variable_dialed_user";
     public static final String VARIABLE_DIALLED_USER = "variable_dialled_user";
     public static final String VARIABLE_CURRENT_APPLICATION_DATA = "variable_current_application_data";
+    public static final String APPLICATION = "Application";
+    public static final String APPLICATION_DATA = "Application-Data";
     public static final String HANGUP_CAUSE = "Hangup-Cause";
     public static final String VARIABLE_HANGUP_CAUSE = "variable_hangup_cause";
     public static final String VARIABLE_ORIGINATE_DISPOSITION = "variable_originate_disposition";
@@ -41,6 +43,7 @@ public final class EslHeaders {
     public static final String VARIABLE_CALLNEXUS_CUSTOMER_PHONE = "variable_callnexus_customer_phone";
     public static final String VARIABLE_CALLNEXUS_OUTBOUND_TASK_ID = "variable_callnexus_outbound_task_id";
     public static final String VARIABLE_CALLNEXUS_OUTBOUND_MEMBER_ID = "variable_callnexus_outbound_member_id";
+    public static final String VARIABLE_CALLNEXUS_IVR_QUEUE_ID = "variable_callnexus_ivr_queue_id";
     public static final String VARIABLE_CALLNEXUS_DISPATCH_TASK_ID = "variable_callnexus_dispatch_task_id";
     public static final String VARIABLE_CALLNEXUS_DISPATCH_TARGET_ID = "variable_callnexus_dispatch_target_id";
 

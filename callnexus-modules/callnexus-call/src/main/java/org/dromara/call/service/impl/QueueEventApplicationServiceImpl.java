@@ -213,6 +213,64 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
             eventType, event.headers().get(EslHeaders.CC_QUEUE), null, metadataJson);
     }
 
+    @Override
+    public void recordQueueEntryOnExecute(TelephonyEvent event) {
+        if (event == null || !EslEventNames.CHANNEL_EXECUTE.equals(event.eventName())) {
+            return;
+        }
+        String application = firstNonBlank(
+            event.headers().get(EslHeaders.APPLICATION),
+            event.headers().get("application"));
+        if (!"callcenter".equalsIgnoreCase(application)) {
+            return;
+        }
+        Long queueId = longValue(event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_IVR_QUEUE_ID));
+        if (queueId == null) {
+            // 普通队列路由已经通过 QueueEntrySignalEvent 记录；这里只补 IVR 节点明确携带的队列 ID。
+            return;
+        }
+        Long sessionId = TenantHelper.ignore(() -> resolveSessionIdByChannelUuid(event.uuid()));
+        if (sessionId == null) {
+            String businessCallId = event.headers().get(EslHeaders.VARIABLE_CALLNEXUS_BUSINESS_CALL_ID);
+            sessionId = TenantHelper.ignore(() -> resolveSessionIdByBusinessCallId(businessCallId));
+        }
+        if (sessionId == null) {
+            log.warn("IVR 执行 callcenter 时未找到业务通话，无法记录入队，uuid={}，queueId={}",
+                event.uuid(), queueId);
+            return;
+        }
+        Long finalSessionId = sessionId;
+        CallSession session = TenantHelper.ignore(() -> sessionMapper.selectById(finalSessionId));
+        if (session == null || StringUtils.isBlank(session.getTenantId())) {
+            return;
+        }
+        TenantHelper.dynamic(session.getTenantId(), () -> persistExecuteQueueEntry(
+            event, finalSessionId, queueId));
+    }
+
+    private void persistExecuteQueueEntry(TelephonyEvent event, Long sessionId, Long queueId) {
+        CallCenterResourceQueryService.QueueInfo queue = resourceQueryService.findQueueById(queueId, event.nodeId());
+        if (queue == null) {
+            log.warn("IVR 执行 callcenter 时未找到可用队列，已跳过入队记录，nodeId={}，queueId={}",
+                event.nodeId(), queueId);
+            return;
+        }
+        String applicationData = firstNonBlank(
+            event.headers().get(EslHeaders.APPLICATION_DATA),
+            event.headers().get(EslHeaders.VARIABLE_CURRENT_APPLICATION_DATA));
+        appendQueueTimelineEvent(
+            sessionId,
+            event.uuid(),
+            null,
+            "QUEUE_IN",
+            queue.queueName() != null ? queue.queueName() + "（" + queue.queueCode() + "）" : applicationData,
+            null,
+            buildQueueEntryMetadata(queue, event.nodeId(), "esl_channel_execute")
+        );
+        log.info("由 CHANNEL_EXECUTE 记录 IVR 进入队列事件，sessionId={}，queueId={}，queueCode={}",
+            sessionId, queue.queueId(), queue.queueCode());
+    }
+
     // ==================== ESL CHANNEL_BRIDGE 路径：记录坐席接听 ====================
 
     /**
@@ -676,6 +734,14 @@ public class QueueEventApplicationServiceImpl implements QueueEventApplicationSe
 
     private String stringValue(Object value) {
         return value == null || "null".equalsIgnoreCase(value.toString()) ? null : value.toString();
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) return null;
+        for (String value : values) {
+            if (StringUtils.isNotBlank(value)) return value;
+        }
+        return null;
     }
 
     // ==================== 辅助方法 ====================

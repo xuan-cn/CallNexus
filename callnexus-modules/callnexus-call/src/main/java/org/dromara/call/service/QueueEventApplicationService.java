@@ -18,6 +18,14 @@ public interface QueueEventApplicationService {
     void handleQueueEvent(TelephonyEvent event);
 
     /**
+     * 在 IVR 拨号计划开始执行 callcenter 应用时记录真实入队时点。
+     *
+     * <p>IVR 转队列不会经过普通队列路由的 xml-curl 处理器，因此必须从
+     * CHANNEL_EXECUTE 信号补充 QUEUE_IN，否则无坐席振铃时实时排队数始终为零。
+     */
+    void recordQueueEntryOnExecute(TelephonyEvent event);
+
+    /**
      * 当 ESL CHANNEL_BRIDGE 事件发生且关联的业务通话来自队列时，记录"坐席接听"节点，
      * 并把实际接听队列写入业务通话主记录，供话后整理时长计算和详情展示。
      *

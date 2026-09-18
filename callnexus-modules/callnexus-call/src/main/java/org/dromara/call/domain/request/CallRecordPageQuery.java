@@ -1,6 +1,10 @@
 package org.dromara.call.domain.request;
 
 import lombok.Data;
+import org.springframework.format.annotation.DateTimeFormat;
+
+import java.time.LocalDateTime;
+import java.util.Set;
 
 @Data
 public class CallRecordPageQuery {
@@ -13,4 +17,13 @@ public class CallRecordPageQuery {
     private String callStatus;
     private String answerResult;
     private String hangupCause;
+    @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime startedAtFrom;
+    @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime startedAtTo;
+    private Integer minRecordingDurationSeconds;
+    private Integer maxRecordingDurationSeconds;
+    private Boolean dataScopeRestricted;
+    private Set<Long> dataScopeAgentIds;
+    private Set<Long> dataScopeQueueIds;
 }

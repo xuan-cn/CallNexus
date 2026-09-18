@@ -433,6 +433,12 @@
 
             <dependency>
                 <groupId>org.dromara</groupId>
+                <artifactId>callnexus-quality</artifactId>
+                <version>${revision}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.dromara</groupId>
                 <artifactId>callnexus-ai</artifactId>
                 <version>${revision}</version>
             </dependency>

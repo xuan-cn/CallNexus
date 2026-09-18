@@ -16,4 +16,6 @@ public class ReportQuery {
     private Long taskId;
     private String taskType;
     private String resultCode;
+    private String satisfactionStatus;
+    private Integer satisfactionScore;
 }

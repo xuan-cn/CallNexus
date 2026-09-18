@@ -13,6 +13,9 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+
 @RestController
 @RequestMapping("/api/v1/call-records")
 @RequiredArgsConstructor
@@ -29,5 +32,11 @@ public class CallRecordController {
     @SaCheckPermission("callcenter:call-record:query")
     public R<CallRecordResponse> get(@PathVariable Long id) {
         return R.ok(applicationService.get(id));
+    }
+
+    @GetMapping("/{id}/recording/download")
+    @SaCheckPermission("callcenter:call-record:query")
+    public void downloadRecording(@PathVariable Long id, HttpServletResponse response) throws IOException {
+        applicationService.downloadRecording(id, response);
     }
 }

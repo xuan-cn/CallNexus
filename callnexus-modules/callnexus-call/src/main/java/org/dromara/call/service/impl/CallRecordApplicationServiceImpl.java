@@ -54,6 +54,7 @@ import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.dromara.resource.number.domain.request.PhoneNumberNormalizeRequest;
 import org.dromara.resource.number.domain.response.PhoneNumberNormalizeResponse;
 import org.dromara.resource.number.service.PhoneNumberNormalizationService;
+import org.dromara.system.service.ISysOssService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
@@ -82,6 +83,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private final AgentRealtimeQueryService agentQueryService;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final OssService ossService;
+    private final ISysOssService sysOssService;
     private final QueueEventApplicationService queueEventApplicationService;
     private final BusinessAssociationQueryService businessAssociationQueryService;
     private final PhoneNumberNormalizationService phoneNumberNormalizationService;
@@ -109,6 +111,9 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
 
     @Override
     public TableDataInfo<CallRecordResponse> page(CallRecordPageQuery query, PageQuery pageQuery) {
+        validateRecordingDurationRange(query);
+        boolean filterRecordingDuration = query.getMinRecordingDurationSeconds() != null
+            || query.getMaxRecordingDurationSeconds() != null;
         LambdaQueryWrapper<CallSession> wrapper = new LambdaQueryWrapper<CallSession>()
             .eq(query.getCustomerId() != null, CallSession::getCustomerId, query.getCustomerId())
             .eq(query.getTicketId() != null, CallSession::getTicketId, query.getTicketId())
@@ -125,7 +130,17 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
             .eq("MISSED".equals(query.getAnswerResult()), CallSession::getCallStatus, "ENDED")
             .isNull("MISSED".equals(query.getAnswerResult()), CallSession::getAnsweredAt)
             .eq(StringUtils.isNotBlank(query.getHangupCause()), CallSession::getHangupCause, query.getHangupCause())
+            .ge(query.getStartedAtFrom() != null, CallSession::getStartedAt, query.getStartedAtFrom())
+            .le(query.getStartedAtTo() != null, CallSession::getStartedAt, query.getStartedAtTo())
+            .isNotNull(filterRecordingDuration, CallSession::getRecordingOssId)
+            .apply(query.getMinRecordingDurationSeconds() != null,
+                "CASE WHEN billable_seconds > 0 THEN billable_seconds ELSE COALESCE(duration_seconds, 0) END >= {0}",
+                query.getMinRecordingDurationSeconds())
+            .apply(query.getMaxRecordingDurationSeconds() != null,
+                "CASE WHEN billable_seconds > 0 THEN billable_seconds ELSE COALESCE(duration_seconds, 0) END <= {0}",
+                query.getMaxRecordingDurationSeconds())
             .orderByDesc(CallSession::getStartedAt);
+        applyDataScope(wrapper, query);
         Page<CallSession> page = sessionMapper.selectPage(pageQuery.build(), wrapper);
         CallSession newest = page.getRecords().isEmpty() ? null : page.getRecords().get(0);
         log.info("Call record page queried, tenantId={}, pageNum={}, pageSize={}, direction={}, callStatus={}, total={}, returned={}, newestBusinessCallId={}, newestStartedAt={}",
@@ -140,6 +155,48 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         CallSession session = sessionMapper.selectById(id);
         if (session == null) throw new ServiceException("通话记录不存在");
         return toResponse(session, true);
+    }
+
+    @Override
+    public void downloadRecording(Long id, jakarta.servlet.http.HttpServletResponse response) throws java.io.IOException {
+        CallSession session = sessionMapper.selectById(id);
+        if (session == null) {
+            throw new ServiceException("通话记录不存在");
+        }
+        if (session.getRecordingOssId() == null || !"UPLOADED".equals(session.getRecordingStatus())) {
+            throw new ServiceException("当前通话没有可下载的录音");
+        }
+        sysOssService.download(session.getRecordingOssId(), response);
+    }
+
+    private void validateRecordingDurationRange(CallRecordPageQuery query) {
+        Integer min = query.getMinRecordingDurationSeconds();
+        Integer max = query.getMaxRecordingDurationSeconds();
+        if ((min != null && min < 0) || (max != null && max < 0)) {
+            throw new ServiceException("录音时长不能小于 0 秒");
+        }
+        if (min != null && max != null && min > max) {
+            throw new ServiceException("最短录音时长不能大于最长录音时长");
+        }
+    }
+
+    private void applyDataScope(LambdaQueryWrapper<CallSession> wrapper, CallRecordPageQuery query) {
+        if (!Boolean.TRUE.equals(query.getDataScopeRestricted())) return;
+        boolean hasAgentScope = query.getDataScopeAgentIds() != null && !query.getDataScopeAgentIds().isEmpty();
+        boolean hasQueueScope = query.getDataScopeQueueIds() != null && !query.getDataScopeQueueIds().isEmpty();
+        if (!hasAgentScope && !hasQueueScope) {
+            wrapper.apply("1 = 0");
+            return;
+        }
+        wrapper.and(scope -> {
+            if (hasAgentScope) {
+                scope.in(CallSession::getAgentId, query.getDataScopeAgentIds());
+            }
+            if (hasQueueScope) {
+                scope.or(hasAgentScope).and(queue -> queue.isNull(CallSession::getAgentId)
+                    .in(CallSession::getHandlingQueueId, query.getDataScopeQueueIds()));
+            }
+        });
     }
 
     private void persistEvent(TelephonyEvent event, String tenantId) {
