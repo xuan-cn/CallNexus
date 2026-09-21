@@ -11,6 +11,7 @@ import org.dromara.agent.domain.SkillGroup;
 import org.dromara.agent.mapper.AgentMapper;
 import org.dromara.agent.mapper.SkillGroupMemberMapper;
 import org.dromara.agent.mapper.SkillGroupMapper;
+import org.dromara.agent.service.AgentDataScopeService;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.core.exception.ServiceException;
@@ -66,6 +67,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     private final AgentMapper agentMapper;
     private final SkillGroupMapper skillGroupMapper;
     private final SkillGroupMemberMapper skillGroupMemberMapper;
+    private final AgentDataScopeService agentDataScopeService;
     private final CustomerPhoneNormalizer phoneNormalizer;
     private final DynamicFormSubmissionService formSubmissionService;
     private final DynamicFormQueryService formQueryService;
@@ -75,7 +77,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     public TableDataInfo<CustomerResponse> page(CustomerPageQuery query, PageQuery pageQuery) {
         CustomerPageQuery safeQuery = query == null ? new CustomerPageQuery() : query;
         boolean unassignedOnly = isAssignmentState(safeQuery, "UNASSIGNED");
-        if (unassignedOnly && (!isAssignmentAdmin() || hasOwnerFilter(safeQuery))) {
+        if (unassignedOnly && hasOwnerFilter(safeQuery)) {
             return new TableDataInfo<>(List.of(), 0L);
         }
         Set<Long> importCustomerIds = resolveImportCustomerIds(safeQuery);
@@ -99,6 +101,13 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
             wrapper.in(Customer::getId, importCustomerIds);
         }
         if (unassignedOnly) {
+            Set<Long> createdCustomerIds = resolveCreatedCustomerIds();
+            if (createdCustomerIds != null) {
+                if (createdCustomerIds.isEmpty()) {
+                    return new TableDataInfo<>(List.of(), 0L);
+                }
+                wrapper.in(Customer::getId, createdCustomerIds);
+            }
             if (!assignmentCustomerIds.isEmpty()) {
                 wrapper.notIn(Customer::getId, assignmentCustomerIds);
             }
@@ -135,8 +144,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
 
     @Override
     public CustomerResponse get(Long id) {
-        Customer customer = customerMapper.selectById(id);
-        if (customer == null) throw new ServiceException("客户不存在");
+        Customer customer = requireVisibleCustomer(id);
         return toDetailResponse(customer);
     }
 
@@ -144,7 +152,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     public CustomerResponse getByPhone(String primaryPhone) {
         if (!phoneNormalizer.isValid(primaryPhone)) return null;
         Customer customer = findByPhone(primaryPhone);
-        return customer == null ? null : toDetailResponse(customer);
+        return customer == null ? null : toDetailResponse(requireVisibleCustomer(customer.getId()));
     }
 
     @Override
@@ -203,7 +211,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
             throw new ServiceException("请选择需要分配的客户");
         }
         List<Long> allocationAgentIds = validateAssignmentTarget(request);
-        customerIds.forEach(this::requireCustomer);
+        customerIds.forEach(this::requireVisibleCustomer);
         Map<Long, CustomerAssignment> previousAssignments = new HashMap<>();
         for (int start = 0; start < customerIds.size(); start += 500) {
             List<Long> part = customerIds.subList(start, Math.min(start + 500, customerIds.size()));
@@ -344,7 +352,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void update(Long id, UpdateCustomerRequest request) {
-        Customer customer = requireCustomer(id);
+        Customer customer = requireVisibleCustomer(id);
         customer.setCustomerName(request.getCustomerName());
         customer.setTemplateId(request.getTemplateId());
         customerMapper.updateById(customer);
@@ -405,14 +413,14 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
 
     @Override
     public List<CustomerPhoneResponse> listPhones(Long customerId) {
-        requireCustomer(customerId);
+        requireVisibleCustomer(customerId);
         return customerPhoneMapper.selectList(phoneQuery(customerId)).stream().map(this::toPhoneResponse).toList();
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long addPhone(Long customerId, CustomerPhoneRequest request) {
-        Customer customer = requireCustomer(customerId);
+        Customer customer = requireVisibleCustomer(customerId);
         String normalizedPhone = phoneNormalizer.normalize(request.getPhoneNumber());
         rejectPhoneOwnedByAnotherCustomer(normalizedPhone, customerId, null);
         long phoneCount = customerPhoneMapper.selectCount(new LambdaQueryWrapper<CustomerPhone>()
@@ -442,7 +450,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void updatePhone(Long customerId, Long phoneId, CustomerPhoneRequest request) {
-        Customer customer = requireCustomer(customerId);
+        Customer customer = requireVisibleCustomer(customerId);
         CustomerPhone phone = requirePhone(customerId, phoneId);
         String normalizedPhone = phoneNormalizer.normalize(request.getPhoneNumber());
         rejectPhoneOwnedByAnotherCustomer(normalizedPhone, customerId, phoneId);
@@ -471,7 +479,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void setPrimaryPhone(Long customerId, Long phoneId) {
-        Customer customer = requireCustomer(customerId);
+        Customer customer = requireVisibleCustomer(customerId);
         CustomerPhone phone = requirePhone(customerId, phoneId);
         if (!Boolean.TRUE.equals(phone.getEnabled())) {
             throw new ServiceException("停用号码不能设为主号码");
@@ -485,7 +493,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deletePhone(Long customerId, Long phoneId) {
-        Customer customer = requireCustomer(customerId);
+        Customer customer = requireVisibleCustomer(customerId);
         CustomerPhone phone = requirePhone(customerId, phoneId);
         List<CustomerPhone> phones = customerPhoneMapper.selectList(phoneQuery(customerId));
         if (phones.size() <= 1) {
@@ -508,7 +516,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
 
     @Override
     public List<CustomerFollowUpResponse> listFollowUps(Long customerId) {
-        requireCustomer(customerId);
+        requireVisibleCustomer(customerId);
         return followUpMapper.selectList(new LambdaQueryWrapper<CustomerFollowUp>()
                 .eq(CustomerFollowUp::getCustomerId, customerId)
                 .orderByDesc(CustomerFollowUp::getCreateTime))
@@ -517,7 +525,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
 
     @Override
     public TableDataInfo<CustomerFollowUpResponse> pageFollowUps(Long customerId, PageQuery pageQuery) {
-        requireCustomer(customerId);
+        requireVisibleCustomer(customerId);
         IPage<CustomerFollowUpResponse> page = followUpMapper.selectPage(pageQuery.build(), new LambdaQueryWrapper<CustomerFollowUp>()
                 .eq(CustomerFollowUp::getCustomerId, customerId)
                 .orderByDesc(CustomerFollowUp::getCreateTime))
@@ -527,7 +535,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
 
     @Override
     public Long addFollowUp(Long customerId, String content) {
-        requireCustomer(customerId);
+        requireVisibleCustomer(customerId);
         CustomerFollowUp followUp = new CustomerFollowUp();
         followUp.setCustomerId(customerId);
         followUp.setContent(content.trim());
@@ -725,9 +733,16 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         if (!restricted && !filtered) {
             return null;
         }
-        return customerAssignmentMapper.selectList(wrapper).stream()
+        Set<Long> customerIds = customerAssignmentMapper.selectList(wrapper).stream()
             .map(CustomerAssignment::getCustomerId)
-            .collect(Collectors.toSet());
+            .collect(Collectors.toCollection(HashSet::new));
+        if (restricted && !filtered) {
+            Set<Long> createdCustomerIds = resolveCreatedCustomerIds();
+            if (createdCustomerIds != null) {
+                customerIds.addAll(createdCustomerIds);
+            }
+        }
+        return customerIds;
     }
 
     private LambdaQueryWrapper<CustomerAssignment> activeAssignmentQuery() {
@@ -736,32 +751,22 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     }
 
     private boolean applyVisibleScope(LambdaQueryWrapper<CustomerAssignment> wrapper) {
-        if (isAssignmentAdmin()) {
+        AgentDataScopeService.Scope dataScope = agentDataScopeService.current();
+        if (!dataScope.restricted()) {
             return false;
         }
-        Long userId = LoginHelper.getUserId();
-        if (userId == null) {
+        if (dataScope.agentIds().isEmpty() && dataScope.skillGroupIds().isEmpty()) {
             wrapper.eq(CustomerAssignment::getCustomerId, -1L);
             return true;
         }
-        List<Agent> agents = agentMapper.selectList(new LambdaQueryWrapper<Agent>()
-            .eq(Agent::getUserId, userId)
-            .eq(Agent::getEnabled, true));
-        Set<Long> agentIds = agents.stream().map(Agent::getId).collect(Collectors.toSet());
-        if (agentIds.isEmpty()) {
-            wrapper.eq(CustomerAssignment::getCustomerId, -1L);
-            return true;
-        }
-        Set<Long> skillGroupIds = skillGroupMemberMapper.selectList(new LambdaQueryWrapper<SkillGroupMember>()
-                .in(SkillGroupMember::getAgentId, agentIds))
-            .stream()
-            .map(SkillGroupMember::getSkillGroupId)
-            .collect(Collectors.toSet());
-        wrapper.and(scope -> {
-            scope.in(CustomerAssignment::getAgentId, agentIds);
-            if (!skillGroupIds.isEmpty()) {
-                scope.or(groupOwned -> groupOwned
-                    .in(CustomerAssignment::getSkillGroupId, skillGroupIds)
+        wrapper.and(visible -> {
+            boolean hasAgents = !dataScope.agentIds().isEmpty();
+            if (hasAgents) {
+                visible.in(CustomerAssignment::getAgentId, dataScope.agentIds());
+            }
+            if (!dataScope.skillGroupIds().isEmpty()) {
+                visible.or(hasAgents).and(groupOwned -> groupOwned
+                    .in(CustomerAssignment::getSkillGroupId, dataScope.skillGroupIds())
                     .isNull(CustomerAssignment::getAgentId));
             }
         });
@@ -779,14 +784,22 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         LambdaQueryWrapper<CustomerAssignment> wrapper = activeAssignmentQuery()
             .eq(CustomerAssignment::getCustomerId, customerId);
         applyVisibleScope(wrapper);
-        if (customerAssignmentMapper.selectCount(wrapper) == 0) {
-            throw new ServiceException("无权删除该客户资料");
+        if (customerAssignmentMapper.selectCount(wrapper) == 0
+            && customerMapper.countDataScopeCustomerById(customerId) == 0) {
+            throw new ServiceException("客户不存在或无权访问");
         }
         return customer;
     }
 
     private boolean isAssignmentAdmin() {
-        return LoginHelper.isSuperAdmin() || LoginHelper.isTenantAdmin();
+        return !agentDataScopeService.current().restricted();
+    }
+
+    private Set<Long> resolveCreatedCustomerIds() {
+        if (isAssignmentAdmin()) {
+            return null;
+        }
+        return new HashSet<>(customerMapper.selectDataScopeCustomerIds());
     }
 
     private boolean isAssignmentState(CustomerPageQuery query, String state) {

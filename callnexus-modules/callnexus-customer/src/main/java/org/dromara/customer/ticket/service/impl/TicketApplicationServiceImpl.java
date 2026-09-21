@@ -9,6 +9,7 @@ import org.dromara.common.core.domain.dto.StartProcessDTO;
 import org.dromara.common.core.enums.BusinessStatusEnum;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.service.WorkflowService;
+import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.customer.form.domain.FormBusinessType;
 import org.dromara.customer.form.domain.FormTemplate;
 import org.dromara.customer.form.mapper.FormTemplateMapper;
@@ -61,7 +62,9 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         if (!dynamicCondition.isEmpty()) {
             wrapper.apply(dynamicCondition.sql(), dynamicCondition.parameters());
         }
-        Page<Ticket> page = ticketMapper.selectPage(pageQuery.build(), wrapper);
+        Page<Ticket> page = LoginHelper.isLogin()
+            ? ticketMapper.selectDataScopePage(pageQuery.build(), wrapper)
+            : ticketMapper.selectPage(pageQuery.build(), wrapper);
         List<Long> ticketIds = page.getRecords().stream().map(Ticket::getId).toList();
         Map<Long, Map<String, Object>> formDataByTicket = formSubmissionService.getFormData(FormBusinessType.TICKET, ticketIds);
         List<TicketResponse> responses = page.getRecords().stream().map(ticket -> {
@@ -74,8 +77,7 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
 
     @Override
     public TicketResponse get(Long id) {
-        Ticket ticket = ticketMapper.selectById(id);
-        if (ticket == null) throw new ServiceException("工单不存在");
+        Ticket ticket = requireTicket(id);
         TicketResponse response = toResponse(ticket);
         response.setFormData(formSubmissionService.getFormData(FormBusinessType.TICKET, id));
         return response;
@@ -187,9 +189,11 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
     }
 
     private Ticket requireTicket(Long id) {
-        Ticket ticket = ticketMapper.selectById(id);
+        Ticket ticket = LoginHelper.isLogin()
+            ? ticketMapper.selectDataScopeById(id)
+            : ticketMapper.selectById(id);
         if (ticket == null) {
-            throw new ServiceException("工单不存在");
+            throw new ServiceException("工单不存在或无权访问");
         }
         return ticket;
     }

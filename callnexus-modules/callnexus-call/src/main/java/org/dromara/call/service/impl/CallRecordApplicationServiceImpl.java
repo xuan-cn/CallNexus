@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.agent.domain.response.AgentRealtimeTargetResponse;
 import org.dromara.agent.service.AgentRealtimeQueryService;
+import org.dromara.agent.service.AgentDataScopeService;
 import org.dromara.call.constant.EslEventNames;
 import org.dromara.call.constant.EslHeaders;
 import org.dromara.call.domain.AgentCallSession;
@@ -81,6 +82,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
     private final VoiceMailMessageMapper voiceMailMessageMapper;
     private final CallSatisfactionMapper satisfactionMapper;
     private final AgentRealtimeQueryService agentQueryService;
+    private final AgentDataScopeService agentDataScopeService;
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final OssService ossService;
     private final ISysOssService sysOssService;
@@ -140,7 +142,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
                 "CASE WHEN billable_seconds > 0 THEN billable_seconds ELSE COALESCE(duration_seconds, 0) END <= {0}",
                 query.getMaxRecordingDurationSeconds())
             .orderByDesc(CallSession::getStartedAt);
-        applyDataScope(wrapper, query);
+        applyDataScope(wrapper, agentDataScopeService.current());
         Page<CallSession> page = sessionMapper.selectPage(pageQuery.build(), wrapper);
         CallSession newest = page.getRecords().isEmpty() ? null : page.getRecords().get(0);
         log.info("Call record page queried, tenantId={}, pageNum={}, pageSize={}, direction={}, callStatus={}, total={}, returned={}, newestBusinessCallId={}, newestStartedAt={}",
@@ -152,17 +154,13 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
 
     @Override
     public CallRecordResponse get(Long id) {
-        CallSession session = sessionMapper.selectById(id);
-        if (session == null) throw new ServiceException("通话记录不存在");
+        CallSession session = requireVisibleSession(id);
         return toResponse(session, true);
     }
 
     @Override
     public void downloadRecording(Long id, jakarta.servlet.http.HttpServletResponse response) throws java.io.IOException {
-        CallSession session = sessionMapper.selectById(id);
-        if (session == null) {
-            throw new ServiceException("通话记录不存在");
-        }
+        CallSession session = requireVisibleSession(id);
         if (session.getRecordingOssId() == null || !"UPLOADED".equals(session.getRecordingStatus())) {
             throw new ServiceException("当前通话没有可下载的录音");
         }
@@ -180,23 +178,31 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
         }
     }
 
-    private void applyDataScope(LambdaQueryWrapper<CallSession> wrapper, CallRecordPageQuery query) {
-        if (!Boolean.TRUE.equals(query.getDataScopeRestricted())) return;
-        boolean hasAgentScope = query.getDataScopeAgentIds() != null && !query.getDataScopeAgentIds().isEmpty();
-        boolean hasQueueScope = query.getDataScopeQueueIds() != null && !query.getDataScopeQueueIds().isEmpty();
+    private void applyDataScope(LambdaQueryWrapper<CallSession> wrapper, AgentDataScopeService.Scope dataScope) {
+        if (!dataScope.restricted()) return;
+        boolean hasAgentScope = !dataScope.agentIds().isEmpty();
+        boolean hasQueueScope = !dataScope.queueIds().isEmpty();
         if (!hasAgentScope && !hasQueueScope) {
             wrapper.apply("1 = 0");
             return;
         }
-        wrapper.and(scope -> {
+        wrapper.and(visible -> {
             if (hasAgentScope) {
-                scope.in(CallSession::getAgentId, query.getDataScopeAgentIds());
+                visible.in(CallSession::getAgentId, dataScope.agentIds());
             }
             if (hasQueueScope) {
-                scope.or(hasAgentScope).and(queue -> queue.isNull(CallSession::getAgentId)
-                    .in(CallSession::getHandlingQueueId, query.getDataScopeQueueIds()));
+                visible.or(hasAgentScope).and(queue -> queue.isNull(CallSession::getAgentId)
+                    .in(CallSession::getHandlingQueueId, dataScope.queueIds()));
             }
         });
+    }
+
+    private CallSession requireVisibleSession(Long id) {
+        CallSession session = sessionMapper.selectById(id);
+        if (session == null || !agentDataScopeService.current().allows(session.getAgentId(), session.getHandlingQueueId())) {
+            throw new ServiceException("通话记录不存在或无权访问");
+        }
+        return session;
     }
 
     private void persistEvent(TelephonyEvent event, String tenantId) {
