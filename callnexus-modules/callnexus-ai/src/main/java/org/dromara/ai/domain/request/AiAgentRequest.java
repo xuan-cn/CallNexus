@@ -19,6 +19,10 @@ public class AiAgentRequest {
     private Boolean openingBargeInEnabled;
     @Pattern(regexp = "SENSITIVE|STANDARD|NOISY") private String bargeInMode;
     @Min(0) @Max(5000) private Integer bargeInGraceMs;
+    @Pattern(regexp = "INTERRUPT|CONTROL_RESUME") private String bargeInStrategy;
+    @Size(max = 500) private String bargeInControlText;
+    @Min(1) @Max(20) private Integer bargeInControlMaxCount;
+    @Min(0) @Max(60000) private Integer bargeInControlCooldownMs;
     private String retrievalMode;
     private String retrievalFailurePolicy;
     private Boolean faqLearningEnabled;

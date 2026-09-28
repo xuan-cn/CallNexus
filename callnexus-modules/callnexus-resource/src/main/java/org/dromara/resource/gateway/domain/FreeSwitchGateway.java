@@ -30,6 +30,11 @@ public class FreeSwitchGateway extends TenantEntity {
     private Boolean registerEnabled;
     private String transport;
     private String callerIdNumber;
+    private String localAreaCode;
+    private Boolean addLocalAreaCode;
+    private Boolean addMissingAreaCodeZero;
+    private Boolean stripChinaCountryCode;
+    private String outboundPrefix;
     private Integer ping;
     private Integer expireSeconds;
     private Integer retrySeconds;

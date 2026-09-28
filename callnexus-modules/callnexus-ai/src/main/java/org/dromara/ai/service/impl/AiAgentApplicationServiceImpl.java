@@ -608,6 +608,17 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
             throw new ServiceException("未知的语音打断环境模式");
         }
         item.setBargeInGraceMs(request.getBargeInGraceMs() == null ? 500 : request.getBargeInGraceMs());
+        item.setBargeInStrategy(defaultValue(request.getBargeInStrategy(), "INTERRUPT").trim().toUpperCase(Locale.ROOT));
+        if (!Set.of("INTERRUPT", "CONTROL_RESUME").contains(item.getBargeInStrategy())) {
+            throw new ServiceException("未知的语音打断处理策略");
+        }
+        String controlText = StringUtils.trim(request.getBargeInControlText());
+        if ("CONTROL_RESUME".equals(item.getBargeInStrategy()) && StringUtils.isBlank(controlText)) {
+            throw new ServiceException("控场后继续播报时必须配置控场话术");
+        }
+        item.setBargeInControlText(StringUtils.isBlank(controlText) ? null : controlText);
+        item.setBargeInControlMaxCount(request.getBargeInControlMaxCount() == null ? 2 : request.getBargeInControlMaxCount());
+        item.setBargeInControlCooldownMs(request.getBargeInControlCooldownMs() == null ? 5000 : request.getBargeInControlCooldownMs());
         item.setRetrievalMode(defaultValue(request.getRetrievalMode(), "RAG").trim().toUpperCase(Locale.ROOT));
         if (!Set.of("RAG", "DIRECT_RETRIEVAL").contains(item.getRetrievalMode())) {
             throw new ServiceException("未知的知识库回答模式");
@@ -662,6 +673,10 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         value.setOpeningBargeInEnabled(Boolean.TRUE.equals(item.getOpeningBargeInEnabled()));
         value.setBargeInMode(defaultValue(item.getBargeInMode(), "STANDARD"));
         value.setBargeInGraceMs(item.getBargeInGraceMs() == null ? 500 : item.getBargeInGraceMs());
+        value.setBargeInStrategy(defaultValue(item.getBargeInStrategy(), "INTERRUPT"));
+        value.setBargeInControlText(item.getBargeInControlText());
+        value.setBargeInControlMaxCount(item.getBargeInControlMaxCount() == null ? 2 : item.getBargeInControlMaxCount());
+        value.setBargeInControlCooldownMs(item.getBargeInControlCooldownMs() == null ? 5000 : item.getBargeInControlCooldownMs());
         value.setRetrievalMode(item.getRetrievalMode());
         value.setRetrievalFailurePolicy(item.getRetrievalFailurePolicy());
         value.setFaqLearningEnabled(Boolean.TRUE.equals(item.getFaqLearningEnabled()));

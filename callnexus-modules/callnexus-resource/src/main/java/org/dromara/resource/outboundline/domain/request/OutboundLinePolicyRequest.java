@@ -25,6 +25,18 @@ public class OutboundLinePolicyRequest {
     @NotBlank
     @Pattern(regexp = "^(FIXED|ROUND_ROBIN|WEIGHT)$")
     private String policyType;
+    @Size(max = 16)
+    @Pattern(regexp = "^$|^0\\d{2,3}$", message = "本地区号格式不正确")
+    private String localAreaCode;
+    @NotNull
+    private Boolean addLocalAreaCode = false;
+    @NotNull
+    private Boolean addMissingAreaCodeZero = false;
+    @NotNull
+    private Boolean stripChinaCountryCode = false;
+    @Size(max = 16)
+    @Pattern(regexp = "^$|^\\d{1,16}$", message = "出局前缀只能包含数字")
+    private String outboundPrefix;
     @NotNull
     private Boolean defaultPolicy = false;
     @NotNull

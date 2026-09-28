@@ -162,6 +162,7 @@ public class OutboundLinePolicyServiceImpl implements OutboundLinePolicyService 
                     route.setPolicyName(policy.getPolicyName());
                     route.setPolicyType(policy.getPolicyType());
                     route.setPolicyItemId(item.getId());
+                    applyDialingRule(route, policy);
                     log.info("外呼线路策略选线成功，tenantId={}，nodeId={}，agentId={}，skillGroupId={}，scope={}，policyCode={}，policyType={}，phoneNumberId={}，gatewayCode={}",
                         tenantId, nodeId, agentId, selection.skillGroupId(), selection.scope(), policy.getPolicyCode(),
                         policy.getPolicyType(), item.getPhoneNumberId(), route.getGatewayCode());
@@ -195,12 +196,29 @@ public class OutboundLinePolicyServiceImpl implements OutboundLinePolicyService 
                     route.setPolicyName(policy.getPolicyName());
                     route.setPolicyType(policy.getPolicyType());
                     route.setPolicyItemId(item.getId());
+                    applyDialingRule(route, policy);
                     log.info("指定外呼线路策略选线成功，tenantId={}，nodeId={}，policyCode={}，policyType={}，phoneNumberId={}，gatewayCode={}",
                         tenantId, nodeId, policy.getPolicyCode(), policy.getPolicyType(), item.getPhoneNumberId(), route.getGatewayCode());
                     return route;
                 }
             }
             log.warn("指定外呼线路策略没有可用线路，tenantId={}，nodeId={}，policyCode={}", tenantId, nodeId, policy.getPolicyCode());
+            return null;
+        });
+    }
+
+    @Override
+    public void applyDialingRule(String tenantId, Long nodeId, Long policyId, Long agentId, Long skillGroupId,
+                                 PhoneNumberOutboundRouteResponse route) {
+        if (nodeId == null || route == null) return;
+        TenantHelper.dynamic(tenantId, () -> {
+            PolicySelection selection = policyId == null ? findPolicyForOutbound(nodeId, agentId, skillGroupId) : null;
+            OutboundLinePolicy policy = policyId == null
+                ? (selection == null ? null : selection.policy())
+                : findEnabledPolicy(policyId, nodeId);
+            if (policy != null) {
+                applyDialingRule(route, policy);
+            }
             return null;
         });
     }
@@ -369,6 +387,11 @@ public class OutboundLinePolicyServiceImpl implements OutboundLinePolicyService 
         policy.setPolicyCode(request.getPolicyCode());
         policy.setPolicyName(request.getPolicyName());
         policy.setPolicyType(request.getPolicyType());
+        policy.setLocalAreaCode(trimToNull(request.getLocalAreaCode()));
+        policy.setAddLocalAreaCode(Boolean.TRUE.equals(request.getAddLocalAreaCode()));
+        policy.setAddMissingAreaCodeZero(Boolean.TRUE.equals(request.getAddMissingAreaCodeZero()));
+        policy.setStripChinaCountryCode(Boolean.TRUE.equals(request.getStripChinaCountryCode()));
+        policy.setOutboundPrefix(trimToNull(request.getOutboundPrefix()));
         policy.setDefaultPolicy(request.getDefaultPolicy());
         policy.setEnabled(request.getEnabled());
         policy.setRemark(request.getRemark());
@@ -430,6 +453,11 @@ public class OutboundLinePolicyServiceImpl implements OutboundLinePolicyService 
         response.setPolicyCode(policy.getPolicyCode());
         response.setPolicyName(policy.getPolicyName());
         response.setPolicyType(policy.getPolicyType());
+        response.setLocalAreaCode(policy.getLocalAreaCode());
+        response.setAddLocalAreaCode(Boolean.TRUE.equals(policy.getAddLocalAreaCode()));
+        response.setAddMissingAreaCodeZero(Boolean.TRUE.equals(policy.getAddMissingAreaCodeZero()));
+        response.setStripChinaCountryCode(Boolean.TRUE.equals(policy.getStripChinaCountryCode()));
+        response.setOutboundPrefix(policy.getOutboundPrefix());
         response.setDefaultPolicy(policy.getDefaultPolicy());
         response.setEnabled(policy.getEnabled());
         response.setRemark(policy.getRemark());
@@ -447,6 +475,32 @@ public class OutboundLinePolicyServiceImpl implements OutboundLinePolicyService 
                 .stream().collect(Collectors.toMap(PhoneNumber::getId, Function.identity(), (left, right) -> left));
         response.setItems(items.stream().map(item -> toItemResponse(item, numbers.get(item.getPhoneNumberId()))).toList());
         return response;
+    }
+
+    private void applyDialingRule(PhoneNumberOutboundRouteResponse route, OutboundLinePolicy policy) {
+        if (!hasDialingRuleOverride(policy)) {
+            return;
+        }
+        route.setLocalAreaCode(policy.getLocalAreaCode());
+        route.setAddLocalAreaCode(Boolean.TRUE.equals(policy.getAddLocalAreaCode()));
+        route.setAddMissingAreaCodeZero(Boolean.TRUE.equals(policy.getAddMissingAreaCodeZero()));
+        route.setStripChinaCountryCode(Boolean.TRUE.equals(policy.getStripChinaCountryCode()));
+        route.setOutboundPrefix(policy.getOutboundPrefix());
+    }
+
+    private boolean hasDialingRuleOverride(OutboundLinePolicy policy) {
+        return policy.getLocalAreaCode() != null && !policy.getLocalAreaCode().isBlank()
+            || Boolean.TRUE.equals(policy.getAddLocalAreaCode())
+            || Boolean.TRUE.equals(policy.getAddMissingAreaCodeZero())
+            || Boolean.TRUE.equals(policy.getStripChinaCountryCode())
+            || policy.getOutboundPrefix() != null && !policy.getOutboundPrefix().isBlank();
+    }
+
+    private String trimToNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim();
     }
 
     private SkillGroupOutboundPolicyResponse toSkillGroupPolicyResponse(SkillGroupOutboundPolicy binding) {

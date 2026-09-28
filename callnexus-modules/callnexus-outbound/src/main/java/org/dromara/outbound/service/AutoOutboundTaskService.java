@@ -25,6 +25,7 @@ public interface AutoOutboundTaskService {
     void resume(Long id);
     void stop(Long id);
     void rerun(Long id);
+    int retryFailedMembers(Long id);
     List<AutoOutboundSourceResponse> listSources(Long taskId);
     Long addSource(Long taskId, AutoOutboundSourceRequest request);
     void deleteSource(Long taskId, Long sourceId);

@@ -2,6 +2,7 @@ package org.dromara.customer.ticket.domain.request;
 
 import lombok.Data;
 import org.dromara.customer.ticket.domain.TicketStatus;
+import org.dromara.customer.ticket.domain.TicketDeadlineStatus;
 import org.dromara.customer.form.domain.request.DynamicFieldFilter;
 
 import java.util.List;
@@ -13,6 +14,7 @@ public class TicketPageQuery {
     private String ticketNo;
     private String callerNumber;
     private TicketStatus ticketStatus;
+    private TicketDeadlineStatus deadlineStatus;
     private Long templateId;
     private List<DynamicFieldFilter> dynamicFilters;
 }

@@ -23,6 +23,10 @@ public class AiAgent extends TenantEntity {
     private Boolean openingBargeInEnabled;
     private String bargeInMode;
     private Integer bargeInGraceMs;
+    private String bargeInStrategy;
+    private String bargeInControlText;
+    private Integer bargeInControlMaxCount;
+    private Integer bargeInControlCooldownMs;
     private String retrievalMode;
     private String retrievalFailurePolicy;
     private Boolean faqLearningEnabled;

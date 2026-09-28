@@ -34,7 +34,7 @@ public class PhoneNumberNormalizationServiceImpl implements PhoneNumberNormaliza
         return TenantHelper.dynamic(tenantId, () -> normalizeInternal(request));
     }
 
-    private PhoneNumberNormalizeResponse normalizeInternal(PhoneNumberNormalizeRequest request) {
+    PhoneNumberNormalizeResponse normalizeInternal(PhoneNumberNormalizeRequest request) {
         String raw = request.getRawNumber();
         String cleaned = clean(raw);
         if (cleaned.isBlank()) {
@@ -82,7 +82,9 @@ public class PhoneNumberNormalizationServiceImpl implements PhoneNumberNormaliza
                 reason = "LOCAL_LANDLINE_ADD_AREA_CODE";
             }
         } else {
-            area = matchAreaCodeWithoutLeadingZero(domestic);
+            area = !Boolean.FALSE.equals(request.getAddMissingAreaCodeZero())
+                ? matchAreaCodeWithoutLeadingZero(domestic)
+                : null;
             if (area != null) {
                 normalized = "0" + domestic;
                 type = "LANDLINE";

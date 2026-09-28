@@ -27,6 +27,13 @@ public class SaveFormTemplateRequest {
     private FormBusinessType businessType;
     @Size(max = 64)
     private String workflowCode;
+    private Boolean deadlineEnabled;
+    @Min(1)
+    @Max(525600)
+    private Integer resolutionLimitMinutes;
+    @Min(0)
+    @Max(525600)
+    private Integer remindBeforeMinutes;
     @NotNull
     private Boolean enabled;
     @Valid

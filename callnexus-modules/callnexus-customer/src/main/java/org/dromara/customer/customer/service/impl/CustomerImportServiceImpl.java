@@ -412,6 +412,7 @@ public class CustomerImportServiceImpl implements CustomerImportService {
         CustomerImportRow row = new CustomerImportRow();
         row.setTaskId(batch.getTaskId());
         row.setBatchId(batch.getId());
+        row.setSourceType("FILE");
         row.setRowNumber(draft.rowNumber());
         row.setCustomerName(defaultIfBlank(draft.value("name"), "未知客户"));
         row.setOriginalPhone(trim(draft.value("phone")));

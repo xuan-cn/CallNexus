@@ -9,6 +9,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.customer.ticket.domain.request.CreateTicketRequest;
 import org.dromara.customer.ticket.domain.request.TicketPageQuery;
+import org.dromara.customer.ticket.domain.request.UpdateTicketDeadlineRequest;
 import org.dromara.customer.ticket.domain.response.TicketResponse;
 import org.dromara.customer.ticket.service.TicketApplicationService;
 import org.dromara.customer.form.service.BusinessDataExportService;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.PutMapping;
 
 @SaCheckLogin
 @RestController
@@ -74,6 +76,13 @@ public class TicketController {
     @PostMapping("/{id}/close")
     public R<Void> close(@PathVariable Long id) {
         applicationService.close(id);
+        return R.ok();
+    }
+
+    @PutMapping("/{id}/deadline")
+    @SaCheckPermission("callcenter:ticket:create")
+    public R<Void> updateDeadline(@PathVariable Long id, @Valid @RequestBody UpdateTicketDeadlineRequest request) {
+        applicationService.updateDeadline(id, request);
         return R.ok();
     }
 

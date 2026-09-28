@@ -74,4 +74,26 @@ class AiRealtimeMrcpEventServiceTest {
         assertEquals(1500L, AiRealtimeMrcpEventService.resolveRealtimeIntentTimeout(1500L));
         assertEquals(2000L, AiRealtimeMrcpEventService.resolveRealtimeIntentTimeout(5000L));
     }
+
+    @Test
+    void shouldRequeueInterruptedSegmentBeforeRemainingSpeech() {
+        Deque<String> pending = new ArrayDeque<>();
+        pending.add("后续句子。");
+
+        AiRealtimeMrcpEventService.requeueInterruptedSegment(pending, "被打断的当前句。");
+
+        assertEquals("被打断的当前句。", pending.pollFirst());
+        assertEquals("后续句子。", pending.pollFirst());
+    }
+
+    @Test
+    void shouldEnforceControlCountAndCooldown() {
+        long now = 10_000_000_000L;
+        long cooldown = 5_000_000_000L;
+
+        assertTrue(AiRealtimeMrcpEventService.controlBargeInAvailable(0, 2, now, 0L, cooldown));
+        assertFalse(AiRealtimeMrcpEventService.controlBargeInAvailable(2, 2, now, 0L, cooldown));
+        assertFalse(AiRealtimeMrcpEventService.controlBargeInAvailable(1, 2, now, now - cooldown + 1L, cooldown));
+        assertTrue(AiRealtimeMrcpEventService.controlBargeInAvailable(1, 2, now, now - cooldown, cooldown));
+    }
 }

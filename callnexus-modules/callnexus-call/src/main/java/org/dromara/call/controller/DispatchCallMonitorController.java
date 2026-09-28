@@ -1,6 +1,7 @@
 package org.dromara.call.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import cn.dev33.satoken.annotation.SaMode;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.call.domain.response.DispatchActiveCallResponse;
@@ -59,7 +60,7 @@ public class DispatchCallMonitorController {
     }
 
     @GetMapping("/extensions")
-    @SaCheckPermission("callcenter:dispatch-monitor:list")
+    @SaCheckPermission(value = {"callcenter:dispatch-monitor:list", "callcenter:sip-account:list"}, mode = SaMode.OR)
     public R<List<DispatchExtensionStatusResponse>> listExtensionStatuses() {
         return R.ok(monitorService.listExtensionStatuses());
     }

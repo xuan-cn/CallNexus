@@ -113,10 +113,16 @@ public class AiQualityReviewModelServiceImpl implements AiQualityReviewModelServ
                 if (node.path("evidence").isArray()) {
                     node.path("evidence").forEach(value -> {
                         AiQualityReviewRequest.Segment segment = segments.get(value.path("segmentId").asText());
-                        String quote = value.path("quote").asText("").trim();
-                        if (segment == null) throw new ServiceException("AI 质检引用了不属于当前通话的分句");
-                        if (StringUtils.isBlank(quote) || segment.text() == null || !segment.text().contains(quote)) {
-                            throw new ServiceException("AI 质检证据原文与通话分句不一致");
+                        if (segment == null) {
+                            log.warn("忽略 AI 质检无效证据分句，itemCode={}，segmentId={}",
+                                expected.itemCode(), value.path("segmentId").asText());
+                            return;
+                        }
+                        String quote = resolveEvidenceQuote(segment.text(), value.path("quote").asText(""));
+                        if (quote == null) {
+                            log.warn("忽略 AI 质检原文不匹配证据，itemCode={}，segmentId={}",
+                                expected.itemCode(), segment.segmentId());
+                            return;
                         }
                         evidence.add(new AiQualityReviewResult.Evidence(segment.segmentId(), segment.startMs(), segment.endMs(), quote));
                     });
@@ -132,4 +138,34 @@ public class AiQualityReviewModelServiceImpl implements AiQualityReviewModelServ
             throw new ServiceException("AI 质检模型 JSON 解析失败：" + exception.getMessage());
         }
     }
+
+    static String resolveEvidenceQuote(String segmentText, String requestedQuote) {
+        if (StringUtils.isBlank(segmentText) || StringUtils.isBlank(requestedQuote)) return null;
+        String quote = requestedQuote.trim();
+        if (segmentText.contains(quote)) return quote;
+
+        NormalizedText segment = normalizeWithOffsets(segmentText);
+        NormalizedText requested = normalizeWithOffsets(quote);
+        if (requested.text().isEmpty()) return null;
+        int normalizedStart = segment.text().indexOf(requested.text());
+        if (normalizedStart < 0) return null;
+        int normalizedEnd = normalizedStart + requested.text().length() - 1;
+        int originalStart = segment.offsets().get(normalizedStart);
+        int originalEnd = segment.offsets().get(normalizedEnd) + 1;
+        return segmentText.substring(originalStart, originalEnd).trim();
+    }
+
+    private static NormalizedText normalizeWithOffsets(String value) {
+        StringBuilder normalized = new StringBuilder(value.length());
+        List<Integer> offsets = new ArrayList<>();
+        for (int index = 0; index < value.length(); index++) {
+            char current = value.charAt(index);
+            if (!Character.isLetterOrDigit(current)) continue;
+            normalized.append(Character.toLowerCase(current));
+            offsets.add(index);
+        }
+        return new NormalizedText(normalized.toString(), offsets);
+    }
+
+    private record NormalizedText(String text, List<Integer> offsets) {}
 }

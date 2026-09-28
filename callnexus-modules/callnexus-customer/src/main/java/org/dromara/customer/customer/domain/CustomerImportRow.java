@@ -16,6 +16,7 @@ public class CustomerImportRow extends TenantEntity {
     private Long id;
     private Long taskId;
     private Long batchId;
+    private String sourceType;
     @TableField("source_row_number")
     private Integer rowNumber;
     private String customerName;

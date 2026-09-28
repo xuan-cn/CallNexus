@@ -22,6 +22,7 @@ import java.util.Date;
 public class TicketWorkflowEventHandler {
 
     private final TicketMapper ticketMapper;
+    private final TicketDeadlineService ticketDeadlineService;
 
     @EventListener
     public void handleProcessEvent(ProcessEvent event) {
@@ -82,13 +83,16 @@ public class TicketWorkflowEventHandler {
     private void applyBusinessStatus(Ticket ticket, String processStatus) {
         if (BusinessStatusEnum.FINISH.getStatus().equals(processStatus)) {
             ticket.setTicketStatus(TicketStatus.RESOLVED);
-            ticket.setResolvedAt(new Date());
+            Date resolvedAt = new Date();
+            ticket.setResolvedAt(resolvedAt);
+            ticketDeadlineService.complete(ticket, resolvedAt);
             return;
         }
         if (BusinessStatusEnum.INVALID.getStatus().equals(processStatus)
             || BusinessStatusEnum.TERMINATION.getStatus().equals(processStatus)) {
             ticket.setTicketStatus(TicketStatus.CLOSED);
             ticket.setClosedAt(new Date());
+            ticketDeadlineService.cancel(ticket);
             return;
         }
         if (BusinessStatusEnum.BACK.getStatus().equals(processStatus)

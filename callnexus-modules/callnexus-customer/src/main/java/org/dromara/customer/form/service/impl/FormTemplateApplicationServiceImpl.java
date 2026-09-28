@@ -76,6 +76,7 @@ public class FormTemplateApplicationServiceImpl implements FormTemplateApplicati
     @Transactional(rollbackFor = Exception.class)
     public Long create(SaveFormTemplateRequest request) {
         ensureCodeUnique(request.getTemplateCode(), null);
+        validateDeadline(request);
         validateFields(request.getBusinessType(), request.getFields());
         FormTemplate template = new FormTemplate();
         applyTemplate(template, request);
@@ -88,6 +89,7 @@ public class FormTemplateApplicationServiceImpl implements FormTemplateApplicati
     @Transactional(rollbackFor = Exception.class)
     public void update(Long id, SaveFormTemplateRequest request) {
         ensureCodeUnique(request.getTemplateCode(), id);
+        validateDeadline(request);
         validateFields(request.getBusinessType(), request.getFields());
         FormTemplate template = requireTemplate(id);
         applyTemplate(template, request);
@@ -198,7 +200,25 @@ public class FormTemplateApplicationServiceImpl implements FormTemplateApplicati
         template.setBusinessType(request.getBusinessType());
         template.setWorkflowCode(request.getBusinessType() == FormBusinessType.TICKET
             ? normalizeWorkflowCode(request.getWorkflowCode()) : null);
+        boolean deadlineEnabled = request.getBusinessType() == FormBusinessType.TICKET
+            && Boolean.TRUE.equals(request.getDeadlineEnabled());
+        template.setDeadlineEnabled(deadlineEnabled);
+        template.setResolutionLimitMinutes(deadlineEnabled ? request.getResolutionLimitMinutes() : null);
+        template.setRemindBeforeMinutes(deadlineEnabled ? request.getRemindBeforeMinutes() : null);
         template.setEnabled(request.getEnabled());
+    }
+
+    private void validateDeadline(SaveFormTemplateRequest request) {
+        if (request.getBusinessType() != FormBusinessType.TICKET || !Boolean.TRUE.equals(request.getDeadlineEnabled())) {
+            return;
+        }
+        if (request.getResolutionLimitMinutes() == null || request.getResolutionLimitMinutes() <= 0) {
+            throw new ServiceException("请配置有效的工单办结时限");
+        }
+        if (request.getRemindBeforeMinutes() != null
+            && request.getRemindBeforeMinutes() >= request.getResolutionLimitMinutes()) {
+            throw new ServiceException("提前提醒时间必须小于办结时限");
+        }
     }
 
     private String normalizeWorkflowCode(String workflowCode) {
@@ -212,6 +232,9 @@ public class FormTemplateApplicationServiceImpl implements FormTemplateApplicati
         response.setTemplateName(template.getTemplateName());
         response.setBusinessType(template.getBusinessType());
         response.setWorkflowCode(template.getWorkflowCode());
+        response.setDeadlineEnabled(Boolean.TRUE.equals(template.getDeadlineEnabled()));
+        response.setResolutionLimitMinutes(template.getResolutionLimitMinutes());
+        response.setRemindBeforeMinutes(template.getRemindBeforeMinutes());
         response.setEnabled(template.getEnabled());
         response.setVersion(template.getVersion());
         List<FormField> fields = fieldMapper.selectList(new LambdaQueryWrapper<FormField>()

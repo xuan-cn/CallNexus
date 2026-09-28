@@ -36,6 +36,7 @@ import org.dromara.customer.customer.mapper.CustomerPhoneMapper;
 import org.dromara.customer.customer.mapper.CustomerImportRowMapper;
 import org.dromara.customer.customer.service.CustomerApplicationService;
 import org.dromara.customer.customer.service.CustomerPhoneNormalizer;
+import org.dromara.customer.customer.service.CustomerImportTaskService;
 import org.dromara.customer.form.domain.FormBusinessType;
 import org.dromara.customer.form.service.DynamicFormSubmissionService;
 import org.dromara.customer.form.service.DynamicFormQueryService;
@@ -72,6 +73,7 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
     private final DynamicFormSubmissionService formSubmissionService;
     private final DynamicFormQueryService formQueryService;
     private final CallBusinessAssociationService callBusinessAssociationService;
+    private final CustomerImportTaskService customerImportTaskService;
 
     @Override
     public TableDataInfo<CustomerResponse> page(CustomerPageQuery query, PageQuery pageQuery) {
@@ -162,6 +164,8 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         Customer existingCustomer = findByPhone(primaryPhone);
         if (existingCustomer != null) {
             callBusinessAssociationService.associateCustomer(request.getSourceCallId(), existingCustomer.getId());
+            customerImportTaskService.associateManualCustomer(request.getImportTaskId(), existingCustomer.getId(),
+                existingCustomer.getCustomerName(), primaryPhone);
             return existingCustomer.getId();
         }
         Customer customer = new Customer();
@@ -182,6 +186,8 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         customerPhoneMapper.insert(phone);
         formSubmissionService.validateAndSave(request.getTemplateId(), FormBusinessType.CUSTOMER, customer.getId(), request.getFormData());
         callBusinessAssociationService.associateCustomer(request.getSourceCallId(), customer.getId());
+        customerImportTaskService.associateManualCustomer(request.getImportTaskId(), customer.getId(),
+            customer.getCustomerName(), primaryPhone);
         return customer.getId();
     }
 
@@ -358,6 +364,8 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         customerMapper.updateById(customer);
         formSubmissionService.validateAndSave(request.getTemplateId(), FormBusinessType.CUSTOMER, id, request.getFormData());
         callBusinessAssociationService.associateCustomer(request.getSourceCallId(), id);
+        customerImportTaskService.associateManualCustomer(request.getImportTaskId(), id,
+            customer.getCustomerName(), customer.getPrimaryPhone());
     }
 
     @Override

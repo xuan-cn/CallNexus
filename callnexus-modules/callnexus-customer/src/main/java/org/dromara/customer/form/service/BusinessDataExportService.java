@@ -51,6 +51,8 @@ public class BusinessDataExportService {
             new Column<>("工单状态", TicketResponse::getTicketStatus),
             new Column<>("客户ID", TicketResponse::getCustomerId),
             new Column<>("来电号码", TicketResponse::getCallerNumber),
+            new Column<>("应办结时间", TicketResponse::getDueAt),
+            new Column<>("办结时限状态", TicketResponse::getDeadlineStatus),
             new Column<>("创建时间", TicketResponse::getCreateTime)
         );
         export("工单资料", rows, fixed, templateId, TicketResponse::getFormData, response);

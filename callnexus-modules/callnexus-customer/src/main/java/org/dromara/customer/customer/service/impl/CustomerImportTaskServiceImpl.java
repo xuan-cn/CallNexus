@@ -112,6 +112,40 @@ public class CustomerImportTaskServiceImpl implements CustomerImportTaskService 
         }
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void associateManualCustomer(Long taskId, Long customerId, String customerName, String normalizedPhone) {
+        if (taskId == null) return;
+        CustomerImportTask task = require(taskId);
+        long existing = rowMapper.selectCount(new LambdaQueryWrapper<CustomerImportRow>()
+            .eq(CustomerImportRow::getTaskId, taskId)
+            .eq(CustomerImportRow::getCustomerId, customerId)
+            .eq(CustomerImportRow::getStatus, "IMPORTED"));
+        if (existing > 0) return;
+        if (!"ENABLED".equals(task.getStatus())) {
+            throw new ServiceException("资料导入任务已停用，不能关联客户");
+        }
+
+        CustomerImportRow row = new CustomerImportRow();
+        row.setTaskId(taskId);
+        row.setSourceType("MANUAL");
+        row.setRowNumber(0);
+        row.setCustomerName(customerName);
+        row.setOriginalPhone(normalizedPhone);
+        row.setNormalizedPhone(normalizedPhone);
+        row.setCustomerType(task.getDefaultCustomerType());
+        row.setSourceChannel(task.getDefaultSourceChannel());
+        row.setTags(task.getDefaultTags());
+        row.setStatus("IMPORTED");
+        row.setErrorMessage("手工创建客户关联");
+        row.setCustomerId(customerId);
+        try {
+            rowMapper.insert(row);
+        } catch (org.springframework.dao.DuplicateKeyException ignored) {
+            // Concurrent requests linking the same customer are idempotent.
+        }
+    }
+
     private CustomerImportTask require(Long taskId) {
         CustomerImportTask task = taskMapper.selectById(taskId);
         if (task == null) throw new ServiceException("资料导入任务不存在");

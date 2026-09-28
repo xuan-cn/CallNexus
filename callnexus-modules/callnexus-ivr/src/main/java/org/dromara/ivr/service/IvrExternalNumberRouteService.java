@@ -160,7 +160,7 @@ public class IvrExternalNumberRouteService {
         String callerId = safeDialValue(route.getNumber());
         List<String> endpoints = new ArrayList<>();
         for (ExternalTarget target : targets) {
-            PhoneNumberNormalizeResponse normalized = normalizeDialTarget(context, config, target.number());
+            PhoneNumberNormalizeResponse normalized = normalizeDialTarget(context, config, route, target.number());
             endpoints.add("{ignore_early_media=true,originate_timeout=" + timeoutSeconds
                 + ",origination_caller_id_number=" + callerId
                 + ",origination_caller_id_name=" + callerId
@@ -171,14 +171,26 @@ public class IvrExternalNumberRouteService {
         return String.join("|", endpoints);
     }
 
-    private PhoneNumberNormalizeResponse normalizeDialTarget(IvrNodeContext context, JsonNode config, String rawNumber) {
+    private PhoneNumberNormalizeResponse normalizeDialTarget(IvrNodeContext context, JsonNode config,
+                                                              PhoneNumberOutboundRouteResponse route, String rawNumber) {
         PhoneNumberNormalizeRequest request = new PhoneNumberNormalizeRequest();
         request.setRawNumber(rawNumber);
         request.setUsage("IVR_EXTERNAL_NUMBER");
-        request.setLocalAreaCode(textValue(config.path("localAreaCode")));
-        request.setAddLocalAreaCode(config.has("addLocalAreaCode") && config.path("addLocalAreaCode").asBoolean(false));
-        request.setStripChinaCountryCode(!config.has("stripChinaCountryCode") || config.path("stripChinaCountryCode").asBoolean(true));
-        request.setOutboundPrefix(textValue(config.path("outboundPrefix")));
+        if (config.path("useLineDialingRule").asBoolean(false)) {
+            request.setLocalAreaCode(route.getLocalAreaCode());
+            request.setAddLocalAreaCode(Boolean.TRUE.equals(route.getAddLocalAreaCode()));
+            request.setAddMissingAreaCodeZero(Boolean.TRUE.equals(route.getAddMissingAreaCodeZero()));
+            request.setStripChinaCountryCode(Boolean.TRUE.equals(route.getStripChinaCountryCode()));
+            request.setOutboundPrefix(route.getOutboundPrefix());
+        } else {
+            request.setLocalAreaCode(textValue(config.path("localAreaCode")));
+            request.setAddLocalAreaCode(config.has("addLocalAreaCode") && config.path("addLocalAreaCode").asBoolean(false));
+            request.setAddMissingAreaCodeZero(!config.has("addMissingAreaCodeZero")
+                || config.path("addMissingAreaCodeZero").asBoolean(true));
+            request.setStripChinaCountryCode(!config.has("stripChinaCountryCode")
+                || config.path("stripChinaCountryCode").asBoolean(true));
+            request.setOutboundPrefix(textValue(config.path("outboundPrefix")));
+        }
         return numberNormalizationService.normalize(context.tenantId(), request);
     }
 

@@ -33,6 +33,13 @@ public class Ticket extends TenantEntity {
     private Date submittedAt;
     private Date resolvedAt;
     private Date closedAt;
+    private Integer resolutionLimitMinutes;
+    private Date dueAt;
+    private Date remindAt;
+    private TicketDeadlineStatus deadlineStatus;
+    private Date dueSoonRemindedAt;
+    private Date overdueAt;
+    private Date overdueRemindedAt;
     @Version
     private Integer version;
     @TableLogic

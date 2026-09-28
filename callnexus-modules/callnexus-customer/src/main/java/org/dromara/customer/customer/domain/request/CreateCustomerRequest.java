@@ -15,6 +15,7 @@ public class CreateCustomerRequest {
     @Size(max = 64)
     private String customerName;
     private Long templateId;
+    private Long importTaskId;
     @Size(max = 64)
     private String sourceCallId;
     private Map<String, Object> formData = new HashMap<>();

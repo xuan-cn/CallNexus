@@ -230,6 +230,11 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
         response.setGatewayAccessMode(gateway.getAccessMode());
         response.setRegisteredIdentity(gateway.getRegisteredIdentity());
         response.setGatewaySipProfile(gateway.getSipProfile());
+        response.setLocalAreaCode(gateway.getLocalAreaCode());
+        response.setAddLocalAreaCode(Boolean.TRUE.equals(gateway.getAddLocalAreaCode()));
+        response.setAddMissingAreaCodeZero(Boolean.TRUE.equals(gateway.getAddMissingAreaCodeZero()));
+        response.setStripChinaCountryCode(Boolean.TRUE.equals(gateway.getStripChinaCountryCode()));
+        response.setOutboundPrefix(gateway.getOutboundPrefix());
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
         if (node != null) response.setSipDomain(node.getSipDomain());
     }

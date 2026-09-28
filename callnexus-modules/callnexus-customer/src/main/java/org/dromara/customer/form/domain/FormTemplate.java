@@ -18,6 +18,9 @@ public class FormTemplate extends TenantEntity {
     private String templateName;
     private FormBusinessType businessType;
     private String workflowCode;
+    private Boolean deadlineEnabled;
+    private Integer resolutionLimitMinutes;
+    private Integer remindBeforeMinutes;
     private Boolean enabled;
     @Version
     private Integer version;

@@ -27,6 +27,7 @@ import org.dromara.ai.mapper.AiRealtimeCallSessionMapper;
 import org.dromara.ai.mapper.AiRealtimeCallTurnMapper;
 import org.dromara.ai.mapper.AiWorkflowContextMapper;
 import org.dromara.ai.realtime.AiRealtimeTtsConnectionRegistry;
+import org.dromara.ai.workflow.AiWorkflowTemplateResolver;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
@@ -102,6 +103,7 @@ public class AiRealtimeMrcpEventService {
     private final AiIntentApplicationService intentService;
     private final AiWorkflowRuntimeService workflowRuntimeService;
     private final AiWorkflowContextMapper workflowContextMapper;
+    private final AiWorkflowTemplateResolver workflowTemplateResolver;
     private final AiAgentMapper agentMapper;
     private final AiRealtimeCallSessionMapper sessionMapper;
     private final AiRealtimeCallTurnMapper turnMapper;
@@ -130,6 +132,7 @@ public class AiRealtimeMrcpEventService {
                                       AiIntentApplicationService intentService,
                                       AiWorkflowRuntimeService workflowRuntimeService,
                                       AiWorkflowContextMapper workflowContextMapper,
+                                      AiWorkflowTemplateResolver workflowTemplateResolver,
                                       AiAgentMapper agentMapper,
                                       AiRealtimeCallSessionMapper sessionMapper,
                                       AiRealtimeCallTurnMapper turnMapper,
@@ -152,6 +155,7 @@ public class AiRealtimeMrcpEventService {
         this.intentService = intentService;
         this.workflowRuntimeService = workflowRuntimeService;
         this.workflowContextMapper = workflowContextMapper;
+        this.workflowTemplateResolver = workflowTemplateResolver;
         this.agentMapper = agentMapper;
         this.sessionMapper = sessionMapper;
         this.turnMapper = turnMapper;
@@ -300,6 +304,12 @@ public class AiRealtimeMrcpEventService {
         }
         final String result = recognized;
         if ("DETECTED_SPEECH".equals(eventName) && StringUtils.isBlank(result)) {
+            if (runtime.controlResumeInProgress.get()) {
+                runtime.recognizing.set(false);
+                log.debug("AI UniMRCP 控场期间忽略空识别结果，sessionId={}，businessCallId={}",
+                    runtime.entity.getId(), runtime.businessCallId);
+                return;
+            }
             log.warn("收到 DETECTED_SPEECH 但未找到识别文本，sessionId={}，businessCallId={}，候选字段={}，speech相关事件头={}",
                 runtime.entity.getId(), runtime.businessCallId, properties.getUnimrcp().getResultHeaderCandidates(),
                 speechRelatedHeaders(headers));
@@ -308,6 +318,16 @@ public class AiRealtimeMrcpEventService {
         }
         if (StringUtils.isNotBlank(result) && runtime.isDuplicateRecognition(result)) {
             log.debug("Ignoring duplicate final speech result before barge-in, sessionId={}, businessCallId={}, text={}",
+                runtime.entity.getId(), runtime.businessCallId, result.trim());
+            return;
+        }
+        // 控场只能由播报期间的 begin-speaking 事件触发。最终识别结果可能晚于实际播放结束，
+        // 不能再拿残留的 activeSpeak 状态重新判定，否则正常轮到客户说话也会误播控场话术。
+        if (StringUtils.isNotBlank(result) && runtime.controlResumeInProgress.get()) {
+            runtime.recognizing.set(false);
+            appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_CUSTOMER, SOURCE_REALTIME_ASR,
+                result.trim(), LocalDateTime.now(), null);
+            log.info("AI UniMRCP 控场期间忽略本次插话内容，等待原播报完成后重新收音，sessionId={}，businessCallId={}，text={}",
                 runtime.entity.getId(), runtime.businessCallId, result.trim());
             return;
         }
@@ -454,11 +474,16 @@ public class AiRealtimeMrcpEventService {
             entity.getId(), businessCallId, customerLegUuid, agentId, asrProvider.getId(), ttsProvider.getId(),
             transport.name(), elapsedMillis(startNanos));
         return new RuntimeSession(tenantId, nodeId, agentId, businessCallId, customerLegUuid,
-            ttsProvider.getDefaultVoice(), entity, openingPreplayed, transport, wsUrl,
+            agent == null ? null : agent.getAgentName(), ttsProvider.getDefaultVoice(), entity,
+            openingPreplayed, transport, wsUrl,
             agent != null && Boolean.TRUE.equals(agent.getBargeInEnabled()),
             agent != null && Boolean.TRUE.equals(agent.getOpeningBargeInEnabled()),
             agent == null ? "STANDARD" : agent.getBargeInMode(),
-            agent == null || agent.getBargeInGraceMs() == null ? 500 : agent.getBargeInGraceMs());
+            agent == null || agent.getBargeInGraceMs() == null ? 500 : agent.getBargeInGraceMs(),
+            agent == null ? "INTERRUPT" : agent.getBargeInStrategy(),
+            agent == null ? null : agent.getBargeInControlText(),
+            agent == null || agent.getBargeInControlMaxCount() == null ? 2 : agent.getBargeInControlMaxCount(),
+            agent == null || agent.getBargeInControlCooldownMs() == null ? 5000 : agent.getBargeInControlCooldownMs());
     }
 
     private AiSpeechProvider defaultRealtimeTtsProvider() {
@@ -487,8 +512,10 @@ public class AiRealtimeMrcpEventService {
             workflowVariables.put("call.businessCallId", runtime.businessCallId);
             workflowVariables.put("call.customerLegUuid", runtime.customerLegUuid);
             workflowVariables.put("agent.id", runtime.agentId);
+            putIfNotBlank(workflowVariables, "agent.name", runtime.agentName);
             String workflowScene = enrichWorkflowVariables(runtime, workflowVariables);
             workflowVariables.put("call.direction", "VOICE_OUTBOUND".equals(workflowScene) ? "OUTBOUND" : "INBOUND");
+            runtime.templateVariables = Map.copyOf(workflowVariables);
             try {
                 var workflow = workflowRuntimeService.startVoice(runtime.agentId, runtime.businessCallId,
                     workflowScene, workflowVariables);
@@ -918,7 +945,7 @@ public class AiRealtimeMrcpEventService {
     private void waitForPreplayedOpening(RuntimeSession runtime, String openingText) {
         updateState(runtime, "SPEAKING", null);
         runtime.activeSpeak.compareAndSet(null,
-            new ActiveSpeak("opening", 1, openingText, System.nanoTime(), runtime.turnGeneration.get(), true));
+            new ActiveSpeak("opening", 1, openingText, System.nanoTime(), runtime.turnGeneration.get(), true, false));
         tryRecognizeDuringPlayback(runtime, true);
         if (runtime.preplayedOpeningCompleted.get() || !runtime.waitingSpeakComplete.get()) {
             runtime.activeSpeak.set(null);
@@ -1044,6 +1071,10 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void speak(RuntimeSession runtime, String text, AiRealtimeCallTurn turn, boolean opening) {
+        speak(runtime, text, turn, opening, false);
+    }
+
+    private void speak(RuntimeSession runtime, String text, AiRealtimeCallTurn turn, boolean opening, boolean control) {
         if (runtime.closed.get()) {
             return;
         }
@@ -1071,13 +1102,15 @@ public class AiRealtimeMrcpEventService {
         String turnId = resolveTurnId(runtime, turn);
         boolean turnEnd = isTurnEnd(runtime, turn);
         ActiveSpeak activeSpeak = new ActiveSpeak(turnId, seq, text, System.nanoTime(),
-            runtime.turnGeneration.get(), opening);
+            runtime.turnGeneration.get(), opening, control);
         runtime.activeSpeak.set(activeSpeak);
         log.info("AI UniMRCP 准备提交播报，sessionId={}，businessCallId={}，customerLegUuid={}，textLength={}，voice={}，turnId={}，seq={}，turnEnd={}，stateCostMs={}",
             runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, text.length(), runtime.ttsVoice,
             turnId, seq, turnEnd, stateCostMs);
         gateway().speak(runtime.nodeId, runtime.customerLegUuid, text, runtime.ttsVoice, turnId, seq, turnEnd);
-        tryRecognizeDuringPlayback(runtime, opening);
+        if (!control) {
+            tryRecognizeDuringPlayback(runtime, opening);
+        }
         long gatewayCostMs = elapsedMillis(gatewayNanos);
         long delay = speakCompletionTimeout(runtime, text);
         ScheduledFuture<?> old = runtime.pendingSpeakTimer.getAndSet(null);
@@ -1178,6 +1211,9 @@ public class AiRealtimeMrcpEventService {
         log.info("AI UniMRCP 播报段完成，sessionId={}，businessCallId={}，customerLegUuid={}，turnId={}，seq={}，source={}",
             runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid,
             expected.turnId(), expected.seq(), source);
+        if (expected.control()) {
+            runtime.controlResumeInProgress.set(false);
+        }
         boolean hasNext;
         synchronized (runtime.pendingSpeakSegments) {
             hasNext = !runtime.pendingSpeakSegments.isEmpty();
@@ -1566,7 +1602,9 @@ public class AiRealtimeMrcpEventService {
                 runtime.entity.getId(), runtime.businessCallId, active.turnId(), elapsedMs, runtime.bargeInGraceMs);
             return;
         }
-        interruptCurrentOutput(runtime, "BEGIN_SPEAKING");
+        if (!handleControlBargeIn(runtime, "BEGIN_SPEAKING")) {
+            interruptCurrentOutput(runtime, "BEGIN_SPEAKING");
+        }
     }
 
     private boolean isBargeInPlayback(RuntimeSession runtime) {
@@ -1575,7 +1613,99 @@ public class AiRealtimeMrcpEventService {
     }
 
     private boolean bargeInAllowed(RuntimeSession runtime, ActiveSpeak active) {
-        return runtime.bargeInEnabled && (!active.opening() || runtime.openingBargeInEnabled);
+        return runtime.bargeInEnabled && !active.control() && (!active.opening() || runtime.openingBargeInEnabled);
+    }
+
+    private boolean handleControlBargeIn(RuntimeSession runtime, String reason) {
+        if (!"BEGIN_SPEAKING".equals(reason)
+            || !"CONTROL_RESUME".equals(runtime.bargeInStrategy) || runtime.closed.get()) {
+            return false;
+        }
+        ActiveSpeak active = runtime.activeSpeak.get();
+        if (runtime.controlResumeInProgress.get()) {
+            return true;
+        }
+        if (active == null || !bargeInAllowed(runtime, active)) {
+            return false;
+        }
+        long now = System.nanoTime();
+        long cooldownNanos = runtime.bargeInControlCooldownMs * 1_000_000L;
+        long lastControl = runtime.lastControlBargeInNanos.get();
+        if (!controlBargeInAvailable(runtime.controlBargeInCount.get(), runtime.bargeInControlMaxCount,
+            now, lastControl, cooldownNanos)) {
+            log.info("AI UniMRCP 控场次数或冷却限制生效，本次降级为普通打断，sessionId={}，businessCallId={}，reason={}，count={}，maxCount={}，cooldownMs={}",
+                runtime.entity.getId(), runtime.businessCallId, reason, runtime.controlBargeInCount.get(),
+                runtime.bargeInControlMaxCount, runtime.bargeInControlCooldownMs);
+            return false;
+        }
+        if (!runtime.interrupting.compareAndSet(false, true)) {
+            return true;
+        }
+        try {
+            if (!runtime.activeSpeak.compareAndSet(active, null)
+                || !runtime.controlResumeInProgress.compareAndSet(false, true)) {
+                return true;
+            }
+            runtime.controlBargeInCount.incrementAndGet();
+            runtime.lastControlBargeInNanos.set(now);
+            runtime.waitingSpeakComplete.set(false);
+            ScheduledFuture<?> pending = runtime.pendingSpeakTimer.getAndSet(null);
+            if (pending != null) {
+                pending.cancel(false);
+            }
+            int cancelledTtsConnections = cancelSpeakConnections(runtime, active);
+            try {
+                gateway().stopPlayback(runtime.nodeId, runtime.customerLegUuid);
+            } catch (Exception exception) {
+                log.warn("AI UniMRCP 控场时停止 FreeSWITCH 播放失败，继续插入控场话术，sessionId={}，businessCallId={}，error={}",
+                    runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
+            }
+            synchronized (runtime.pendingSpeakSegments) {
+                requeueInterruptedSegment(runtime.pendingSpeakSegments, active.text());
+            }
+            String controlText = resolveControlText(runtime);
+            appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_AI, SOURCE_AI_GENERATED,
+                controlText, LocalDateTime.now(), runtime.agentId);
+            try {
+                speak(runtime, controlText, runtime.currentTurn.get(), false, true);
+            } catch (Exception exception) {
+                runtime.controlResumeInProgress.set(false);
+                runtime.waitingSpeakComplete.set(false);
+                runtime.activeSpeak.set(null);
+                log.warn("AI UniMRCP 控场话术播放失败，直接恢复原播报，sessionId={}，businessCallId={}，error={}",
+                    runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
+                dispatchNextSegment(runtime);
+            }
+            log.info("AI UniMRCP 已插入控场话术并保留原播报队列，sessionId={}，businessCallId={}，turnId={}，seq={}，reason={}，count={}，cancelledTtsConnections={}",
+                runtime.entity.getId(), runtime.businessCallId, active.turnId(), active.seq(), reason,
+                runtime.controlBargeInCount.get(), cancelledTtsConnections);
+            return true;
+        } finally {
+            runtime.interrupting.set(false);
+        }
+    }
+
+    private String resolveControlText(RuntimeSession runtime) {
+        String resolved = workflowTemplateResolver.resolve(runtime.bargeInControlText, runtime.templateVariables).trim();
+        return StringUtils.defaultIfBlank(resolved, "您先别急，请让我把这段内容说明完，很快就好。");
+    }
+
+    private int cancelSpeakConnections(RuntimeSession runtime, ActiveSpeak active) {
+        int cancelled = ttsConnectionRegistry.cancelByCallIdAndTurnId(runtime.customerLegUuid, active.turnId());
+        if (!StringUtils.equals(runtime.customerLegUuid, runtime.businessCallId)) {
+            cancelled += ttsConnectionRegistry.cancelByCallIdAndTurnId(runtime.businessCallId, active.turnId());
+        }
+        return cancelled;
+    }
+
+    static boolean controlBargeInAvailable(int count, int maxCount, long nowNanos,
+                                           long lastControlNanos, long cooldownNanos) {
+        return count < maxCount
+            && (lastControlNanos <= 0L || nowNanos - lastControlNanos >= cooldownNanos);
+    }
+
+    static void requeueInterruptedSegment(Deque<String> pendingSegments, String interruptedText) {
+        pendingSegments.offerFirst(interruptedText);
     }
 
     private void interruptCurrentOutput(RuntimeSession runtime, String reason) {
@@ -1600,12 +1730,7 @@ public class AiRealtimeMrcpEventService {
             if (pending != null) {
                 pending.cancel(false);
             }
-            int cancelledTtsConnections = ttsConnectionRegistry.cancelByCallIdAndTurnId(
-                runtime.customerLegUuid, active.turnId());
-            if (!StringUtils.equals(runtime.customerLegUuid, runtime.businessCallId)) {
-                cancelledTtsConnections += ttsConnectionRegistry.cancelByCallIdAndTurnId(
-                    runtime.businessCallId, active.turnId());
-            }
+            int cancelledTtsConnections = cancelSpeakConnections(runtime, active);
             try {
                 gateway().stopPlayback(runtime.nodeId, runtime.customerLegUuid);
             } catch (Exception exception) {
@@ -2308,7 +2433,8 @@ public class AiRealtimeMrcpEventService {
         }
     }
 
-    private record ActiveSpeak(String turnId, int seq, String text, long startedNanos, long generation, boolean opening) {
+    private record ActiveSpeak(String turnId, int seq, String text, long startedNanos, long generation,
+                               boolean opening, boolean control) {
     }
 
     private record PendingIntentAction(String intentCode, String intentName, String actionType,
@@ -2321,6 +2447,7 @@ public class AiRealtimeMrcpEventService {
         private final Long agentId;
         private final String businessCallId;
         private final String customerLegUuid;
+        private final String agentName;
         private final String ttsVoice;
         private final AiRealtimeCallSession entity;
         private final boolean openingPreplayed;
@@ -2330,6 +2457,10 @@ public class AiRealtimeMrcpEventService {
         private final boolean openingBargeInEnabled;
         private final String bargeInMode;
         private final int bargeInGraceMs;
+        private final String bargeInStrategy;
+        private final String bargeInControlText;
+        private final int bargeInControlMaxCount;
+        private final int bargeInControlCooldownMs;
         private final AtomicInteger sequence = new AtomicInteger();
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean conversationReady = new AtomicBoolean();
@@ -2338,6 +2469,9 @@ public class AiRealtimeMrcpEventService {
         private final AtomicBoolean waitingSpeakComplete = new AtomicBoolean();
         private final AtomicBoolean recognizing = new AtomicBoolean();
         private final AtomicBoolean interrupting = new AtomicBoolean();
+        private final AtomicBoolean controlResumeInProgress = new AtomicBoolean();
+        private final AtomicInteger controlBargeInCount = new AtomicInteger();
+        private final AtomicLong lastControlBargeInNanos = new AtomicLong();
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicLong turnGeneration = new AtomicLong();
         private final AtomicInteger transcriptSentenceIndex = new AtomicInteger();
@@ -2363,17 +2497,22 @@ public class AiRealtimeMrcpEventService {
         private volatile String lastAssistantText;
         private volatile String workflowExecutionId;
         private volatile String workflowStreamTurnId;
+        private volatile Map<String, Object> templateVariables = Map.of();
         private volatile LocalDateTime lastActivityAt;
 
         private RuntimeSession(String tenantId, Long nodeId, Long agentId, String businessCallId,
-                               String customerLegUuid, String ttsVoice, AiRealtimeCallSession entity, boolean openingPreplayed,
+                               String customerLegUuid, String agentName, String ttsVoice,
+                               AiRealtimeCallSession entity, boolean openingPreplayed,
                                VoiceTransport voiceTransport, String voiceTransportWsUrl, boolean bargeInEnabled,
-                               boolean openingBargeInEnabled, String bargeInMode, int bargeInGraceMs) {
+                               boolean openingBargeInEnabled, String bargeInMode, int bargeInGraceMs,
+                               String bargeInStrategy, String bargeInControlText,
+                               int bargeInControlMaxCount, int bargeInControlCooldownMs) {
             this.tenantId = tenantId;
             this.nodeId = nodeId;
             this.agentId = agentId;
             this.businessCallId = businessCallId;
             this.customerLegUuid = customerLegUuid;
+            this.agentName = agentName;
             this.ttsVoice = ttsVoice;
             this.entity = entity;
             this.openingPreplayed = openingPreplayed;
@@ -2385,6 +2524,13 @@ public class AiRealtimeMrcpEventService {
             this.bargeInMode = Set.of("SENSITIVE", "STANDARD", "NOISY").contains(normalizedBargeInMode)
                 ? normalizedBargeInMode : "STANDARD";
             this.bargeInGraceMs = Math.max(0, Math.min(5000, bargeInGraceMs));
+            String normalizedStrategy = StringUtils.blankToDefault(bargeInStrategy, "INTERRUPT").toUpperCase(Locale.ROOT);
+            this.bargeInStrategy = Set.of("INTERRUPT", "CONTROL_RESUME").contains(normalizedStrategy)
+                ? normalizedStrategy : "INTERRUPT";
+            this.bargeInControlText = StringUtils.defaultIfBlank(bargeInControlText,
+                "您先别急，请让我把这段内容说明完，很快就好。");
+            this.bargeInControlMaxCount = Math.max(1, Math.min(20, bargeInControlMaxCount));
+            this.bargeInControlCooldownMs = Math.max(0, Math.min(60000, bargeInControlCooldownMs));
             this.waitingSpeakComplete.set(openingPreplayed);
             this.lastActivityAt = LocalDateTime.now();
         }

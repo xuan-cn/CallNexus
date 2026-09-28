@@ -9,6 +9,9 @@ import org.dromara.resource.outboundauth.domain.OutboundAuthorizationResult;
 import org.dromara.resource.outboundauth.service.OutboundAuthorizationRule;
 import org.dromara.resource.outboundauth.service.OutboundAuthorizationService;
 import org.dromara.resource.outboundline.service.OutboundLinePolicyService;
+import org.dromara.resource.number.domain.request.PhoneNumberNormalizeRequest;
+import org.dromara.resource.number.domain.response.PhoneNumberNormalizeResponse;
+import org.dromara.resource.number.service.PhoneNumberNormalizationService;
 import org.dromara.resource.phone.domain.response.PhoneNumberOutboundRouteResponse;
 import org.dromara.resource.phone.service.PhoneNumberQueryService;
 import org.dromara.resource.sip.service.SipAccountQueryService;
@@ -24,6 +27,7 @@ public class OutboundAuthorizationServiceImpl implements OutboundAuthorizationSe
     private final SipAccountQueryService sipAccountQueryService;
     private final PhoneNumberQueryService phoneNumberQueryService;
     private final OutboundLinePolicyService outboundLinePolicyService;
+    private final PhoneNumberNormalizationService phoneNumberNormalizationService;
     private final List<OutboundAuthorizationRule> authorizationRules;
 
     @Override
@@ -73,15 +77,34 @@ public class OutboundAuthorizationServiceImpl implements OutboundAuthorizationSe
             return OutboundAuthorizationResult.reject("OUTBOUND_ROUTE_NOT_CONFIGURED", "未配置默认外呼号码路由", normalizedCallee);
         }
 
+        normalizedCallee = normalizeByRoute(command, route, normalizedCallee);
         log.info("外呼授权通过：使用外呼号码路由，sourceType={}，nodeId={}，caller={}，callee={}，gatewayCode={}，callerIdNumber={}，policyCode={}，policyType={}，tenantId={}",
             command.sourceType(), command.nodeId(), command.callerExtension(), normalizedCallee,
             route.getGatewayCode(), route.getNumber(), route.getPolicyCode(), route.getPolicyType(), command.tenantId());
         return OutboundAuthorizationResult.allowExternal(normalizedCallee, route);
     }
 
+    private String normalizeByRoute(OutboundAuthorizationCommand command, PhoneNumberOutboundRouteResponse route,
+                                    String normalizedCallee) {
+        PhoneNumberNormalizeRequest request = new PhoneNumberNormalizeRequest();
+        request.setRawNumber(normalizedCallee);
+        request.setUsage(command.sourceType());
+        request.setLocalAreaCode(route.getLocalAreaCode());
+        request.setAddLocalAreaCode(Boolean.TRUE.equals(route.getAddLocalAreaCode()));
+        request.setAddMissingAreaCodeZero(Boolean.TRUE.equals(route.getAddMissingAreaCodeZero()));
+        request.setStripChinaCountryCode(Boolean.TRUE.equals(route.getStripChinaCountryCode()));
+        request.setOutboundPrefix(route.getOutboundPrefix());
+        PhoneNumberNormalizeResponse response = phoneNumberNormalizationService.normalize(command.tenantId(), request);
+        return response.getDialNumber();
+    }
+
     private PhoneNumberOutboundRouteResponse resolveOutboundRoute(OutboundAuthorizationCommand command) {
         if (command.callerNumberId() != null) {
-            return phoneNumberQueryService.findOutboundRouteByNumberId(command.tenantId(), command.nodeId(), command.callerNumberId());
+            PhoneNumberOutboundRouteResponse route = phoneNumberQueryService.findOutboundRouteByNumberId(
+                command.tenantId(), command.nodeId(), command.callerNumberId());
+            outboundLinePolicyService.applyDialingRule(command.tenantId(), command.nodeId(),
+                command.outboundLinePolicyId(), command.agentId(), command.skillGroupId(), route);
+            return route;
         }
         if (command.outboundLinePolicyId() != null) {
             if (command.nodeId() == null) {

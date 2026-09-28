@@ -14,4 +14,5 @@ public interface CustomerImportTaskService {
     void updateStatus(Long taskId, String status);
     void delete(Long taskId);
     void validateCustomers(Long taskId, java.util.List<Long> customerIds);
+    void associateManualCustomer(Long taskId, Long customerId, String customerName, String normalizedPhone);
 }

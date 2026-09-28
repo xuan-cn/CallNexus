@@ -2,6 +2,7 @@ package org.dromara.customer.ticket.service;
 
 import org.dromara.customer.ticket.domain.request.CreateTicketRequest;
 import org.dromara.customer.ticket.domain.request.TicketPageQuery;
+import org.dromara.customer.ticket.domain.request.UpdateTicketDeadlineRequest;
 import org.dromara.customer.ticket.domain.response.TicketResponse;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -13,4 +14,5 @@ public interface TicketApplicationService {
     void submit(Long id);
     void resolveDirectly(Long id);
     void close(Long id);
+    void updateDeadline(Long id, UpdateTicketDeadlineRequest request);
 }

@@ -77,6 +77,8 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
             request.getExpireSeconds(), request.getRetrySeconds(), request.getPingMax(), request.getPingMin(), request.getCallerIdInFrom(),
             request.getFromUser(), request.getFromDomain(), request.getContactParams(), request.getDialplanContext(), request.getExtension(), request.getDescription(),
             request.getAccessMode(), request.getRegisteredIdentity(), request.getSipProfile());
+        applyDialingRule(gateway, request.getLocalAreaCode(), request.getAddLocalAreaCode(), request.getAddMissingAreaCodeZero(),
+            request.getStripChinaCountryCode(), request.getOutboundPrefix());
         gateway.setPassword(request.getPassword());
         gateway.setEnabled(true);
         mapper.insert(gateway);
@@ -105,6 +107,8 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
             request.getExpireSeconds(), request.getRetrySeconds(), request.getPingMax(), request.getPingMin(), request.getCallerIdInFrom(),
             request.getFromUser(), request.getFromDomain(), request.getContactParams(), request.getDialplanContext(), request.getExtension(), request.getDescription(),
             request.getAccessMode(), request.getRegisteredIdentity(), request.getSipProfile());
+        applyDialingRule(gateway, request.getLocalAreaCode(), request.getAddLocalAreaCode(), request.getAddMissingAreaCodeZero(),
+            request.getStripChinaCountryCode(), request.getOutboundPrefix());
         if (request.getPassword() != null && !request.getPassword().isBlank()) gateway.setPassword(request.getPassword());
         gateway.setEnabled(request.getEnabled());
         gateway.setVersion(request.getVersion());
@@ -253,6 +257,19 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         gateway.setDescription(description);
     }
 
+    private void applyDialingRule(FreeSwitchGateway gateway, String localAreaCode, Boolean addLocalAreaCode,
+                                  Boolean addMissingAreaCodeZero, Boolean stripChinaCountryCode, String outboundPrefix) {
+        gateway.setLocalAreaCode(trimToNull(localAreaCode));
+        gateway.setAddLocalAreaCode(Boolean.TRUE.equals(addLocalAreaCode));
+        gateway.setAddMissingAreaCodeZero(Boolean.TRUE.equals(addMissingAreaCodeZero));
+        gateway.setStripChinaCountryCode(Boolean.TRUE.equals(stripChinaCountryCode));
+        gateway.setOutboundPrefix(trimToNull(outboundPrefix));
+    }
+
+    private String trimToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
     private FreeSwitchGatewayResponse toResponse(FreeSwitchGateway gateway) {
         FreeSwitchGatewayResponse response = new FreeSwitchGatewayResponse();
         response.setId(gateway.getId());
@@ -271,6 +288,11 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         response.setRegisterEnabled(gateway.getRegisterEnabled());
         response.setTransport(gateway.getTransport());
         response.setCallerIdNumber(gateway.getCallerIdNumber());
+        response.setLocalAreaCode(gateway.getLocalAreaCode());
+        response.setAddLocalAreaCode(Boolean.TRUE.equals(gateway.getAddLocalAreaCode()));
+        response.setAddMissingAreaCodeZero(Boolean.TRUE.equals(gateway.getAddMissingAreaCodeZero()));
+        response.setStripChinaCountryCode(Boolean.TRUE.equals(gateway.getStripChinaCountryCode()));
+        response.setOutboundPrefix(gateway.getOutboundPrefix());
         response.setPing(gateway.getPing() == null ? 0 : gateway.getPing());
         response.setExpireSeconds(gateway.getExpireSeconds() == null ? 60 : gateway.getExpireSeconds());
         response.setRetrySeconds(gateway.getRetrySeconds() == null ? 30 : gateway.getRetrySeconds());

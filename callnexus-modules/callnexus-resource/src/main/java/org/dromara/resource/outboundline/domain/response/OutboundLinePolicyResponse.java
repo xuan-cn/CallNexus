@@ -14,6 +14,11 @@ public class OutboundLinePolicyResponse {
     private String policyCode;
     private String policyName;
     private String policyType;
+    private String localAreaCode;
+    private Boolean addLocalAreaCode;
+    private Boolean addMissingAreaCodeZero;
+    private Boolean stripChinaCountryCode;
+    private String outboundPrefix;
     private Boolean defaultPolicy;
     private Boolean enabled;
     private String remark;

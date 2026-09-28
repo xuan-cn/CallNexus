@@ -3,6 +3,7 @@ package org.dromara.report.controller;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.annotation.SaMode;
 import lombok.RequiredArgsConstructor;
+import jakarta.servlet.http.HttpServletResponse;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -28,6 +29,7 @@ import org.dromara.report.domain.response.SatisfactionTrendPointResponse;
 import org.dromara.report.service.ReportService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -88,6 +90,12 @@ public class ReportController {
         return service.satisfactionDetails(query, pageQuery);
     }
 
+    @PostMapping("/satisfaction/export")
+    @SaCheckPermission("callcenter:report-satisfaction:view")
+    public void exportSatisfaction(ReportQuery query, HttpServletResponse response) {
+        service.exportSatisfactionDetails(query, response);
+    }
+
     @GetMapping("/overview/kpis")
     @SaCheckPermission("callcenter:report-overview:view")
     public R<OverviewKpiResponse> overview(ReportQuery query) {
@@ -104,6 +112,12 @@ public class ReportController {
     @SaCheckPermission("callcenter:report-overview:view")
     public R<List<CallDistributionResponse>> overviewDistribution(ReportQuery query) {
         return R.ok(service.distribution(query));
+    }
+
+    @PostMapping("/overview/export")
+    @SaCheckPermission("callcenter:report-overview:view")
+    public void exportOverview(ReportQuery query, HttpServletResponse response) {
+        service.exportOverview(query, response);
     }
 
     @GetMapping("/calls/summary")
@@ -130,10 +144,22 @@ public class ReportController {
         return service.callDetails(query, pageQuery);
     }
 
+    @PostMapping("/calls/export")
+    @SaCheckPermission("callcenter:report-call:view")
+    public void exportCalls(ReportQuery query, HttpServletResponse response) {
+        service.exportCallDetails(query, response);
+    }
+
     @GetMapping("/agents/summary")
     @SaCheckPermission("callcenter:report-agent:view")
     public R<List<AgentReportResponse>> agents(ReportQuery query) {
         return R.ok(service.agents(query));
+    }
+
+    @PostMapping("/agents/export")
+    @SaCheckPermission("callcenter:report-agent:view")
+    public void exportAgents(ReportQuery query, HttpServletResponse response) {
+        service.exportAgents(query, response);
     }
 
     @GetMapping("/agents/{agentId}/presence-logs")
@@ -156,6 +182,12 @@ public class ReportController {
     @SaCheckPermission("callcenter:report-queue:view")
     public R<List<QueueReportResponse>> queues(ReportQuery query) {
         return R.ok(service.queues(query));
+    }
+
+    @PostMapping("/queues/export")
+    @SaCheckPermission("callcenter:report-queue:view")
+    public void exportQueues(ReportQuery query, HttpServletResponse response) {
+        service.exportQueues(query, response);
     }
 
     @GetMapping("/outbound/summary")
@@ -186,5 +218,11 @@ public class ReportController {
     @SaCheckPermission("callcenter:report-outbound:view")
     public TableDataInfo<OutboundAttemptDetailResponse> outboundAttempts(ReportQuery query, PageQuery pageQuery) {
         return service.outboundAttempts(query, pageQuery);
+    }
+
+    @PostMapping("/outbound/export")
+    @SaCheckPermission("callcenter:report-outbound:view")
+    public void exportOutbound(ReportQuery query, HttpServletResponse response) {
+        service.exportOutboundAttempts(query, response);
     }
 }

@@ -18,4 +18,9 @@ public class PhoneNumberOutboundRouteResponse {
     private String policyCode;
     private String policyName;
     private String policyType;
+    private String localAreaCode;
+    private Boolean addLocalAreaCode;
+    private Boolean addMissingAreaCodeZero;
+    private Boolean stripChinaCountryCode;
+    private String outboundPrefix;
 }

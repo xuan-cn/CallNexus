@@ -15,6 +15,8 @@ public class PhoneNumberNormalizeRequest {
 
     private Boolean addLocalAreaCode;
 
+    private Boolean addMissingAreaCodeZero;
+
     private Boolean stripChinaCountryCode;
 
     private String outboundPrefix;

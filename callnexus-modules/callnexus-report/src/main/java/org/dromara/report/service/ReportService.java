@@ -2,6 +2,8 @@ package org.dromara.report.service;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
+import jakarta.servlet.http.HttpServletResponse;
+import org.dromara.common.excel.utils.ExcelUtil;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.tenant.helper.TenantHelper;
@@ -37,6 +39,8 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class ReportService {
+    private static final long EXPORT_ROW_LIMIT = 100_000L;
+
     private final ReportMapper mapper;
 
     public List<ReportAgentOptionResponse> agentOptions() {
@@ -105,6 +109,15 @@ public class ReportService {
         return TableDataInfo.build(page);
     }
 
+    public void exportSatisfactionDetails(ReportQuery query, HttpServletResponse response) {
+        ReportRangeResolver.ReportRange range = range(query);
+        Page<SatisfactionDetailResponse> page = mapper.selectSatisfactionDetails(
+            exportPage(), TenantHelper.getTenantId(), range.startAt(), range.endAt(),
+            query.getQueueId(), query.getAgentId(), query.getSkillGroupId(),
+            query.getSatisfactionStatus(), query.getSatisfactionScore());
+        ExcelUtil.exportExcel(page.getRecords(), "满意度明细", SatisfactionDetailResponse.class, response);
+    }
+
     public OverviewKpiResponse overview(ReportQuery query) {
         ReportRangeResolver.ReportRange range = range(query);
         return mapper.selectOverview(TenantHelper.getTenantId(), range.startAt(), range.endAt(), LocalDateTime.now(),
@@ -126,6 +139,10 @@ public class ReportService {
             query.getDirection(), query.getAgentId(), query.getKeyword());
     }
 
+    public void exportOverview(ReportQuery query, HttpServletResponse response) {
+        ExcelUtil.exportExcel(trend(query), "运营趋势", ReportTrendPointResponse.class, response);
+    }
+
     public TableDataInfo<CallDetailResponse> callDetails(ReportQuery query, PageQuery pageQuery) {
         ReportRangeResolver.ReportRange range = range(query);
         Page<CallDetailResponse> page = mapper.selectCallDetails(
@@ -134,10 +151,22 @@ public class ReportService {
         return TableDataInfo.build(page);
     }
 
+    public void exportCallDetails(ReportQuery query, HttpServletResponse response) {
+        ReportRangeResolver.ReportRange range = range(query);
+        Page<CallDetailResponse> page = mapper.selectCallDetails(
+            exportPage(), TenantHelper.getTenantId(), range.startAt(), range.endAt(), LocalDateTime.now(),
+            query.getDirection(), query.getAnswerResult(), query.getAgentId(), query.getQueueId(), query.getKeyword());
+        ExcelUtil.exportExcel(page.getRecords(), "通话明细", CallDetailResponse.class, response);
+    }
+
     public List<AgentReportResponse> agents(ReportQuery query) {
         ReportRangeResolver.ReportRange range = range(query);
         return mapper.selectAgents(TenantHelper.getTenantId(), range.startAt(), range.endAt(), LocalDateTime.now(),
             query.getAgentId(), query.getSkillGroupId(), query.getKeyword());
+    }
+
+    public void exportAgents(ReportQuery query, HttpServletResponse response) {
+        ExcelUtil.exportExcel(agents(query), "坐席分析", AgentReportResponse.class, response);
     }
 
     public TableDataInfo<AgentPresenceLogResponse> agentPresenceLogs(Long agentId,
@@ -160,6 +189,10 @@ public class ReportService {
         ReportRangeResolver.ReportRange range = range(query);
         return mapper.selectQueues(TenantHelper.getTenantId(), range.startAt(), range.endAt(),
             query.getQueueId(), query.getSkillGroupId(), query.getKeyword());
+    }
+
+    public void exportQueues(ReportQuery query, HttpServletResponse response) {
+        ExcelUtil.exportExcel(queues(query), "队列分析", QueueReportResponse.class, response);
     }
 
     public OutboundReportSummaryResponse outboundSummary(ReportQuery query) {
@@ -203,6 +236,18 @@ public class ReportService {
             pageQuery.build(), TenantHelper.getTenantId(), range.startAt(), range.endAt(),
             query.getTaskId(), query.getTaskType(), query.getResultCode(), query.getKeyword());
         return TableDataInfo.build(page);
+    }
+
+    public void exportOutboundAttempts(ReportQuery query, HttpServletResponse response) {
+        ReportRangeResolver.ReportRange range = range(query);
+        Page<OutboundAttemptDetailResponse> page = mapper.selectOutboundAttempts(
+            exportPage(), TenantHelper.getTenantId(), range.startAt(), range.endAt(),
+            query.getTaskId(), query.getTaskType(), query.getResultCode(), query.getKeyword());
+        ExcelUtil.exportExcel(page.getRecords(), "外呼拨打明细", OutboundAttemptDetailResponse.class, response);
+    }
+
+    private <T> Page<T> exportPage() {
+        return new Page<>(1, EXPORT_ROW_LIMIT, false);
     }
 
     private ReportRangeResolver.ReportRange range(ReportQuery query) {

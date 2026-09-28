@@ -2,6 +2,7 @@ package org.dromara.customer.ticket.service.impl;
 
 import lombok.RequiredArgsConstructor;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -19,9 +20,11 @@ import org.dromara.customer.ticket.domain.Ticket;
 import org.dromara.customer.ticket.domain.TicketStatus;
 import org.dromara.customer.ticket.domain.request.CreateTicketRequest;
 import org.dromara.customer.ticket.domain.request.TicketPageQuery;
+import org.dromara.customer.ticket.domain.request.UpdateTicketDeadlineRequest;
 import org.dromara.customer.ticket.domain.response.TicketResponse;
 import org.dromara.customer.ticket.mapper.TicketMapper;
 import org.dromara.customer.ticket.service.TicketApplicationService;
+import org.dromara.customer.ticket.service.TicketDeadlineService;
 import org.dromara.call.service.CallBusinessAssociationService;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.ObjectProvider;
@@ -31,6 +34,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 import java.time.LocalDateTime;
+import java.time.Duration;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.ThreadLocalRandom;
@@ -47,6 +51,7 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
     private final DynamicFormQueryService formQueryService;
     private final CallBusinessAssociationService callBusinessAssociationService;
     private final ObjectProvider<WorkflowService> workflowServiceProvider;
+    private final TicketDeadlineService ticketDeadlineService;
 
     @Override
     public TableDataInfo<TicketResponse> page(TicketPageQuery query, PageQuery pageQuery) {
@@ -55,6 +60,7 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
             .like(safeQuery.getTicketNo() != null && !safeQuery.getTicketNo().isBlank(), Ticket::getTicketNo, safeQuery.getTicketNo())
             .like(safeQuery.getCallerNumber() != null && !safeQuery.getCallerNumber().isBlank(), Ticket::getCallerNumber, safeQuery.getCallerNumber())
             .eq(safeQuery.getTicketStatus() != null, Ticket::getTicketStatus, safeQuery.getTicketStatus())
+            .eq(safeQuery.getDeadlineStatus() != null, Ticket::getDeadlineStatus, safeQuery.getDeadlineStatus())
             .eq(safeQuery.getTemplateId() != null, Ticket::getTemplateId, safeQuery.getTemplateId())
             .orderByDesc(Ticket::getCreateTime);
         DynamicFormQueryService.QueryCondition dynamicCondition = formQueryService.build(
@@ -99,6 +105,7 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         FormTemplate template = requireTicketTemplate(request.getTemplateId());
         ticket.setWorkflowCode(normalizeWorkflowCode(template.getWorkflowCode()));
         ticket.setProcessStatus(BusinessStatusEnum.DRAFT.getStatus());
+        ticketDeadlineService.initialize(ticket, template, new Date());
         ticketMapper.insert(ticket);
         formSubmissionService.validateAndSave(request.getTemplateId(), FormBusinessType.TICKET, ticket.getId(), request.getFormData());
         callBusinessAssociationService.associateTicket(request.getSourceCallId(), ticket.getId(), request.getCustomerId());
@@ -168,7 +175,9 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         }
         ticket.setTicketStatus(TicketStatus.RESOLVED);
         ticket.setProcessStatus(BusinessStatusEnum.FINISH.getStatus());
-        ticket.setResolvedAt(new Date());
+        Date resolvedAt = new Date();
+        ticket.setResolvedAt(resolvedAt);
+        ticketDeadlineService.complete(ticket, resolvedAt);
         ticketMapper.updateById(ticket);
     }
 
@@ -182,6 +191,37 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         ticket.setTicketStatus(TicketStatus.CLOSED);
         ticket.setClosedAt(new Date());
         ticketMapper.updateById(ticket);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void updateDeadline(Long id, UpdateTicketDeadlineRequest request) {
+        Ticket ticket = requireTicket(id);
+        if (ticket.getTicketStatus() != TicketStatus.OPEN && ticket.getTicketStatus() != TicketStatus.PROCESSING) {
+            throw new ServiceException("只有待处理或处理中的工单可以修改办结时限");
+        }
+        boolean enabled = Boolean.TRUE.equals(request.getEnabled());
+        Date now = new Date();
+        if (enabled && request.getDueAt() == null) {
+            throw new ServiceException("请选择工单截止时间");
+        }
+        if (enabled && !request.getDueAt().after(now)) {
+            throw new ServiceException("工单截止时间必须晚于当前时间");
+        }
+        ticketDeadlineService.configure(ticket, enabled, request.getDueAt(), request.getRemindBeforeMinutes(), now);
+        LambdaUpdateWrapper<Ticket> update = new LambdaUpdateWrapper<Ticket>()
+            .eq(Ticket::getId, ticket.getId())
+            .in(Ticket::getTicketStatus, TicketStatus.OPEN, TicketStatus.PROCESSING)
+            .set(Ticket::getResolutionLimitMinutes, ticket.getResolutionLimitMinutes())
+            .set(Ticket::getDueAt, ticket.getDueAt())
+            .set(Ticket::getRemindAt, ticket.getRemindAt())
+            .set(Ticket::getDeadlineStatus, ticket.getDeadlineStatus())
+            .set(Ticket::getDueSoonRemindedAt, ticket.getDueSoonRemindedAt())
+            .set(Ticket::getOverdueAt, ticket.getOverdueAt())
+            .set(Ticket::getOverdueRemindedAt, ticket.getOverdueRemindedAt());
+        if (ticketMapper.update(null, update) != 1) {
+            throw new ServiceException("工单状态已变化，请刷新后重试");
+        }
     }
 
     private String createTicketNo() {
@@ -251,6 +291,13 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         response.setSubmittedAt(toLocalDateTime(ticket.getSubmittedAt()));
         response.setResolvedAt(toLocalDateTime(ticket.getResolvedAt()));
         response.setClosedAt(toLocalDateTime(ticket.getClosedAt()));
+        response.setResolutionLimitMinutes(ticket.getResolutionLimitMinutes());
+        response.setDueAt(toLocalDateTime(ticket.getDueAt()));
+        response.setRemindAt(toLocalDateTime(ticket.getRemindAt()));
+        response.setDeadlineStatus(ticket.getDeadlineStatus());
+        if (ticket.getDueAt() != null) {
+            response.setRemainingSeconds(Duration.between(LocalDateTime.now(), toLocalDateTime(ticket.getDueAt())).getSeconds());
+        }
         response.setCreateTime(toLocalDateTime(ticket.getCreateTime()));
         return response;
     }

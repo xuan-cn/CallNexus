@@ -69,6 +69,7 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     private static final String TASK_TYPE = "AUTO";
     private static final String SOURCE_TYPE_IMPORT_TASK = "IMPORT_TASK";
     private static final Set<String> EDITABLE_STATUSES = Set.of("DRAFT", "PAUSED", "STOPPED");
+    private static final Set<String> MANUAL_RETRY_RESULT_CODES = Set.of("NO_ANSWER", "BUSY", "FAILED", "OTHER");
 
     private final OutboundTaskMapper taskMapper;
     private final OutboundMemberMapper memberMapper;
@@ -274,6 +275,54 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
             .set(OutboundTask::getSchedulerOwner, null)
             .set(OutboundTask::getSchedulerLeaseUntil, null)
             .set(OutboundTask::getSchedulerHeartbeatAt, null));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int retryFailedMembers(Long id) {
+        OutboundTask task = requireTask(id);
+        LambdaQueryWrapper<OutboundMember> failedMembers = new LambdaQueryWrapper<OutboundMember>()
+            .eq(OutboundMember::getTaskId, id)
+            .in(OutboundMember::getStatus, "COMPLETED", "RETRY")
+            .in(OutboundMember::getResultCode, MANUAL_RETRY_RESULT_CODES);
+        long failedCount = memberMapper.selectCount(failedMembers);
+        if (failedCount == 0) {
+            return 0;
+        }
+
+        int updated = memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
+            .eq(OutboundMember::getTaskId, id)
+            .in(OutboundMember::getStatus, "COMPLETED", "RETRY")
+            .in(OutboundMember::getResultCode, MANUAL_RETRY_RESULT_CODES)
+            .set(OutboundMember::getStatus, "PENDING")
+            .set(OutboundMember::getClaimedAgentId, null)
+            .set(OutboundMember::getClaimedUserId, null)
+            .set(OutboundMember::getClaimedAt, null)
+            .set(OutboundMember::getLeaseExpiresAt, null)
+            .set(OutboundMember::getScheduleKey, null)
+            .set(OutboundMember::getScheduledAt, null)
+            .set(OutboundMember::getBusinessCallId, null)
+            .set(OutboundMember::getAttemptCount, 0)
+            .set(OutboundMember::getNextFollowUpAt, null)
+            .set(OutboundMember::getCompletedAt, null)
+            .set(OutboundMember::getCompletionReason, null));
+        if (updated == 0) {
+            return 0;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        taskMapper.update(null, new LambdaUpdateWrapper<OutboundTask>()
+            .eq(OutboundTask::getId, id)
+            .eq(OutboundTask::getTaskType, TASK_TYPE)
+            .set(OutboundTask::getStatus, "RUNNING")
+            .setSql("execution_round = COALESCE(execution_round, 1) + 1")
+            .set(task.getExecutionStartedAt() == null, OutboundTask::getExecutionStartedAt, now)
+            .set(OutboundTask::getLastScheduledAt, null)
+            .set(OutboundTask::getLastScheduleSummary, "已手动重试失败号码，等待调度")
+            .set(OutboundTask::getSchedulerOwner, null)
+            .set(OutboundTask::getSchedulerLeaseUntil, null)
+            .set(OutboundTask::getSchedulerHeartbeatAt, null));
+        return updated;
     }
 
     @Override

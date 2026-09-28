@@ -46,6 +46,15 @@ public class CreateFreeSwitchGatewayRequest {
     private String transport;
     @Size(max = 32)
     private String callerIdNumber;
+    @Size(max = 16)
+    @Pattern(regexp = "^$|^0[1-9]\\d{1,2}$", message = "本地区号格式不正确，例如 010 或 0451")
+    private String localAreaCode;
+    private Boolean addLocalAreaCode;
+    private Boolean addMissingAreaCodeZero;
+    private Boolean stripChinaCountryCode;
+    @Size(max = 16)
+    @Pattern(regexp = "^$|^[0-9*#]+$", message = "出局前缀只能包含数字、* 或 #")
+    private String outboundPrefix;
     @Min(0)
     @Max(3600)
     private Integer ping;

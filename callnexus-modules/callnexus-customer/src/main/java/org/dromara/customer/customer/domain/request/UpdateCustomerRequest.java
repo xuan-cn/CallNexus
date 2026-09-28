@@ -13,5 +13,6 @@ public class UpdateCustomerRequest {
     @Size(max = 64)
     private String sourceCallId;
     private Long templateId;
+    private Long importTaskId;
     private Map<String, Object> formData = new HashMap<>();
 }

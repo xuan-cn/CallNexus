@@ -15,6 +15,9 @@ public class FormTemplateResponse {
     private String templateName;
     private FormBusinessType businessType;
     private String workflowCode;
+    private Boolean deadlineEnabled;
+    private Integer resolutionLimitMinutes;
+    private Integer remindBeforeMinutes;
     private Boolean enabled;
     private Integer version;
     private List<FieldResponse> fields = new ArrayList<>();

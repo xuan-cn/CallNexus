@@ -23,6 +23,11 @@ public class TicketResponse {
     private LocalDateTime submittedAt;
     private LocalDateTime resolvedAt;
     private LocalDateTime closedAt;
+    private Integer resolutionLimitMinutes;
+    private LocalDateTime dueAt;
+    private LocalDateTime remindAt;
+    private org.dromara.customer.ticket.domain.TicketDeadlineStatus deadlineStatus;
+    private Long remainingSeconds;
     private LocalDateTime createTime;
     private Map<String, Object> formData;
 }
