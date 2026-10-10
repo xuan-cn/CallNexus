@@ -17,6 +17,9 @@ public class OutboundTask extends TenantEntity {
     private String taskType;
     private String status;
     private String description;
+    private String assignmentMode;
+    private String assignedAgentIds;
+    private String customerFilterJson;
     private Long nodeId;
     private Long callerNumberId;
     private Long outboundLinePolicyId;

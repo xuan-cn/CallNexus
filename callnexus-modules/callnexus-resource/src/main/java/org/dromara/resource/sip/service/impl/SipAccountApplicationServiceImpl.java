@@ -12,6 +12,7 @@ import org.dromara.resource.event.sip.SipAccountDeletedEvent;
 import org.dromara.resource.node.domain.FreeSwitchNode;
 import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
 import org.dromara.resource.sip.domain.SipAccount;
+import org.dromara.resource.sip.domain.request.BatchCreateSipAccountRequest;
 import org.dromara.resource.sip.domain.request.CreateSipAccountRequest;
 import org.dromara.resource.sip.domain.request.SipAccountPageQuery;
 import org.dromara.resource.sip.domain.request.UpdateSipAccountRequest;
@@ -25,6 +26,9 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -85,6 +89,35 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         account.setEnabled(true);
         mapper.insert(account);
         return account.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Integer batchCreate(BatchCreateSipAccountRequest request) {
+        FreeSwitchNode node = requireEnabledNode(request.getNodeId());
+        List<String> extensions = buildExtensionRange(request.getStartExtension(), request.getCount());
+        List<String> existingExtensions = mapper.selectList(new LambdaQueryWrapper<SipAccount>()
+                .eq(SipAccount::getTenantId, LoginHelper.getTenantId())
+                .in(SipAccount::getExtension, extensions))
+            .stream()
+            .map(SipAccount::getExtension)
+            .toList();
+        if (!existingExtensions.isEmpty()) {
+            throw new ServiceException("以下 SIP 分机号已存在：" + String.join("、", existingExtensions));
+        }
+
+        for (String extension : extensions) {
+            SipAccount account = new SipAccount();
+            account.setNodeId(node.getId());
+            account.setExtension(extension);
+            account.setAuthUsername(generateAuthUsername());
+            account.setDisplayName(request.getDisplayNamePrefix().trim() + extension);
+            account.setDomain(node.getSipDomain());
+            account.setAuthPassword(request.getPassword());
+            account.setEnabled(true);
+            mapper.insert(account);
+        }
+        return extensions.size();
     }
 
     @Override
@@ -293,6 +326,20 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
             .eq(SipAccount::getTenantId, LoginHelper.getTenantId())
             .eq(SipAccount::getAuthUsername, authUsername)));
         return authUsername;
+    }
+
+    private List<String> buildExtensionRange(String startExtension, int count) {
+        int width = startExtension.length();
+        BigInteger start = new BigInteger(startExtension);
+        List<String> extensions = new ArrayList<>(count);
+        for (int index = 0; index < count; index++) {
+            String extension = start.add(BigInteger.valueOf(index)).toString();
+            if (extension.length() > 16) {
+                throw new ServiceException("生成后的分机号不能超过16位");
+            }
+            extensions.add(extension.length() < width ? "0".repeat(width - extension.length()) + extension : extension);
+        }
+        return extensions;
     }
 
     private SipAccountResponse toResponse(SipAccount account) {

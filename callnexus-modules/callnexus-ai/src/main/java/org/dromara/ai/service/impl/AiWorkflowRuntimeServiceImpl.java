@@ -235,6 +235,15 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                         createWait(execution, node, "TTS", 120);
                     }
                 }
+                case "PLAY_MEDIA" -> {
+                    execution.setCurrentNodeId(nextNodeId(definition, node.path("id").asText(), result.branchValue()));
+                    if (!"TEST".equals(execution.getChannelType())) {
+                        context.pendingActionType = "PLAY_MEDIA";
+                        context.pendingActionTarget = result.output();
+                        execution.setStatus("WAITING_TTS");
+                        createWait(execution, node, "MEDIA", 120);
+                    }
+                }
                 case "STREAM_AI" -> {
                     execution.setCurrentNodeId(nextNodeId(definition, node.path("id").asText(), result.branchValue()));
                     if ("TEST".equals(execution.getChannelType())) {

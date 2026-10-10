@@ -25,6 +25,7 @@ public class OutboundMember extends TenantEntity {
     private String phoneLabel;
     private Integer phonePriority;
     private String status;
+    private Long assignedAgentId;
     private Long claimedAgentId;
     private Long claimedUserId;
     private LocalDateTime claimedAt;

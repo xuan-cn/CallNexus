@@ -13,6 +13,7 @@ import org.dromara.ai.domain.response.AiWorkflowResponse;
 import org.dromara.ai.domain.response.AiWorkflowValidationResponse;
 import org.dromara.ai.domain.response.AiWorkflowVersionResponse;
 import org.dromara.ai.domain.response.AiWorkflowTestExecutionResponse;
+import org.dromara.ai.domain.response.AiWorkflowMediaOptionResponse;
 import org.dromara.ai.service.AiWorkflowApplicationService;
 import org.dromara.ai.service.AiWorkflowRuntimeService;
 import org.dromara.common.core.domain.R;
@@ -38,6 +39,12 @@ public class AiWorkflowController {
     @SaCheckPermission("callcenter:ai-workflow:list")
     public R<List<AiWorkflowResponse>> list() {
         return R.ok(service.workflows());
+    }
+
+    @GetMapping("/media-options")
+    @SaCheckPermission("callcenter:ai-workflow:edit")
+    public R<List<AiWorkflowMediaOptionResponse>> mediaOptions() {
+        return R.ok(service.mediaOptions());
     }
 
     @GetMapping("/{id}")

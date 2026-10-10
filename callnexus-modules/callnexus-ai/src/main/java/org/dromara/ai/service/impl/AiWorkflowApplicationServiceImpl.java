@@ -15,11 +15,15 @@ import org.dromara.ai.domain.response.AiAgentWorkflowBindingResponse;
 import org.dromara.ai.domain.response.AiWorkflowResponse;
 import org.dromara.ai.domain.response.AiWorkflowValidationResponse;
 import org.dromara.ai.domain.response.AiWorkflowVersionResponse;
+import org.dromara.ai.domain.response.AiWorkflowMediaOptionResponse;
 import org.dromara.ai.knowledge.KnowledgeTextUtils;
 import org.dromara.ai.mapper.AiAgentMapper;
 import org.dromara.ai.mapper.AiAgentWorkflowBindingMapper;
 import org.dromara.ai.mapper.AiWorkflowMapper;
 import org.dromara.ai.mapper.AiWorkflowVersionMapper;
+import org.dromara.resource.media.domain.MediaAsset;
+import org.dromara.resource.media.domain.MediaAssetCategory;
+import org.dromara.resource.media.mapper.MediaAssetMapper;
 import org.dromara.ai.service.AiWorkflowApplicationService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
@@ -72,6 +76,27 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     private final AiWorkflowVersionMapper versionMapper;
     private final AiAgentWorkflowBindingMapper bindingMapper;
     private final AiAgentMapper agentMapper;
+    private final MediaAssetMapper mediaAssetMapper;
+
+    @Override
+    public List<AiWorkflowMediaOptionResponse> mediaOptions() {
+        return mediaAssetMapper.selectList(new LambdaQueryWrapper<MediaAsset>()
+                .eq(MediaAsset::getEnabled, true)
+                .isNotNull(MediaAsset::getLatestVersionId)
+                .in(MediaAsset::getPublishStatus, List.of("PUBLISHED", "PARTIAL"))
+                .notIn(MediaAsset::getCategory, MediaAssetCategory.CALL_RECORDING.name(), MediaAssetCategory.VOICEMAIL_RECORDING.name())
+                .orderByAsc(MediaAsset::getAssetName))
+            .stream().map(media -> {
+                AiWorkflowMediaOptionResponse response = new AiWorkflowMediaOptionResponse();
+                response.setId(media.getId());
+                response.setAssetName(media.getAssetName());
+                response.setCategory(media.getCategory());
+                response.setSourceType(media.getSourceType());
+                response.setDurationMs(media.getDurationMs());
+                response.setPublishStatus(media.getPublishStatus());
+                return response;
+            }).toList();
+    }
 
     @Override
     public List<AiWorkflowResponse> workflows() {
@@ -380,6 +405,9 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
                                     AiWorkflowValidationResponse result) {
         if ("TEMPLATE_REPLY".equals(type) && config.path("text").asText("").isBlank()) {
             result.getErrors().add("模板回复节点未填写回复内容：" + nodeId);
+        }
+        if ("PLAY_MEDIA".equals(type) && !config.path("mediaId").asText("").matches("^[0-9]{1,20}$")) {
+            result.getErrors().add("播放声音媒体节点未选择有效媒体：" + nodeId);
         }
         if ("INTENT_ROUTE".equals(type) && configuredIntentCodes(config).isEmpty()) {
             result.getErrors().add("意图判断节点至少需要选择一个意图：" + nodeId);

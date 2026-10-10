@@ -7,6 +7,7 @@ import org.dromara.ai.domain.response.AiAgentWorkflowBindingResponse;
 import org.dromara.ai.domain.response.AiWorkflowResponse;
 import org.dromara.ai.domain.response.AiWorkflowValidationResponse;
 import org.dromara.ai.domain.response.AiWorkflowVersionResponse;
+import org.dromara.ai.domain.response.AiWorkflowMediaOptionResponse;
 
 import java.util.List;
 
@@ -22,6 +23,7 @@ public interface AiWorkflowApplicationService {
     Long saveDraft(Long workflowId, AiWorkflowDraftRequest request);
     AiWorkflowValidationResponse validateDraft(Long workflowId);
     AiWorkflowVersionResponse publish(Long workflowId);
+    List<AiWorkflowMediaOptionResponse> mediaOptions();
     List<AiAgentWorkflowBindingResponse> agentBindings(Long agentId);
     void saveAgentBinding(Long agentId, AiAgentWorkflowBindingRequest request);
     void deleteAgentBinding(Long agentId, String sceneType);

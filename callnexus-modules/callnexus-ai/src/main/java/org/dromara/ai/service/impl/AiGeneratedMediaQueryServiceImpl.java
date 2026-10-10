@@ -37,12 +37,17 @@ public class AiGeneratedMediaQueryServiceImpl implements AiGeneratedMediaQuerySe
         if (binding == null || binding.getMediaId() == null) {
             return null;
         }
-        return syncedPath(binding.getMediaId(), nodeId);
+        SyncedMedia media = findSyncedMedia(binding.getMediaId(), nodeId);
+        return media == null ? null : media.path();
     }
 
-    private String syncedPath(Long mediaId, Long nodeId) {
+    @Override
+    public SyncedMedia findSyncedMedia(Long mediaId, Long nodeId) {
+        if (mediaId == null || nodeId == null) {
+            return null;
+        }
         MediaAsset media = mediaAssetMapper.selectById(mediaId);
-        if (media == null || media.getLatestVersionId() == null) {
+        if (media == null || !Boolean.TRUE.equals(media.getEnabled()) || media.getLatestVersionId() == null) {
             return null;
         }
         List<Long> publicationIds = publicationMapper.selectList(new LambdaQueryWrapper<MediaPublication>()
@@ -60,6 +65,6 @@ public class AiGeneratedMediaQueryServiceImpl implements AiGeneratedMediaQuerySe
             .eq(MediaNodeSync::getStatus, "SUCCESS")
             .orderByDesc(MediaNodeSync::getSyncedAt)
             .last("limit 1"));
-        return sync == null ? null : sync.getTargetPath();
+        return sync == null ? null : new SyncedMedia(sync.getTargetPath(), media.getDurationMs(), media.getAssetName());
     }
 }

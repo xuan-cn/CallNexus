@@ -102,6 +102,7 @@ public class AiRealtimeMrcpEventService {
     private final AiAgentApplicationService agentService;
     private final AiIntentApplicationService intentService;
     private final AiWorkflowRuntimeService workflowRuntimeService;
+    private final AiGeneratedMediaQueryService generatedMediaQueryService;
     private final AiWorkflowContextMapper workflowContextMapper;
     private final AiWorkflowTemplateResolver workflowTemplateResolver;
     private final AiAgentMapper agentMapper;
@@ -131,6 +132,7 @@ public class AiRealtimeMrcpEventService {
                                       AiAgentApplicationService agentService,
                                       AiIntentApplicationService intentService,
                                       AiWorkflowRuntimeService workflowRuntimeService,
+                                      AiGeneratedMediaQueryService generatedMediaQueryService,
                                       AiWorkflowContextMapper workflowContextMapper,
                                       AiWorkflowTemplateResolver workflowTemplateResolver,
                                       AiAgentMapper agentMapper,
@@ -154,6 +156,7 @@ public class AiRealtimeMrcpEventService {
         this.agentService = agentService;
         this.intentService = intentService;
         this.workflowRuntimeService = workflowRuntimeService;
+        this.generatedMediaQueryService = generatedMediaQueryService;
         this.workflowContextMapper = workflowContextMapper;
         this.workflowTemplateResolver = workflowTemplateResolver;
         this.agentMapper = agentMapper;
@@ -275,6 +278,7 @@ public class AiRealtimeMrcpEventService {
         String finalCustomerLegUuid = customerLegUuid;
         boolean finalOpeningPreplayed = Boolean.TRUE.equals(openingPreplayed);
         boolean speakComplete = isSpeakComplete(eventName, application);
+        boolean mediaComplete = isMediaPlaybackComplete(eventName, application);
         RuntimeSession runtime = sessions.computeIfAbsent(key, ignored -> createRuntime(tenantId, nodeId, finalFlowId, finalIvrNodeId,
             finalAgentId, finalBusinessCallId, finalCustomerLegUuid, finalOpeningPreplayed));
         runtime.touch();
@@ -290,6 +294,10 @@ public class AiRealtimeMrcpEventService {
         }
         if (speakComplete) {
             onSpeakComplete(runtime, applicationData);
+            return;
+        }
+        if (mediaComplete && runtime.workflowMediaPlayback.get()) {
+            completeWorkflowMedia(runtime, "EVENT");
             return;
         }
         String speechType = header(headers, SPEECH_TYPE_HEADER);
@@ -1875,6 +1883,7 @@ public class AiRealtimeMrcpEventService {
                     result.getText(), LocalDateTime.now(), runtime.agentId);
                 speak(runtime, result.getText(), null, false);
             }
+            case "PLAY_MEDIA" -> playWorkflowMedia(runtime, result);
             case "WAIT_INPUT" -> {
                 runtime.workflowSpeak.set(false);
                 markListening(runtime);
@@ -1889,6 +1898,53 @@ public class AiRealtimeMrcpEventService {
             case "COMPLETED" -> continueWithDefaultConversation(runtime);
             case "FAILED" -> fail(runtime, "AI 语音工作流执行失败：" + result.getFailureMessage(), null);
             default -> throw new ServiceException("AI 语音工作流返回了无法执行的动作：" + actionType);
+        }
+    }
+
+    private void playWorkflowMedia(RuntimeSession runtime, AiWorkflowVoiceExecutionResponse action) {
+        Long mediaId = parseLong(action.getTarget());
+        if (mediaId == null) {
+            throw new ServiceException("播放声音媒体节点未选择有效媒体");
+        }
+        AiGeneratedMediaQueryService.SyncedMedia media = generatedMediaQueryService.findSyncedMedia(mediaId, runtime.nodeId);
+        if (media == null || StringUtils.isBlank(media.path())) {
+            throw new ServiceException("声音媒体未发布到当前 FreeSWITCH 节点或同步尚未成功");
+        }
+        ScheduledFuture<?> old = runtime.pendingSpeakTimer.getAndSet(null);
+        if (old != null) old.cancel(false);
+        runtime.workflowMediaPlayback.set(true);
+        try {
+            gateway().playMedia(runtime.nodeId, runtime.customerLegUuid, media.path());
+        } catch (Exception exception) {
+            runtime.workflowMediaPlayback.set(false);
+            throw exception;
+        }
+        long timeoutMs = media.durationMs() == null
+            ? 120_000L
+            : Math.max(2_000L, Math.min(120_000L, media.durationMs() + 3_000L));
+        ScheduledFuture<?> timeout = scheduler.schedule(
+            () -> TenantHelper.dynamic(runtime.tenantId, () -> completeWorkflowMedia(runtime, "TIMEOUT")),
+            Instant.now().plusMillis(timeoutMs));
+        runtime.pendingSpeakTimer.set(timeout);
+        if (!runtime.workflowMediaPlayback.get() && runtime.pendingSpeakTimer.compareAndSet(timeout, null)) {
+            timeout.cancel(false);
+        }
+        log.info("AI workflow media playback started, sessionId={}, businessCallId={}, mediaId={}, assetName={}, path={}, timeoutMs={}",
+            runtime.entity.getId(), runtime.businessCallId, mediaId, media.assetName(), media.path(), timeoutMs);
+    }
+
+    private void completeWorkflowMedia(RuntimeSession runtime, String source) {
+        if (runtime.closed.get() || !runtime.workflowMediaPlayback.compareAndSet(true, false)) {
+            return;
+        }
+        ScheduledFuture<?> pending = runtime.pendingSpeakTimer.getAndSet(null);
+        if (pending != null) pending.cancel(false);
+        log.info("AI workflow media playback completed, sessionId={}, businessCallId={}, source={}",
+            runtime.entity.getId(), runtime.businessCallId, source);
+        try {
+            handleWorkflowAction(runtime, workflowRuntimeService.voiceTtsCompleted(runtime.workflowExecutionId));
+        } catch (Exception exception) {
+            fail(runtime, "播放声音媒体后恢复工作流失败：" + exception.getMessage(), exception);
         }
     }
 
@@ -2298,6 +2354,10 @@ public class AiRealtimeMrcpEventService {
         return "CHANNEL_EXECUTE_COMPLETE".equals(eventName) && "speak".equalsIgnoreCase(application);
     }
 
+    private boolean isMediaPlaybackComplete(String eventName, String application) {
+        return "CHANNEL_EXECUTE_COMPLETE".equals(eventName) && "playback".equalsIgnoreCase(application);
+    }
+
     private String recognizedText(Map<String, String> headers) {
         String candidates = properties.getUnimrcp().getResultHeaderCandidates();
         if (StringUtils.isBlank(candidates)) {
@@ -2485,6 +2545,7 @@ public class AiRealtimeMrcpEventService {
         final AtomicBoolean llmStreaming = new AtomicBoolean();
         final AtomicBoolean workflowActive = new AtomicBoolean();
         final AtomicBoolean workflowSpeak = new AtomicBoolean();
+        final AtomicBoolean workflowMediaPlayback = new AtomicBoolean();
         final AtomicBoolean workflowStreamingReply = new AtomicBoolean();
         final AtomicInteger workflowStreamSequence = new AtomicInteger();
         final AtomicReference<ScheduledFuture<?>> pendingSpeakTimer = new AtomicReference<>();

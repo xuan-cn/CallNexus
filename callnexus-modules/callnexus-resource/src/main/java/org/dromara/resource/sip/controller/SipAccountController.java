@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.resource.sip.domain.request.BatchCreateSipAccountRequest;
 import org.dromara.resource.sip.domain.request.CreateSipAccountRequest;
 import org.dromara.resource.sip.domain.request.SipAccountPageQuery;
 import org.dromara.resource.sip.domain.request.UpdateSipAccountRequest;
@@ -35,6 +36,12 @@ public class SipAccountController {
     @SaCheckPermission("callcenter:sip-account:create")
     public R<Long> create(@Valid @RequestBody CreateSipAccountRequest request) {
         return R.ok(applicationService.create(request));
+    }
+
+    @PostMapping("/batch")
+    @SaCheckPermission("callcenter:sip-account:create")
+    public R<Integer> batchCreate(@Valid @RequestBody BatchCreateSipAccountRequest request) {
+        return R.ok(applicationService.batchCreate(request));
     }
 
     @PutMapping("/{id}")

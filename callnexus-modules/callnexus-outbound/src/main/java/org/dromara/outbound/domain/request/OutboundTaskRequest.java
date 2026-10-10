@@ -7,6 +7,8 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
+import java.util.List;
+
 @Data
 public class OutboundTaskRequest {
     @NotBlank
@@ -17,6 +19,9 @@ public class OutboundTaskRequest {
     private String taskName;
     @Size(max = 500)
     private String description;
+    @Pattern(regexp = "^(PUBLIC|SPECIFIED)$", message = "名单分配方式不合法")
+    private String assignmentMode;
+    private List<Long> assignedAgentIds;
     private Long callerNumberId;
     private Boolean autoRetryEnabled;
     @Min(0)

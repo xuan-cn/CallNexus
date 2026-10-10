@@ -11,6 +11,7 @@ import org.dromara.outbound.domain.request.OutboundAttemptPageQuery;
 import org.dromara.outbound.domain.request.CompleteOutboundMemberRequest;
 import org.dromara.outbound.domain.request.OutboundTaskRequest;
 import org.dromara.outbound.domain.request.OutboundMemberImportConfirmRequest;
+import org.dromara.outbound.domain.request.GenerateOutboundMembersRequest;
 import org.dromara.outbound.domain.response.OutboundImportBatchResponse;
 import org.dromara.outbound.domain.response.OutboundMemberResponse;
 import org.dromara.outbound.domain.response.OutboundAttemptResponse;
@@ -87,6 +88,13 @@ public class OutboundTaskController {
     @SaCheckPermission("callcenter:outbound-task:update")
     public R<AddOutboundMembersResponse> addCustomers(@PathVariable Long id, @Valid @RequestBody AddOutboundMembersRequest request) {
         return R.ok(service.addCustomers(id, request.getCustomerIds()));
+    }
+
+    @PostMapping("/{id}/members/generate")
+    @SaCheckPermission("callcenter:outbound-task:update")
+    public R<AddOutboundMembersResponse> generateMembers(@PathVariable Long id,
+                                                          @Valid @RequestBody GenerateOutboundMembersRequest request) {
+        return R.ok(service.generateMembers(id, request));
     }
 
     @GetMapping("/{id}/members")
@@ -167,6 +175,20 @@ public class OutboundTaskController {
     @SaCheckPermission("callcenter:outbound-task:update")
     public R<Integer> recoverExpired(@PathVariable Long id) {
         return R.ok(service.recoverExpired(id));
+    }
+
+    @GetMapping("/{id}/available-members/page")
+    @SaCheckPermission("callcenter:outbound-task:execute")
+    public TableDataInfo<OutboundMemberResponse> pageAvailableMembers(@PathVariable Long id,
+                                                                      @RequestParam(required = false) String keyword,
+                                                                      PageQuery pageQuery) {
+        return service.pageAvailableMembers(id, keyword, pageQuery);
+    }
+
+    @PostMapping("/members/{memberId}/claim")
+    @SaCheckPermission("callcenter:outbound-task:execute")
+    public R<OutboundMemberResponse> claimMember(@PathVariable Long memberId) {
+        return R.ok(service.claimMember(memberId));
     }
 
     @PostMapping("/{id}/claim-next")

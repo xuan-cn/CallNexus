@@ -8,6 +8,7 @@ import org.dromara.ai.mapper.AiAgentWorkflowBindingMapper;
 import org.dromara.ai.mapper.AiWorkflowMapper;
 import org.dromara.ai.mapper.AiWorkflowVersionMapper;
 import org.dromara.ai.service.impl.AiWorkflowApplicationServiceImpl;
+import org.dromara.resource.media.mapper.MediaAssetMapper;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -23,8 +24,9 @@ class AiWorkflowApplicationServiceTest {
     private final AiWorkflowVersionMapper versionMapper = mock(AiWorkflowVersionMapper.class);
     private final AiAgentWorkflowBindingMapper bindingMapper = mock(AiAgentWorkflowBindingMapper.class);
     private final AiAgentMapper agentMapper = mock(AiAgentMapper.class);
+    private final MediaAssetMapper mediaAssetMapper = mock(MediaAssetMapper.class);
     private final AiWorkflowApplicationService service = new AiWorkflowApplicationServiceImpl(
-        workflowMapper, versionMapper, bindingMapper, agentMapper);
+        workflowMapper, versionMapper, bindingMapper, agentMapper, mediaAssetMapper);
 
     @Test
     void validatesReachableFiniteWorkflow() {

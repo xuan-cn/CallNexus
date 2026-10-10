@@ -14,6 +14,7 @@ public class OutboundMemberResponse {
     private String sourceType;
     private Long importBatchId;
     private String status;
+    private Long assignedAgentId;
     private Long claimedAgentId;
     private LocalDateTime claimedAt;
     private LocalDateTime leaseExpiresAt;

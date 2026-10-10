@@ -7,6 +7,7 @@ import java.util.List;
 
 @Data
 public class AddOutboundMembersResponse {
+    private long matchedCount;
     private int addedCount;
     private int duplicateCount;
     private List<BlockedMemberDetail> blocked = new ArrayList<>();

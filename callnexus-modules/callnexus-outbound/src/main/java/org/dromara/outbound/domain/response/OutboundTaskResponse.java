@@ -4,6 +4,7 @@ import lombok.Data;
 
 import java.time.LocalDateTime;
 import java.util.Date;
+import java.util.List;
 
 @Data
 public class OutboundTaskResponse {
@@ -13,6 +14,8 @@ public class OutboundTaskResponse {
     private String taskType;
     private String status;
     private String description;
+    private String assignmentMode;
+    private List<Long> assignedAgentIds;
     private Long callerNumberId;
     private Boolean autoRetryEnabled;
     private Integer maxRetryCount;

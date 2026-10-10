@@ -15,11 +15,13 @@ import org.dromara.call.domain.CallOriginateContext;
 import org.dromara.call.service.CallBusinessAssociationService;
 import org.dromara.call.service.CallControlApplicationService;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.customer.customer.domain.response.CustomerResponse;
+import org.dromara.customer.customer.domain.request.CustomerPageQuery;
 import org.dromara.customer.customer.service.CustomerApplicationService;
 import org.dromara.outbound.domain.OutboundMember;
 import org.dromara.outbound.domain.OutboundAttempt;
@@ -27,6 +29,7 @@ import org.dromara.outbound.domain.OutboundTask;
 import org.dromara.outbound.domain.request.CompleteOutboundMemberRequest;
 import org.dromara.outbound.domain.request.OutboundAttemptPageQuery;
 import org.dromara.outbound.domain.request.OutboundTaskRequest;
+import org.dromara.outbound.domain.request.GenerateOutboundMembersRequest;
 import org.dromara.outbound.domain.response.OutboundMemberResponse;
 import org.dromara.outbound.domain.response.OutboundAttemptResponse;
 import org.dromara.outbound.domain.response.OutboundTaskStatisticsResponse;
@@ -54,6 +57,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -125,6 +129,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         task.setVersion(request.getVersion());
         try {
             if (taskMapper.updateById(task) == 0) throw new ServiceException("外呼任务已被其他用户修改，请刷新后重试");
+            assignUnassignedMembers(task);
         } catch (DuplicateKeyException exception) {
             throw new ServiceException("外呼任务编码已存在");
         }
@@ -170,41 +175,95 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         OutboundTask task = requireTask(id);
         if ("RUNNING".equals(task.getStatus())) throw new ServiceException("执行中的外呼任务不能添加名单，请先暂停");
         AddOutboundMembersResponse response = new AddOutboundMembersResponse();
-        for (Long customerId : customerIds.stream().distinct().toList()) {
+        List<Long> distinctCustomerIds = customerIds.stream().distinct().toList();
+        response.setMatchedCount(distinctCustomerIds.size());
+        List<Long> assignedAgentIds = assignedAgentIds(task);
+        int assignmentIndex = 0;
+        for (Long customerId : distinctCustomerIds) {
             CustomerResponse customer = customerService.get(customerId);
-            String normalizedPhone = phoneNumberNormalizer.normalize(customer.getPrimaryPhone());
-            OutboundBlacklistMatch match = blacklistChecker.check(id, normalizedPhone);
-            if (match != null) {
-                AddOutboundMembersResponse.BlockedMemberDetail detail = new AddOutboundMembersResponse.BlockedMemberDetail();
-                detail.setCustomerId(customerId);
-                detail.setCustomerName(customer.getCustomerName());
-                detail.setPhoneNumber(normalizedPhone);
-                detail.setReason(match.getReason());
-                detail.setBlacklistId(match.getBlacklistId());
-                response.getBlocked().add(detail);
-                continue;
-            }
-            OutboundMember member = new OutboundMember();
-            member.setTaskId(id);
-            member.setCustomerId(customerId);
-            member.setCustomerName(customer.getCustomerName());
-            member.setPhoneNumber(normalizedPhone);
-            member.setSourceType("MANUAL");
-            member.setStatus("PENDING");
-            member.setAttemptCount(0);
-            try {
-                memberMapper.insert(member);
-                response.setAddedCount(response.getAddedCount() + 1);
-            } catch (DuplicateKeyException ignored) {
-                response.setDuplicateCount(response.getDuplicateCount() + 1);
-            }
+            Long assignedAgentId = assignedAgentIds.isEmpty() ? null
+                : assignedAgentIds.get(assignmentIndex++ % assignedAgentIds.size());
+            addCustomerMember(task, customer, assignedAgentId, "MANUAL", response);
         }
         return response;
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AddOutboundMembersResponse generateMembers(Long id, GenerateOutboundMembersRequest request) {
+        OutboundTask task = requireTask(id);
+        if ("RUNNING".equals(task.getStatus())) {
+            throw new ServiceException("执行中的外呼任务不能生成名单，请先暂停");
+        }
+        CustomerPageQuery query = request.getSelectionQuery() == null
+            ? new CustomerPageQuery() : request.getSelectionQuery();
+        taskMapper.update(null, new LambdaUpdateWrapper<OutboundTask>()
+            .eq(OutboundTask::getId, id)
+            .set(OutboundTask::getCustomerFilterJson, JsonUtils.toJsonString(query)));
+
+        AddOutboundMembersResponse response = new AddOutboundMembersResponse();
+        List<Long> assignedAgentIds = assignedAgentIds(task);
+        int pageNum = 1;
+        int assignmentIndex = 0;
+        long loaded = 0;
+        TableDataInfo<CustomerResponse> page;
+        do {
+            page = customerService.page(query, new PageQuery(500, pageNum++));
+            response.setMatchedCount(page.getTotal());
+            for (CustomerResponse customer : page.getRows()) {
+                Long assignedAgentId = assignedAgentIds.isEmpty() ? null
+                    : assignedAgentIds.get(assignmentIndex++ % assignedAgentIds.size());
+                addCustomerMember(task, customer, assignedAgentId, "FILTER", response);
+                loaded++;
+            }
+        } while (loaded < page.getTotal());
+        return response;
+    }
+
+    private void addCustomerMember(OutboundTask task, CustomerResponse customer, Long assignedAgentId,
+                                   String sourceType, AddOutboundMembersResponse response) {
+        String normalizedPhone = phoneNumberNormalizer.normalize(customer.getPrimaryPhone());
+        if (!phoneNumberNormalizer.isValid(normalizedPhone)) {
+            AddOutboundMembersResponse.BlockedMemberDetail detail = new AddOutboundMembersResponse.BlockedMemberDetail();
+            detail.setCustomerId(customer.getId());
+            detail.setCustomerName(customer.getCustomerName());
+            detail.setPhoneNumber(normalizedPhone);
+            detail.setReason("客户没有有效主号码");
+            response.getBlocked().add(detail);
+            return;
+        }
+        OutboundBlacklistMatch match = blacklistChecker.check(task.getId(), normalizedPhone);
+        if (match != null) {
+            AddOutboundMembersResponse.BlockedMemberDetail detail = new AddOutboundMembersResponse.BlockedMemberDetail();
+            detail.setCustomerId(customer.getId());
+            detail.setCustomerName(customer.getCustomerName());
+            detail.setPhoneNumber(normalizedPhone);
+            detail.setReason(match.getReason());
+            detail.setBlacklistId(match.getBlacklistId());
+            response.getBlocked().add(detail);
+            return;
+        }
+        OutboundMember member = new OutboundMember();
+        member.setTaskId(task.getId());
+        member.setCustomerId(customer.getId());
+        member.setCustomerName(customer.getCustomerName());
+        member.setPhoneNumber(normalizedPhone);
+        member.setSourceType(sourceType);
+        member.setStatus("PENDING");
+        member.setAssignedAgentId(assignedAgentId);
+        member.setAttemptCount(0);
+        try {
+            memberMapper.insert(member);
+            response.setAddedCount(response.getAddedCount() + 1);
+        } catch (DuplicateKeyException ignored) {
+            response.setDuplicateCount(response.getDuplicateCount() + 1);
+        }
+    }
+
+    @Override
     public List<OutboundMemberResponse> listMembers(Long taskId) {
-        requireTask(taskId);
+        OutboundTask task = requireTask(taskId);
+        assignUnassignedMembers(task);
         blacklistMemberSyncService.restoreExpired();
         recoverExpired(taskId);
         return memberMapper.selectList(new LambdaQueryWrapper<OutboundMember>()
@@ -328,9 +387,90 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     }
 
     @Override
+    public TableDataInfo<OutboundMemberResponse> pageAvailableMembers(Long taskId, String keyword, PageQuery pageQuery) {
+        OutboundTask task = requireTask(taskId);
+        if (!"RUNNING".equals(task.getStatus())) {
+            throw new ServiceException("外呼任务未开始或已暂停");
+        }
+        assignUnassignedMembers(task);
+        blacklistMemberSyncService.restoreExpired();
+        recoverExpired(taskId);
+        CurrentAgentResponse agent = requireAvailableAgent();
+        validateTaskAgent(task, agent);
+        LambdaQueryWrapper<OutboundMember> wrapper = new LambdaQueryWrapper<OutboundMember>()
+            .eq(OutboundMember::getTaskId, taskId)
+            .and(status -> status.eq(OutboundMember::getStatus, "PENDING")
+                .or(retry -> retry.eq(OutboundMember::getStatus, "RETRY")
+                    .and(time -> time.isNull(OutboundMember::getNextFollowUpAt)
+                        .or().le(OutboundMember::getNextFollowUpAt, LocalDateTime.now()))))
+            .and(StringUtils.isNotBlank(keyword), value -> value.like(OutboundMember::getCustomerName, keyword)
+                .or().like(OutboundMember::getPhoneNumber, keyword))
+            .orderByAsc(OutboundMember::getNextFollowUpAt)
+            .orderByAsc(OutboundMember::getCreateTime);
+        if ("SPECIFIED".equals(task.getAssignmentMode())) {
+            wrapper.eq(OutboundMember::getAssignedAgentId, agent.getAgentId());
+        }
+        Page<OutboundMember> page = memberMapper.selectPage(pageQuery.build(), wrapper);
+        return new TableDataInfo<>(page.getRecords().stream().map(this::toMemberResponse).toList(), page.getTotal());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public OutboundMemberResponse claimMember(Long memberId) {
+        OutboundMember member = requireMember(memberId);
+        OutboundTask task = requireTask(member.getTaskId());
+        if (!"RUNNING".equals(task.getStatus())) {
+            throw new ServiceException("外呼任务未开始或已暂停");
+        }
+        CurrentAgentResponse agent = requireAvailableAgent();
+        validateTaskAgent(task, agent);
+        Long userId = LoginHelper.getUserId();
+        OutboundMember existing = memberMapper.selectOne(new LambdaQueryWrapper<OutboundMember>()
+            .eq(OutboundMember::getClaimedUserId, userId)
+            .in(OutboundMember::getStatus, "CLAIMED", "DIALING")
+            .last("LIMIT 1"));
+        if (existing != null) {
+            if (existing.getId().equals(memberId)) return toMemberResponse(existing);
+            throw new ServiceException("请先完成当前正在处理的外呼客户");
+        }
+        boolean due = !"RETRY".equals(member.getStatus()) || member.getNextFollowUpAt() == null
+            || !member.getNextFollowUpAt().isAfter(LocalDateTime.now());
+        if (!Set.of("PENDING", "RETRY").contains(member.getStatus()) || !due) {
+            throw new ServiceException("该客户当前不可拨打，请刷新名单");
+        }
+        if ("SPECIFIED".equals(task.getAssignmentMode())
+            && !agent.getAgentId().equals(member.getAssignedAgentId())) {
+            throw new ServiceException("该客户未分配给当前坐席");
+        }
+        OutboundBlacklistMatch match = blacklistChecker.check(task.getId(), member.getPhoneNumber());
+        if (match != null) {
+            blacklistMemberSyncService.blockMember(member, match);
+            throw new ServiceException("该电话号码已命中外呼黑名单");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        LambdaUpdateWrapper<OutboundMember> update = new LambdaUpdateWrapper<OutboundMember>()
+            .eq(OutboundMember::getId, memberId)
+            .in(OutboundMember::getStatus, "PENDING", "RETRY")
+            .set(OutboundMember::getStatus, "CLAIMED")
+            .set(OutboundMember::getAssignedAgentId, agent.getAgentId())
+            .set(OutboundMember::getClaimedAgentId, agent.getAgentId())
+            .set(OutboundMember::getClaimedUserId, userId)
+            .set(OutboundMember::getClaimedAt, now)
+            .set(OutboundMember::getLeaseExpiresAt, now.plusMinutes(claimLeaseMinutes()));
+        if ("SPECIFIED".equals(task.getAssignmentMode())) {
+            update.eq(OutboundMember::getAssignedAgentId, agent.getAgentId());
+        }
+        if (memberMapper.update(null, update) == 0) {
+            throw new ServiceException("该客户已被其他坐席处理，请刷新名单");
+        }
+        return toMemberResponse(requireMember(memberId));
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public OutboundMemberResponse claimNext(Long taskId) {
         OutboundTask task = requireTask(taskId);
+        assignUnassignedMembers(task);
         blacklistMemberSyncService.restoreExpired();
         recoverExpired(taskId);
         if (!"RUNNING".equals(task.getStatus())) {
@@ -346,6 +486,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             }
         }
         CurrentAgentResponse agent = requireAvailableAgent();
+        validateTaskAgent(task, agent);
         Long userId = LoginHelper.getUserId();
         OutboundMember existing = memberMapper.selectOne(new LambdaQueryWrapper<OutboundMember>()
             .eq(OutboundMember::getTaskId, taskId)
@@ -354,15 +495,19 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             .last("LIMIT 1"));
         if (existing != null) return toMemberResponse(existing);
 
-        OutboundMember candidate = memberMapper.selectOne(new LambdaQueryWrapper<OutboundMember>()
+        LambdaQueryWrapper<OutboundMember> candidateQuery = new LambdaQueryWrapper<OutboundMember>()
             .eq(OutboundMember::getTaskId, taskId)
             .and(condition -> condition.eq(OutboundMember::getStatus, "PENDING")
                 .or(retry -> retry.eq(OutboundMember::getStatus, "RETRY")
                     .and(time -> time.isNull(OutboundMember::getNextFollowUpAt)
                         .or().le(OutboundMember::getNextFollowUpAt, LocalDateTime.now()))))
             .orderByAsc(OutboundMember::getNextFollowUpAt)
-            .orderByAsc(OutboundMember::getCreateTime)
-            .last("LIMIT 1"));
+            .orderByAsc(OutboundMember::getCreateTime);
+        if ("SPECIFIED".equals(task.getAssignmentMode())) {
+            candidateQuery.and(assignment -> assignment.eq(OutboundMember::getAssignedAgentId, agent.getAgentId())
+                .or().isNull(OutboundMember::getAssignedAgentId));
+        }
+        OutboundMember candidate = memberMapper.selectOne(candidateQuery.last("LIMIT 1"));
         if (candidate == null) throw new ServiceException("当前任务没有可领取的外呼名单");
         OutboundBlacklistMatch candidateMatch = blacklistChecker.check(taskId, candidate.getPhoneNumber());
         if (candidateMatch != null) {
@@ -375,6 +520,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
             .eq(OutboundMember::getId, candidate.getId())
             .in(OutboundMember::getStatus, "PENDING", "RETRY")
             .set(OutboundMember::getStatus, "CLAIMED")
+            .set(OutboundMember::getAssignedAgentId, agent.getAgentId())
             .set(OutboundMember::getClaimedAgentId, agent.getAgentId())
             .set(OutboundMember::getClaimedUserId, userId)
             .set(OutboundMember::getClaimedAt, now)
@@ -565,6 +711,12 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         return agent;
     }
 
+    private void validateTaskAgent(OutboundTask task, CurrentAgentResponse agent) {
+        if ("SPECIFIED".equals(task.getAssignmentMode()) && !assignedAgentIds(task).contains(agent.getAgentId())) {
+            throw new ServiceException("当前坐席不在该任务的指定执行坐席范围内");
+        }
+    }
+
     private OutboundTask requireTask(Long id) {
         OutboundTask task = taskMapper.selectById(id);
         if (task == null) throw new ServiceException("外呼任务不存在");
@@ -589,6 +741,21 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         task.setTaskCode(request.getTaskCode().trim());
         task.setTaskName(request.getTaskName().trim());
         task.setDescription(request.getDescription());
+        String assignmentMode = StringUtils.defaultIfBlank(request.getAssignmentMode(), "PUBLIC");
+        List<Long> assignedAgentIds = request.getAssignedAgentIds() == null
+            ? List.of() : request.getAssignedAgentIds().stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if ("SPECIFIED".equals(assignmentMode) && assignedAgentIds.isEmpty()) {
+            throw new ServiceException("指定坐席分配模式必须至少选择一个坐席");
+        }
+        for (Long agentId : assignedAgentIds) {
+            AgentAvailability agent = agentAvailabilityQueryService.get(agentId);
+            if (agent == null || !agent.enabled() || agent.userId() == null) {
+                throw new ServiceException("指定坐席不存在、已停用或未绑定系统用户");
+            }
+        }
+        task.setAssignmentMode(assignmentMode);
+        task.setAssignedAgentIds("SPECIFIED".equals(assignmentMode)
+            ? assignedAgentIds.stream().map(String::valueOf).collect(Collectors.joining(",")) : null);
         task.setCallerNumberId(request.getCallerNumberId());
         task.setAutoRetryEnabled(request.getAutoRetryEnabled() == null || request.getAutoRetryEnabled());
         task.setMaxRetryCount(request.getMaxRetryCount() == null ? DEFAULT_MAX_RETRY_COUNT : request.getMaxRetryCount());
@@ -640,6 +807,8 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setTaskType(task.getTaskType());
         response.setStatus(task.getStatus());
         response.setDescription(task.getDescription());
+        response.setAssignmentMode(StringUtils.defaultIfBlank(task.getAssignmentMode(), "PUBLIC"));
+        response.setAssignedAgentIds(assignedAgentIds(task));
         response.setCallerNumberId(task.getCallerNumberId());
         response.setAutoRetryEnabled(task.getAutoRetryEnabled());
         response.setMaxRetryCount(task.getMaxRetryCount());
@@ -699,6 +868,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setSourceType(member.getSourceType());
         response.setImportBatchId(member.getImportBatchId());
         response.setStatus(member.getStatus());
+        response.setAssignedAgentId(member.getAssignedAgentId());
         response.setClaimedAgentId(member.getClaimedAgentId());
         response.setClaimedAt(member.getClaimedAt());
         response.setLeaseExpiresAt(member.getLeaseExpiresAt());
@@ -713,6 +883,41 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         response.setBlockedAt(member.getBlockedAt());
         response.setBlockedBlacklistId(member.getBlockedBlacklistId());
         return response;
+    }
+
+    private List<Long> assignedAgentIds(OutboundTask task) {
+        if (!"SPECIFIED".equals(task.getAssignmentMode()) || StringUtils.isBlank(task.getAssignedAgentIds())) {
+            return List.of();
+        }
+        List<Long> result = new ArrayList<>();
+        for (String value : task.getAssignedAgentIds().split(",")) {
+            try {
+                result.add(Long.valueOf(value.trim()));
+            } catch (NumberFormatException ignored) {
+                log.warn("外呼任务存在无效指定坐席ID，taskId={}，agentId={}", task.getId(), value);
+            }
+        }
+        return result;
+    }
+
+    private void assignUnassignedMembers(OutboundTask task) {
+        List<Long> agentIds = assignedAgentIds(task);
+        if (agentIds.isEmpty()) {
+            memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
+                .eq(OutboundMember::getTaskId, task.getId())
+                .in(OutboundMember::getStatus, "PENDING", "RETRY")
+                .set(OutboundMember::getAssignedAgentId, null));
+            return;
+        }
+        List<OutboundMember> unassigned = memberMapper.selectList(new LambdaQueryWrapper<OutboundMember>()
+            .eq(OutboundMember::getTaskId, task.getId())
+            .in(OutboundMember::getStatus, "PENDING", "RETRY")
+            .orderByAsc(OutboundMember::getCreateTime));
+        for (int index = 0; index < unassigned.size(); index++) {
+            memberMapper.update(null, new LambdaUpdateWrapper<OutboundMember>()
+                .eq(OutboundMember::getId, unassigned.get(index).getId())
+                .set(OutboundMember::getAssignedAgentId, agentIds.get(index % agentIds.size())));
+        }
     }
 
     private OutboundAttemptResponse toAttemptResponse(OutboundAttempt attempt) {

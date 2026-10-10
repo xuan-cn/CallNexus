@@ -77,6 +77,14 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
     }
 
     @Override
+    public void playMedia(Long nodeId, String customerLegUuid, String mediaPath) {
+        requireCallId(customerLegUuid);
+        eslCommandGateway.broadcastPlayback(endpoint(nodeId), customerLegUuid, mediaPath, "aleg");
+        log.info("AI workflow media playback submitted, nodeId={}, customerLegUuid={}, mediaPath={}",
+            nodeId, customerLegUuid, mediaPath);
+    }
+
+    @Override
     public void transferToExtension(Long nodeId, String customerLegUuid, String targetExtension) {
         requireCallId(customerLegUuid);
         requireRouteTarget(targetExtension, "target extension");

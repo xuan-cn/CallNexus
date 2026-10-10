@@ -22,6 +22,8 @@ public interface AiRealtimeTelephonyGateway {
 
     void stopPlayback(Long nodeId, String customerLegUuid);
 
+    void playMedia(Long nodeId, String customerLegUuid, String mediaPath);
+
     void transferToExtension(Long nodeId, String customerLegUuid, String targetExtension);
 
     void transferToQueue(Long nodeId, String customerLegUuid, String queueCode);
