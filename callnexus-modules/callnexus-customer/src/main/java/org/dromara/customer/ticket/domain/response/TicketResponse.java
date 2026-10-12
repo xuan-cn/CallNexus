@@ -11,6 +11,11 @@ public class TicketResponse {
     private Long id;
     private String ticketNo;
     private TicketStatus ticketStatus;
+    private Long urgencyLevelId;
+    private String urgencyCode;
+    private String urgencyName;
+    private Integer urgencyWeight;
+    private String urgencyColor;
     private Long customerId;
     private String callerNumber;
     private String sourceCallId;

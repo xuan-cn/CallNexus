@@ -15,6 +15,7 @@ public class TicketPageQuery {
     private String callerNumber;
     private TicketStatus ticketStatus;
     private TicketDeadlineStatus deadlineStatus;
+    private String urgencyCode;
     private Long templateId;
     private List<DynamicFieldFilter> dynamicFilters;
 }

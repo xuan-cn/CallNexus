@@ -48,6 +48,7 @@ public class BusinessDataExportService {
     public void exportTickets(List<TicketResponse> rows, Long templateId, HttpServletResponse response) {
         List<Column<TicketResponse>> fixed = List.of(
             new Column<>("工单编号", TicketResponse::getTicketNo),
+            new Column<>("紧急程度", TicketResponse::getUrgencyName),
             new Column<>("工单状态", TicketResponse::getTicketStatus),
             new Column<>("客户ID", TicketResponse::getCustomerId),
             new Column<>("来电号码", TicketResponse::getCallerNumber),

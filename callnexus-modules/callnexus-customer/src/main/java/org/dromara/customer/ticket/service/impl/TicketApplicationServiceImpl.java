@@ -21,10 +21,12 @@ import org.dromara.customer.ticket.domain.TicketStatus;
 import org.dromara.customer.ticket.domain.request.CreateTicketRequest;
 import org.dromara.customer.ticket.domain.request.TicketPageQuery;
 import org.dromara.customer.ticket.domain.request.UpdateTicketDeadlineRequest;
+import org.dromara.customer.ticket.domain.request.UpdateTicketUrgencyRequest;
 import org.dromara.customer.ticket.domain.response.TicketResponse;
 import org.dromara.customer.ticket.mapper.TicketMapper;
 import org.dromara.customer.ticket.service.TicketApplicationService;
 import org.dromara.customer.ticket.service.TicketDeadlineService;
+import org.dromara.customer.ticket.service.TicketUrgencyLevelService;
 import org.dromara.call.service.CallBusinessAssociationService;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.ObjectProvider;
@@ -52,6 +54,7 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
     private final CallBusinessAssociationService callBusinessAssociationService;
     private final ObjectProvider<WorkflowService> workflowServiceProvider;
     private final TicketDeadlineService ticketDeadlineService;
+    private final TicketUrgencyLevelService ticketUrgencyLevelService;
 
     @Override
     public TableDataInfo<TicketResponse> page(TicketPageQuery query, PageQuery pageQuery) {
@@ -61,8 +64,10 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
             .like(safeQuery.getCallerNumber() != null && !safeQuery.getCallerNumber().isBlank(), Ticket::getCallerNumber, safeQuery.getCallerNumber())
             .eq(safeQuery.getTicketStatus() != null, Ticket::getTicketStatus, safeQuery.getTicketStatus())
             .eq(safeQuery.getDeadlineStatus() != null, Ticket::getDeadlineStatus, safeQuery.getDeadlineStatus())
+            .eq(safeQuery.getUrgencyCode() != null && !safeQuery.getUrgencyCode().isBlank(), Ticket::getUrgencyCode, safeQuery.getUrgencyCode())
             .eq(safeQuery.getTemplateId() != null, Ticket::getTemplateId, safeQuery.getTemplateId())
-            .orderByDesc(Ticket::getCreateTime);
+            .last("ORDER BY CASE WHEN ticket_status IN ('OPEN', 'PROCESSING') THEN 0 ELSE 1 END, "
+                + "urgency_weight DESC, CASE deadline_status WHEN 'OVERDUE' THEN 0 WHEN 'DUE_SOON' THEN 1 ELSE 2 END, create_time DESC");
         DynamicFormQueryService.QueryCondition dynamicCondition = formQueryService.build(
             FormBusinessType.TICKET, safeQuery.getTemplateId(), safeQuery.getDynamicFilters(), "cc_ticket");
         if (!dynamicCondition.isEmpty()) {
@@ -102,6 +107,7 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         ticket.setSourceDraftId(request.getSourceDraftId());
         ticket.setAiAgentId(request.getAiAgentId());
         ticket.setTemplateId(request.getTemplateId());
+        ticketUrgencyLevelService.applyToTicket(ticket, request.getUrgencyLevelId());
         FormTemplate template = requireTicketTemplate(request.getTemplateId());
         ticket.setWorkflowCode(normalizeWorkflowCode(template.getWorkflowCode()));
         ticket.setProcessStatus(BusinessStatusEnum.DRAFT.getStatus());
@@ -224,6 +230,16 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         }
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void updateUrgency(Long id, UpdateTicketUrgencyRequest request) {
+        Ticket ticket = requireTicket(id);
+        ticketUrgencyLevelService.applyToTicket(ticket, request.getUrgencyLevelId());
+        if (ticketMapper.updateById(ticket) != 1) {
+            throw new ServiceException("工单已被其他用户修改，请刷新后重试");
+        }
+    }
+
     private String createTicketNo() {
         return "TK" + LocalDateTime.now().format(TICKET_TIME_FORMAT) + ThreadLocalRandom.current().nextInt(1000, 10000);
     }
@@ -269,6 +285,9 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         entity.put("callerNumber", ticket.getCallerNumber());
         entity.put("sourceCallId", ticket.getSourceCallId());
         entity.put("templateId", ticket.getTemplateId());
+        entity.put("urgencyCode", ticket.getUrgencyCode());
+        entity.put("urgencyName", ticket.getUrgencyName());
+        entity.put("urgencyWeight", ticket.getUrgencyWeight());
         Map<String, Object> variables = new HashMap<>();
         variables.put("entity", entity);
         return variables;
@@ -279,6 +298,11 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         response.setId(ticket.getId());
         response.setTicketNo(ticket.getTicketNo());
         response.setTicketStatus(ticket.getTicketStatus());
+        response.setUrgencyLevelId(ticket.getUrgencyLevelId());
+        response.setUrgencyCode(ticket.getUrgencyCode());
+        response.setUrgencyName(ticket.getUrgencyName());
+        response.setUrgencyWeight(ticket.getUrgencyWeight());
+        response.setUrgencyColor(ticket.getUrgencyColor());
         response.setCustomerId(ticket.getCustomerId());
         response.setCallerNumber(ticket.getCallerNumber());
         response.setSourceCallId(ticket.getSourceCallId());

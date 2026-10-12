@@ -14,6 +14,7 @@ public class CreateTicketRequest {
     @Size(max = 64)
     private String sourceCallId;
     private Long templateId;
+    private Long urgencyLevelId;
     private String sourceType;
     private Long sourceDraftId;
     private Long aiAgentId;

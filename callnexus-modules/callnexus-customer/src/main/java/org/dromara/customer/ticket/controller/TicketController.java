@@ -10,6 +10,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.customer.ticket.domain.request.CreateTicketRequest;
 import org.dromara.customer.ticket.domain.request.TicketPageQuery;
 import org.dromara.customer.ticket.domain.request.UpdateTicketDeadlineRequest;
+import org.dromara.customer.ticket.domain.request.UpdateTicketUrgencyRequest;
 import org.dromara.customer.ticket.domain.response.TicketResponse;
 import org.dromara.customer.ticket.service.TicketApplicationService;
 import org.dromara.customer.form.service.BusinessDataExportService;
@@ -83,6 +84,13 @@ public class TicketController {
     @SaCheckPermission("callcenter:ticket:create")
     public R<Void> updateDeadline(@PathVariable Long id, @Valid @RequestBody UpdateTicketDeadlineRequest request) {
         applicationService.updateDeadline(id, request);
+        return R.ok();
+    }
+
+    @PutMapping("/{id}/urgency")
+    @SaCheckPermission("callcenter:ticket:update-urgency")
+    public R<Void> updateUrgency(@PathVariable Long id, @Valid @RequestBody UpdateTicketUrgencyRequest request) {
+        applicationService.updateUrgency(id, request);
         return R.ok();
     }
 
