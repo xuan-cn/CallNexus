@@ -1,6 +1,5 @@
 package org.dromara.call.constant;
 
-import java.util.ArrayList;
 import java.util.List;
 
 public final class EslEventNames {
@@ -46,6 +45,8 @@ public final class EslEventNames {
     public static final String SUBCLASS_CC_REJECTED = "callcenter::call-rejected";
     public static final String SUBCLASS_CC_NO_ANSWER = "callcenter::call-no-answer";
     public static final String SUBCLASS_QUEUE_SATISFACTION = "callnexus::queue-satisfaction";
+    public static final String SUBCLASS_SOFIA_REGISTER = "sofia::register";
+    public static final String SUBCLASS_SOFIA_REGISTER_FAILURE = "sofia::register_failure";
 
     private EslEventNames() {
     }
@@ -57,12 +58,22 @@ public final class EslEventNames {
     }
 
     /**
-     * ESL 实际订阅的事件列表，在通道事件基础上追加 CUSTOM，用于接收 mod_callcenter 队列事件。
+     * CUSTOM 必须在独立的 ESL event 命令中显式指定 subclass。
      */
-    public static List<String> subscribedEvents() {
-        List<String> events = new ArrayList<>(subscribedChannelEvents());
-        events.add(CUSTOM);
-        return events;
+    public static List<String> subscribedCustomEventSubclasses() {
+        return List.of(
+            SUBCLASS_CC_COMING,
+            SUBCLASS_CC_QUEUE,
+            SUBCLASS_CC_RING_AGENT,
+            SUBCLASS_CC_AGENT_ANSWER,
+            SUBCLASS_CC_TIMEOUT,
+            SUBCLASS_CC_ABANDON,
+            SUBCLASS_CC_REJECTED,
+            SUBCLASS_CC_NO_ANSWER,
+            SUBCLASS_QUEUE_SATISFACTION,
+            SUBCLASS_SOFIA_REGISTER,
+            SUBCLASS_SOFIA_REGISTER_FAILURE
+        );
     }
 
     public static boolean isTerminalEvent(String eventName) {

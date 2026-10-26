@@ -27,6 +27,9 @@ import org.dromara.ai.mapper.AiRealtimeCallSessionMapper;
 import org.dromara.ai.mapper.AiRealtimeCallTurnMapper;
 import org.dromara.ai.mapper.AiWorkflowContextMapper;
 import org.dromara.ai.realtime.AiRealtimeTtsConnectionRegistry;
+import org.dromara.ai.realtime.AiRealtimeTtsAudioReadyEvent;
+import org.dromara.ai.realtime.AiRealtimeTtsFallbackStartedEvent;
+import org.dromara.ai.realtime.AiRealtimeTtsSegmentSentEvent;
 import org.dromara.ai.workflow.AiWorkflowTemplateResolver;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
@@ -49,6 +52,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -81,13 +85,18 @@ public class AiRealtimeMrcpEventService {
     private static final String SPEECH_TYPE_HEADER = "Speech-Type";
     private static final String EVENT_BODY_HEADER = "CallNexus-Event-Body";
     private static final String OWNERSHIP_KEY_PREFIX = "callnexus:ai:realtime:owner:";
+    private static final String ENDED_CALL_UUID_KEY_PREFIX = "callnexus:call:ended-uuid:";
     private static final Duration OWNERSHIP_TTL = Duration.ofMinutes(5);
+    private static final Duration ENDED_CALL_TTL = Duration.ofSeconds(30);
     private static final String VAR_CUSTOMER_LEG_UUID = "callnexus_ai_customer_leg_uuid";
     private static final String VAR_ACTIVE = "callnexus_ai_active";
     private static final String VAR_BUSINESS_CALL_ID = "callnexus_business_call_id";
     private static final String VAR_AGENT_ID = "callnexus_ai_agent_id";
     private static final String VAR_FLOW_ID = "callnexus_ai_flow_id";
     private static final String VAR_NODE_ID = "callnexus_ai_node_id";
+    private static final String VAR_TURN_ID = "callnexus_ai_turn_id";
+    private static final String VAR_SEGMENT_SEQ = "callnexus_ai_segment_seq";
+    private static final String VAR_GENERATION = "callnexus_ai_generation";
     private static final String VAR_OPENING_PREPLAYED = "callnexus_ai_opening_preplayed";
     private static final String SPEAKER_CUSTOMER = "CUSTOMER";
     private static final String SPEAKER_AI = "AI";
@@ -95,6 +104,7 @@ public class AiRealtimeMrcpEventService {
     private static final String SOURCE_AI_GENERATED = "AI_GENERATED";
     private static final String TRANSCRIPT_STATUS_SUCCESS = "SUCCESS";
     private static final int MAX_MERGED_FOLLOWUP_LENGTH = 72;
+    private static final int MAX_RECENT_RECOGNITION_EVENTS = 64;
 
     private final AiKnowledgeProperties properties;
     private final FreeSwitchNodeQueryService nodeQueryService;
@@ -189,8 +199,10 @@ public class AiRealtimeMrcpEventService {
                 TenantHelper.dynamic(runtime.tenantId, () -> end(runtime, eventName));
             }
             if (!terminalSessions.isEmpty()) {
-                log.info("AI UniMRCP 已按终止事件关闭实时会话，nodeId={}，eventName={}，uuid={}，sessionCount={}",
-                    nodeId, eventName, uuid, terminalSessions.size());
+                log.info("AI UniMRCP 已按终止事件关闭实时会话，nodeId={}，eventName={}，uuid={}，sessionCount={}，hangupCause={}，sipDisposition={}",
+                    nodeId, eventName, uuid, terminalSessions.size(),
+                    firstNonBlank(header(headers, "Hangup-Cause"), header(headers, "variable_hangup_cause")),
+                    header(headers, "variable_sip_hangup_disposition"));
             }
             return;
         }
@@ -220,6 +232,11 @@ public class AiRealtimeMrcpEventService {
             return;
         }
         String ownershipUuid = firstNonBlank(header(headers, VAR_CUSTOMER_LEG_UUID), uuid);
+        if (isEndedCall(ownershipUuid)) {
+            log.debug("忽略已终止通道的迟到 AI UniMRCP 事件，nodeId={}，eventName={}，uuid={}，customerLegUuid={}",
+                nodeId, eventName, uuid, ownershipUuid);
+            return;
+        }
         if (!acquireOwnership(ownershipUuid)) {
             return;
         }
@@ -278,40 +295,61 @@ public class AiRealtimeMrcpEventService {
         String finalCustomerLegUuid = customerLegUuid;
         boolean finalOpeningPreplayed = Boolean.TRUE.equals(openingPreplayed);
         boolean speakComplete = isSpeakComplete(eventName, application);
+        boolean openingParkEntered = isOpeningParkEntered(eventName, application);
         boolean mediaComplete = isMediaPlaybackComplete(eventName, application);
         RuntimeSession runtime = sessions.computeIfAbsent(key, ignored -> createRuntime(tenantId, nodeId, finalFlowId, finalIvrNodeId,
             finalAgentId, finalBusinessCallId, finalCustomerLegUuid, finalOpeningPreplayed));
         runtime.touch();
         ensureChannelProbe(runtime);
-        if (speakComplete && runtime.openingPreplayed) {
+        String speechType = header(headers, SPEECH_TYPE_HEADER);
+        String recognized = recognizedText(headers);
+        if (StringUtils.isBlank(recognized) && "DETECTED_SPEECH".equals(eventName)
+            && "detected-speech".equalsIgnoreCase(speechType)) {
+            recognized = parseNlsmlText(header(headers, EVENT_BODY_HEADER));
+        }
+        if ((speakComplete || openingParkEntered) && runtime.openingPreplayed) {
             runtime.preplayedOpeningCompleted.set(true);
         }
         if (runtime.started.compareAndSet(false, true)) {
+            if ("DETECTED_SPEECH".equals(eventName) && StringUtils.isNotBlank(recognized)) {
+                LocalDateTime recognizedAt = LocalDateTime.now();
+                runtime.deferRecognition(recognized.trim(), receivedAtNanos, recognizedAt, true);
+                runtime.recognizing.set(false);
+                appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_CUSTOMER, SOURCE_REALTIME_ASR,
+                    recognized.trim(), recognizedAt, null);
+                log.info("AI UniMRCP 首条识别结果已暂存，等待会话初始化后处理，sessionId={}，businessCallId={}，text={}",
+                    runtime.entity.getId(), runtime.businessCallId, recognized.trim());
+            }
             log.info("AI UniMRCP 首次完整事件已收到，准备异步启动会话，sessionId={}，businessCallId={}，customerLegUuid={}，eventName={}，application={}，applicationData={}",
                 runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, eventName, application, applicationData);
             executor.execute(() -> TenantHelper.dynamic(tenantId, () -> start(runtime)));
             return;
         }
+        if (openingParkEntered && runtime.openingPreplayed) {
+            completePreplayedOpeningOnPark(runtime);
+            return;
+        }
         if (speakComplete) {
-            onSpeakComplete(runtime, applicationData);
+            onSpeakComplete(runtime, applicationData,
+                header(headers, VAR_TURN_ID),
+                parseInteger(header(headers, VAR_SEGMENT_SEQ)),
+                parseLong(header(headers, VAR_GENERATION)));
             return;
         }
         if (mediaComplete && runtime.workflowMediaPlayback.get()) {
             completeWorkflowMedia(runtime, "EVENT");
             return;
         }
-        String speechType = header(headers, SPEECH_TYPE_HEADER);
         if ("DETECTED_SPEECH".equals(eventName) && "begin-speaking".equalsIgnoreCase(speechType)) {
             handleBargeInBegin(runtime);
             return;
         }
-        String recognized = recognizedText(headers);
-        if (StringUtils.isBlank(recognized) && "DETECTED_SPEECH".equals(eventName)
-            && "detected-speech".equalsIgnoreCase(speechType)) {
-            recognized = parseNlsmlText(header(headers, EVENT_BODY_HEADER));
+        if ("DETECTED_SPEECH".equals(eventName)) {
+            runtime.openingRecognitionActive.set(false);
         }
         final String result = recognized;
-        if ("DETECTED_SPEECH".equals(eventName) && StringUtils.isBlank(result)) {
+        boolean detectedSpeech = "DETECTED_SPEECH".equals(eventName);
+        if (detectedSpeech && StringUtils.isBlank(result)) {
             if (runtime.controlResumeInProgress.get()) {
                 runtime.recognizing.set(false);
                 log.debug("AI UniMRCP 控场期间忽略空识别结果，sessionId={}，businessCallId={}",
@@ -324,9 +362,10 @@ public class AiRealtimeMrcpEventService {
             handleEmptyRecognition(runtime);
             return;
         }
-        if (StringUtils.isNotBlank(result) && runtime.isDuplicateRecognition(result)) {
-            log.debug("Ignoring duplicate final speech result before barge-in, sessionId={}, businessCallId={}, text={}",
-                runtime.entity.getId(), runtime.businessCallId, result.trim());
+        String recognitionEventId = detectedSpeech ? recognitionEventKey(headers) : null;
+        if (StringUtils.isNotBlank(result) && !runtime.claimRecognitionEvent(recognitionEventId)) {
+            log.debug("Ignoring duplicate final speech event, sessionId={}, businessCallId={}, eventId={}, text={}",
+                runtime.entity.getId(), runtime.businessCallId, recognitionEventId, result.trim());
             return;
         }
         // 控场只能由播报期间的 begin-speaking 事件触发。最终识别结果可能晚于实际播放结束，
@@ -342,22 +381,63 @@ public class AiRealtimeMrcpEventService {
         if (StringUtils.isNotBlank(result) && isBargeInPlayback(runtime)) {
             interruptCurrentOutput(runtime, "FINAL_SPEECH");
         }
-        if (StringUtils.isNotBlank(result) && runtime.acceptRecognition(result)) {
+        if (StringUtils.isNotBlank(result) && runtime.acceptRecognition()) {
             long recognitionAcceptedNanos = System.nanoTime();
             runtime.consecutiveEmptyRecognitions.set(0);
             runtime.recognizing.set(false);
-            log.info("AI UniMRCP 识别到用户语音，sessionId={}，businessCallId={}，text={}",
-                runtime.entity.getId(), runtime.businessCallId, result.trim());
             LocalDateTime recognizedAt = LocalDateTime.now();
-            executor.execute(() -> TenantHelper.dynamic(tenantId, () -> {
-                if (runtime.workflowActive.get()) {
-                    processWorkflowInput(runtime, result.trim());
-                } else {
-                    processTurn(runtime, result.trim(), recognitionAcceptedNanos);
-                }
-            }));
+            processAcceptedRecognition(runtime, result.trim(), recognitionAcceptedNanos);
             appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_CUSTOMER, SOURCE_REALTIME_ASR,
                 result.trim(), recognizedAt, null);
+        } else if (StringUtils.isNotBlank(result)) {
+            LocalDateTime recognizedAt = LocalDateTime.now();
+            runtime.deferRecognition(result.trim(), receivedAtNanos, recognizedAt, true);
+            runtime.recognizing.set(false);
+            appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_CUSTOMER, SOURCE_REALTIME_ASR,
+                result.trim(), recognizedAt, null);
+            log.info("AI UniMRCP 当前轮次尚未释放，识别结果已暂存，sessionId={}，businessCallId={}，text={}",
+                runtime.entity.getId(), runtime.businessCallId, result.trim());
+        }
+    }
+
+    private void processAcceptedRecognition(RuntimeSession runtime, String text, long recognitionAcceptedNanos) {
+        log.info("AI UniMRCP 识别到用户语音，sessionId={}，businessCallId={}，text={}",
+            runtime.entity.getId(), runtime.businessCallId, text);
+        executor.execute(() -> TenantHelper.dynamic(runtime.tenantId, () -> {
+            if (runtime.workflowActive.get()) {
+                processWorkflowInput(runtime, text);
+            } else {
+                processTurn(runtime, text, recognitionAcceptedNanos);
+            }
+        }));
+    }
+
+    private boolean processDeferredRecognition(RuntimeSession runtime) {
+        DeferredRecognition deferred = runtime.pollDeferredRecognition();
+        if (deferred == null || runtime.closed.get()) {
+            return false;
+        }
+        if (!runtime.acceptRecognition()) {
+            runtime.deferRecognition(deferred.text(), deferred.receivedAtNanos(), deferred.recognizedAt(),
+                deferred.transcriptPersisted());
+            return false;
+        }
+        runtime.consecutiveEmptyRecognitions.set(0);
+        runtime.recognizing.set(false);
+        log.info("AI UniMRCP 开始处理暂存的识别结果，sessionId={}，businessCallId={}，text={}",
+            runtime.entity.getId(), runtime.businessCallId, deferred.text());
+        processAcceptedRecognition(runtime, deferred.text(), deferred.receivedAtNanos());
+        if (!deferred.transcriptPersisted()) {
+            appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_CUSTOMER, SOURCE_REALTIME_ASR,
+                deferred.text(), deferred.recognizedAt(), null);
+        }
+        return true;
+    }
+
+    private void resumeListening(RuntimeSession runtime) {
+        markListening(runtime);
+        if (!processDeferredRecognition(runtime)) {
+            tryRecognize(runtime);
         }
     }
 
@@ -417,8 +497,7 @@ public class AiRealtimeMrcpEventService {
                         tryRecognizeDuringPlayback(runtime, active.opening());
                     }
                 } else {
-                    markListening(runtime);
-                    tryRecognize(runtime);
+                    resumeListening(runtime);
                 }
             }
         }), Instant.now().plusMillis(properties.getUnimrcp().getRecognizeRetryDelayMs()));
@@ -564,12 +643,19 @@ public class AiRealtimeMrcpEventService {
             sessionMapper.updateById(runtime.entity);
             long updateCostMs = elapsedMillis(updateNanos);
             runtime.conversationReady.set(true);
-            runtime.lastAssistantText = start.getMessage().getContent();
-            appendRealtimeTranscriptSegment(runtime, SPEAKER_AI, SOURCE_AI_GENERATED, start.getMessage().getContent(), LocalDateTime.now(), runtime.agentId);
-            if (runtime.openingPreplayed) {
-                waitForPreplayedOpening(runtime, start.getMessage().getContent());
+            String openingText = start.getMessage() == null ? null : start.getMessage().getContent();
+            runtime.lastAssistantText = openingText;
+            if (StringUtils.isBlank(openingText)) {
+                runtime.waitingSpeakComplete.set(false);
+                resumeListening(runtime);
             } else {
-                speak(runtime, start.getMessage().getContent(), null);
+                appendRealtimeTranscriptSegment(runtime, SPEAKER_AI, SOURCE_AI_GENERATED, openingText,
+                    LocalDateTime.now(), runtime.agentId);
+                if (runtime.openingPreplayed) {
+                    waitForPreplayedOpening(runtime, openingText);
+                } else {
+                    speak(runtime, openingText, null);
+                }
             }
             log.info("AI UniMRCP 会话已建立，sessionId={}，businessCallId={}，customerLegUuid={}，agentId={}，conversationCostMs={}，updateCostMs={}，totalCostMs={}",
                 runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, runtime.agentId,
@@ -747,14 +833,8 @@ public class AiRealtimeMrcpEventService {
             runtime.currentTurn.compareAndSet(turn, null);
             log.error("AI UniMRCP 轮次处理失败，sessionId={}，turn={}，text={}，error={}，chatCostMs={}",
                 runtime.entity.getId(), turn.getSequenceNo(), text, exception.getMessage(), elapsedMillis(chatNanos), exception);
-            markListening(runtime);
-            tryRecognize(runtime);
-            scheduleRecognitionRetryAllowance(runtime, text);
+            resumeListening(runtime);
         }
-    }
-
-    private void scheduleRecognitionRetryAllowance(RuntimeSession runtime, String failedText) {
-        scheduler.schedule(() -> runtime.allowRecognitionRetry(failedText), Instant.now().plusMillis(500L));
     }
 
     private boolean recognizeAndHandleIntent(RuntimeSession runtime, AiRealtimeCallTurn turn, String text) {
@@ -954,11 +1034,9 @@ public class AiRealtimeMrcpEventService {
         updateState(runtime, "SPEAKING", null);
         runtime.activeSpeak.compareAndSet(null,
             new ActiveSpeak("opening", 1, openingText, System.nanoTime(), runtime.turnGeneration.get(), true, false));
-        tryRecognizeDuringPlayback(runtime, true);
         if (runtime.preplayedOpeningCompleted.get() || !runtime.waitingSpeakComplete.get()) {
             runtime.activeSpeak.set(null);
-            markListening(runtime);
-            tryRecognize(runtime);
+            listenAfterOpening(runtime);
             return;
         }
         long delay = speakCompletionTimeout(runtime, openingText);
@@ -975,8 +1053,7 @@ public class AiRealtimeMrcpEventService {
             }
             log.warn("AI UniMRCP 长时间未收到首句播报完成事件，按安全超时启动识别，sessionId={}，businessCallId={}，customerLegUuid={}，timeoutMs={}",
                 runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, delay);
-            markListening(runtime);
-            tryRecognize(runtime);
+            listenAfterOpening(runtime);
         }), Instant.now().plusMillis(delay));
         runtime.pendingSpeakTimer.set(handle);
         log.info("AI UniMRCP 首句已由 dialplan 播放，等待播报完成后启动识别，sessionId={}，businessCallId={}，customerLegUuid={}，delayMs={}",
@@ -1112,15 +1189,21 @@ public class AiRealtimeMrcpEventService {
         ActiveSpeak activeSpeak = new ActiveSpeak(turnId, seq, text, System.nanoTime(),
             runtime.turnGeneration.get(), opening, control);
         runtime.activeSpeak.set(activeSpeak);
+        runtime.audioReadySpeak.set(null);
         log.info("AI UniMRCP 准备提交播报，sessionId={}，businessCallId={}，customerLegUuid={}，textLength={}，voice={}，turnId={}，seq={}，turnEnd={}，stateCostMs={}",
             runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, text.length(), runtime.ttsVoice,
             turnId, seq, turnEnd, stateCostMs);
-        gateway().speak(runtime.nodeId, runtime.customerLegUuid, text, runtime.ttsVoice, turnId, seq, turnEnd);
-        if (!control) {
-            tryRecognizeDuringPlayback(runtime, opening);
-        }
+        gateway().speak(runtime.nodeId, runtime.customerLegUuid, text, runtime.ttsVoice,
+            turnId, seq, activeSpeak.generation(), turnEnd);
         long gatewayCostMs = elapsedMillis(gatewayNanos);
         long delay = speakCompletionTimeout(runtime, text);
+        scheduleSpeakTimeout(runtime, activeSpeak, delay, "SUBMITTED");
+        log.info("AI UniMRCP 已提交播报，sessionId={}，businessCallId={}，customerLegUuid={}，textLength={}，delayMs={}，gatewayCostMs={}，totalCostMs={}",
+            runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, text.length(), delay,
+            gatewayCostMs, elapsedMillis(speakNanos));
+    }
+
+    private void scheduleSpeakTimeout(RuntimeSession runtime, ActiveSpeak activeSpeak, long delay, String phase) {
         ScheduledFuture<?> old = runtime.pendingSpeakTimer.getAndSet(null);
         if (old != null) {
             old.cancel(false);
@@ -1135,14 +1218,19 @@ public class AiRealtimeMrcpEventService {
             if (!ensureChannelAlive(runtime, "CHANNEL_GONE_BEFORE_SPEAK_TIMEOUT")) {
                 return;
             }
-            log.warn("AI UniMRCP 长时间未收到播报完成事件，按安全超时兜底处理，sessionId={}，businessCallId={}，customerLegUuid={}，timeoutMs={}",
-                runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, delay);
-            completeSpeak(runtime, activeSpeak, "TIMEOUT");
+            if (shouldFallbackBeforeCompleting(runtime.voiceTransport,
+                runtime.audioReadySpeak.get() == activeSpeak)) {
+                log.warn("AI UniMRCP 实时 TTS 等待超时且未收到首段音频，当前通话降级 HTTP 并重播，sessionId={}，businessCallId={}，customerLegUuid={}，phase={}，timeoutMs={}",
+                    runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, phase, delay);
+                recoverPrematureWsCompletion(runtime, activeSpeak);
+                return;
+            }
+            log.warn("AI UniMRCP 播报阶段超时，执行有界取消并恢复后续收音，sessionId={}，businessCallId={}，customerLegUuid={}，turnId={}，seq={}，generation={}，phase={}，timeoutMs={}",
+                runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid,
+                activeSpeak.turnId(), activeSpeak.seq(), activeSpeak.generation(), phase, delay);
+            recoverTimedOutSpeak(runtime, activeSpeak, delay, phase);
         }), Instant.now().plusMillis(delay));
         runtime.pendingSpeakTimer.set(handle);
-        log.info("AI UniMRCP 已提交播报，sessionId={}，businessCallId={}，customerLegUuid={}，textLength={}，delayMs={}，gatewayCostMs={}，totalCostMs={}",
-            runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, text.length(), delay,
-            gatewayCostMs, elapsedMillis(speakNanos));
     }
 
     /**
@@ -1178,7 +1266,8 @@ public class AiRealtimeMrcpEventService {
         }
     }
 
-    private void onSpeakComplete(RuntimeSession runtime, String applicationData) {
+    private void onSpeakComplete(RuntimeSession runtime, String applicationData,
+                                 String eventTurnId, Integer eventSeq, Long eventGeneration) {
         if (runtime.openingPreplayed && !runtime.conversationReady.get()) {
             runtime.preplayedOpeningCompleted.set(true);
             runtime.waitingSpeakComplete.set(false);
@@ -1196,12 +1285,209 @@ public class AiRealtimeMrcpEventService {
                 runtime.entity.getId(), runtime.businessCallId, applicationData);
             return;
         }
-        if (!matchesSpeakCompletion(activeSpeak.text(), applicationData)) {
-            log.warn("AI UniMRCP 忽略迟到或不匹配的播报完成事件，sessionId={}，businessCallId={}，activeTurnId={}，activeSeq={}，applicationData={}",
-                runtime.entity.getId(), runtime.businessCallId, activeSpeak.turnId(), activeSpeak.seq(), applicationData);
+        if (!shouldAcceptSpeakCompletion(activeSpeak, eventTurnId, eventSeq, eventGeneration, applicationData)) {
+            log.warn("AI UniMRCP 忽略迟到或不匹配的播报完成事件，sessionId={}，businessCallId={}，activeTurnId={}，activeSeq={}，activeGeneration={}，eventTurnId={}，eventSeq={}，eventGeneration={}，applicationData={}",
+                runtime.entity.getId(), runtime.businessCallId,
+                activeSpeak.turnId(), activeSpeak.seq(), activeSpeak.generation(),
+                eventTurnId, eventSeq, eventGeneration, applicationData);
+            return;
+        }
+        if (shouldFallbackBeforeCompleting(runtime.voiceTransport,
+            runtime.audioReadySpeak.get() == activeSpeak)) {
+            recoverPrematureWsCompletion(runtime, activeSpeak);
             return;
         }
         completeSpeak(runtime, activeSpeak, "EVENT");
+    }
+
+    @EventListener
+    public void onTtsAudioReady(AiRealtimeTtsAudioReadyEvent event) {
+        if (event == null || StringUtils.isBlank(event.tenantId()) || StringUtils.isBlank(event.callId())) {
+            return;
+        }
+        RuntimeSession runtime = sessions.get(key(event.tenantId(), event.callId()));
+        if (runtime == null || runtime.closed.get()) {
+            return;
+        }
+        ActiveSpeak active = runtime.activeSpeak.get();
+        if (active == null || !matchesAudioReady(active, event.turnId(), event.sequence())) {
+            log.debug("AI UniMRCP 忽略迟到或不匹配的 audio_ready，sessionId={}，businessCallId={}，activeTurnId={}，activeSeq={}，eventTurnId={}，eventSeq={}",
+                runtime.entity.getId(), runtime.businessCallId,
+                active == null ? null : active.turnId(), active == null ? null : active.seq(),
+                event.turnId(), event.sequence());
+            return;
+        }
+        runtime.audioReadySpeak.set(active);
+        executor.execute(() -> TenantHelper.dynamic(runtime.tenantId, () -> {
+            if (runtime.activeSpeak.get() != active || runtime.closed.get()) {
+                return;
+            }
+            if (runtime.httpFallbackPending.compareAndSet(true, false)) {
+                runtime.voiceTransport = VoiceTransport.HTTP;
+                runtime.httpFallbackActivated.set(true);
+                try {
+                    gateway().applyVoiceTransport(runtime.nodeId, runtime.customerLegUuid, VoiceTransport.HTTP, null);
+                    log.info("AI UniMRCP HTTP 降级音频已可播放，本通电话后续保持 HTTP TTS，sessionId={}，businessCallId={}",
+                        runtime.entity.getId(), runtime.businessCallId);
+                } catch (Exception exception) {
+                    log.warn("AI UniMRCP 固化 HTTP TTS 模式失败，当前音频仍继续播放，sessionId={}，businessCallId={}，error={}",
+                        runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
+                }
+            }
+            log.info("AI UniMRCP 已确认 TTS 首段音频可播放，允许按打断策略启动识别，sessionId={}，businessCallId={}，turnId={}，seq={}",
+                runtime.entity.getId(), runtime.businessCallId, active.turnId(), active.seq());
+            long playbackTimeout = audioReadyCompletionTimeout(runtime, active.text());
+            scheduleSpeakTimeout(runtime, active, playbackTimeout, "AUDIO_READY");
+            tryRecognizeDuringPlayback(runtime, active.opening());
+        }));
+    }
+
+    @EventListener
+    public void onTtsSegmentSent(AiRealtimeTtsSegmentSentEvent event) {
+        if (event == null || StringUtils.isBlank(event.tenantId()) || StringUtils.isBlank(event.callId())) {
+            return;
+        }
+        RuntimeSession runtime = sessions.get(key(event.tenantId(), event.callId()));
+        if (runtime == null || runtime.closed.get()) {
+            return;
+        }
+        ActiveSpeak active = runtime.activeSpeak.get();
+        if (active == null || !matchesAudioReady(active, event.turnId(), event.sequence())) {
+            return;
+        }
+        long timeout = resolvePlaybackCompletionTimeout(event.audioBytes(), event.sampleRate(),
+            properties.getUnimrcp().getPlaybackCompleteTimeoutMs());
+        scheduleSpeakTimeout(runtime, active, timeout, "AUDIO_SENT");
+        log.info("AI UniMRCP 当前段 PCM 已全部发送，等待 FreeSWITCH 播放完成，sessionId={}，businessCallId={}，turnId={}，seq={}，generation={}，audioBytes={}，sampleRate={}，estimatedAudioMs={}，timeoutMs={}",
+            runtime.entity.getId(), runtime.businessCallId, active.turnId(), active.seq(), active.generation(),
+            event.audioBytes(), event.sampleRate(), pcmDurationMillis(event.audioBytes(), event.sampleRate()), timeout);
+    }
+
+    @EventListener
+    public void onTtsFallbackStarted(AiRealtimeTtsFallbackStartedEvent event) {
+        if (event == null || StringUtils.isBlank(event.tenantId()) || StringUtils.isBlank(event.callId())) {
+            return;
+        }
+        RuntimeSession runtime = sessions.get(key(event.tenantId(), event.callId()));
+        if (runtime == null || runtime.closed.get()) {
+            return;
+        }
+        ActiveSpeak active = runtime.activeSpeak.get();
+        if (active == null || !matchesAudioReady(active, event.turnId(), event.sequence())) {
+            return;
+        }
+        runtime.httpFallbackPending.set(true);
+        long fallbackTimeout = Math.max(30_000L,
+            resolveSpeakCompletionTimeout(VoiceTransport.HTTP, estimateSpeakDelay(active.text()), null) + 15_000L);
+        scheduleSpeakTimeout(runtime, active, fallbackTimeout, "HTTP_FALLBACK");
+        log.warn("AI UniMRCP 已进入 HTTP 分句降级，延长首段音频等待窗口，sessionId={}，businessCallId={}，turnId={}，seq={}，timeoutMs={}，reason={}",
+            runtime.entity.getId(), runtime.businessCallId, active.turnId(), active.seq(), fallbackTimeout, event.reason());
+    }
+
+    static boolean matchesAudioReady(ActiveSpeak active, String turnId, Integer sequence) {
+        if (active == null || !StringUtils.equals(active.turnId(), turnId)) {
+            return false;
+        }
+        return sequence == null || sequence <= 0 || active.seq() == sequence;
+    }
+
+    static boolean shouldFallbackBeforeCompleting(VoiceTransport transport, boolean audioReady) {
+        return transport == VoiceTransport.WS && !audioReady;
+    }
+
+    private void recoverPrematureWsCompletion(RuntimeSession runtime, ActiveSpeak expected) {
+        if (!runtime.activeSpeak.compareAndSet(expected, null)) {
+            return;
+        }
+        runtime.audioReadySpeak.compareAndSet(expected, null);
+        runtime.waitingSpeakComplete.set(false);
+        ScheduledFuture<?> pending = runtime.pendingSpeakTimer.getAndSet(null);
+        if (pending != null) {
+            pending.cancel(false);
+        }
+        if (!runtime.httpFallbackActivated.compareAndSet(false, true)) {
+            fail(runtime, "实时 TTS 未产生可播放音频且 HTTP 降级已执行，未启动下一轮识别", null);
+            return;
+        }
+        int cancelledConnections = cancelSpeakConnections(runtime, expected);
+        try {
+            runtime.voiceTransport = VoiceTransport.HTTP;
+            gateway().applyVoiceTransport(runtime.nodeId, runtime.customerLegUuid, VoiceTransport.HTTP, null);
+            log.warn("AI UniMRCP 检测到 WS 播报在首段音频前提前结束，当前通话降级 HTTP 并重播，sessionId={}，businessCallId={}，turnId={}，seq={}，cancelledTtsConnections={}",
+                runtime.entity.getId(), runtime.businessCallId, expected.turnId(), expected.seq(), cancelledConnections);
+            speak(runtime, expected.text(), runtime.currentTurn.get(), expected.opening(), expected.control());
+        } catch (Exception exception) {
+            fail(runtime, "实时 TTS 提前结束后降级 HTTP 失败：" + exception.getMessage(), exception);
+        }
+    }
+
+    private void recoverTimedOutSpeak(RuntimeSession runtime, ActiveSpeak expected, long timeoutMs, String phase) {
+        if (!runtime.activeSpeak.compareAndSet(expected, null)) {
+            return;
+        }
+        runtime.audioReadySpeak.compareAndSet(expected, null);
+        runtime.waitingSpeakComplete.set(false);
+        runtime.recognizing.set(false);
+        runtime.pendingSpeakTimer.set(null);
+        runtime.turnGeneration.compareAndSet(expected.generation(), expected.generation() + 1L);
+        runtime.llmStreaming.set(false);
+        runtime.workflowStreamingReply.set(false);
+        runtime.postPlaybackAction.set(null);
+        synchronized (runtime.pendingSpeakSegments) {
+            runtime.pendingSpeakSegments.clear();
+        }
+        int cancelledConnections = cancelSpeakConnections(runtime, expected);
+        try {
+            gateway().stopPlayback(runtime.nodeId, runtime.customerLegUuid);
+        } catch (Exception exception) {
+            log.warn("AI UniMRCP 播报超时后停止残留播放失败，sessionId={}，businessCallId={}，error={}",
+                runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
+        }
+        AiRealtimeCallTurn timedOutTurn = runtime.currentTurn.getAndSet(null);
+        markTurnPlaybackTimeout(timedOutTurn, phase, timeoutMs);
+        runtime.turnInProgress.set(false);
+        if (runtime.workflowActive.get() && runtime.workflowSpeak.compareAndSet(true, false)) {
+            // Keep WAITING_TTS intact. The next user input resumes it through the interrupted path.
+            resumeListening(runtime);
+        } else if (expected.opening()) {
+            listenAfterOpening(runtime);
+        } else {
+            resumeListening(runtime);
+        }
+        log.warn("AI UniMRCP 播报超时已恢复，sessionId={}，businessCallId={}，turnId={}，seq={}，generation={}，phase={}，timeoutMs={}，cancelledTtsConnections={}，nextState={}",
+            runtime.entity.getId(), runtime.businessCallId, expected.turnId(), expected.seq(), expected.generation(),
+            phase, timeoutMs, cancelledConnections, runtime.entity.getSessionState());
+    }
+
+    private void markTurnPlaybackTimeout(AiRealtimeCallTurn turn, String phase, long timeoutMs) {
+        if (turn == null || "COMPLETED".equals(turn.getTurnState()) || "FAILED".equals(turn.getTurnState())) {
+            return;
+        }
+        turn.setTurnState("FAILED");
+        turn.setPlaybackEndedAt(LocalDateTime.now());
+        turn.setFailureReason(limit("TTS 播放阶段超时并已恢复收音：phase=" + phase + ", timeoutMs=" + timeoutMs));
+        turnMapper.updateById(turn);
+    }
+
+    private void completePreplayedOpeningOnPark(RuntimeSession runtime) {
+        runtime.waitingSpeakComplete.set(false);
+        ScheduledFuture<?> pending = runtime.pendingSpeakTimer.getAndSet(null);
+        if (pending != null) {
+            pending.cancel(false);
+        }
+        if (!runtime.conversationReady.get()) {
+            log.info("AI UniMRCP 已进入 park，开场白播放结束，会话仍在初始化，sessionId={}，businessCallId={}，customerLegUuid={}",
+                runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid);
+            return;
+        }
+        ActiveSpeak activeSpeak = runtime.activeSpeak.get();
+        if (activeSpeak != null && activeSpeak.opening()) {
+            completeSpeak(runtime, activeSpeak, "PARK");
+            return;
+        }
+        listenAfterOpening(runtime);
+        log.info("AI UniMRCP 已按 park 事件启动首轮识别，sessionId={}，businessCallId={}，customerLegUuid={}",
+            runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid);
     }
 
     private void completeSpeak(RuntimeSession runtime, ActiveSpeak expected, String source) {
@@ -1211,6 +1497,7 @@ public class AiRealtimeMrcpEventService {
         if (!runtime.activeSpeak.compareAndSet(expected, null)) {
             return;
         }
+        runtime.audioReadySpeak.compareAndSet(expected, null);
         runtime.waitingSpeakComplete.set(false);
         ScheduledFuture<?> pendingTimer = runtime.pendingSpeakTimer.getAndSet(null);
         if (pendingTimer != null) {
@@ -1245,10 +1532,24 @@ public class AiRealtimeMrcpEventService {
         AiRealtimeCallTurn turn = runtime.currentTurn.getAndSet(null);
         if (turn != null) {
             finishTurn(runtime, turn);
+        } else if (expected.opening()) {
+            listenAfterOpening(runtime);
         } else {
-            markListening(runtime);
-            tryRecognize(runtime);
+            resumeListening(runtime);
         }
+    }
+
+    private void listenAfterOpening(RuntimeSession runtime) {
+        markListening(runtime);
+        if (processDeferredRecognition(runtime)) {
+            return;
+        }
+        if (runtime.openingRecognitionActive.get()) {
+            log.info("AI UniMRCP 复用开场白期间已启动的识别请求，等待客户首句话，sessionId={}，businessCallId={}，customerLegUuid={}",
+                runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid);
+            return;
+        }
+        tryRecognize(runtime);
     }
 
     private void enqueueSpeak(RuntimeSession runtime, String sentence) {
@@ -1316,10 +1617,72 @@ public class AiRealtimeMrcpEventService {
     }
 
     static boolean matchesSpeakCompletion(String activeText, String applicationData) {
-        if (StringUtils.isBlank(applicationData)) {
+        String expectedText = StringUtils.trimToEmpty(activeText);
+        String actualApplicationData = StringUtils.trimToEmpty(applicationData);
+        if (StringUtils.isBlank(expectedText) || StringUtils.isBlank(actualApplicationData)) {
             return false;
         }
-        return applicationData.endsWith("|" + activeText) || applicationData.contains(activeText);
+        return actualApplicationData.endsWith("|" + expectedText)
+            || actualApplicationData.contains(expectedText);
+    }
+
+    static boolean shouldAcceptSpeakCompletion(ActiveSpeak active, String eventTurnId, Integer eventSeq,
+                                               Long eventGeneration, String applicationData) {
+        if (active == null) {
+            return false;
+        }
+        boolean identified = false;
+        if (StringUtils.isNotBlank(eventTurnId)) {
+            identified = true;
+            if (!StringUtils.equals(active.turnId(), eventTurnId)) {
+                return false;
+            }
+        }
+        if (eventSeq != null) {
+            identified = true;
+            if (active.seq() != eventSeq) {
+                return false;
+            }
+        }
+        if (eventGeneration != null) {
+            identified = true;
+            if (active.generation() != eventGeneration) {
+                return false;
+            }
+        }
+        if (identified) {
+            return true;
+        }
+        if (StringUtils.isBlank(applicationData)) {
+            return active.opening();
+        }
+        return matchesSpeakCompletion(active.text(), applicationData);
+    }
+
+    static String recognitionEventKey(Map<String, String> headers) {
+        String sequence = firstHeader(headers, "Event-Sequence", "event-sequence");
+        if (StringUtils.isNotBlank(sequence)) {
+            return "sequence:" + sequence.trim();
+        }
+        String timestamp = firstHeader(headers, "Event-Date-Timestamp", "event-date-timestamp");
+        if (StringUtils.isBlank(timestamp)) {
+            return null;
+        }
+        String channelId = firstHeader(headers, "Channel-Identifier", "channel-identifier");
+        return "timestamp:" + timestamp.trim() + ":channel:" + StringUtils.blankToDefault(channelId, "").trim();
+    }
+
+    private static String firstHeader(Map<String, String> headers, String... names) {
+        if (headers == null) {
+            return null;
+        }
+        for (String name : names) {
+            String value = headers.get(name);
+            if (StringUtils.isNotBlank(value)) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private void dispatchNextSegment(RuntimeSession runtime) {
@@ -1370,8 +1733,7 @@ public class AiRealtimeMrcpEventService {
         if (action != null && executeIntentAction(runtime, action)) {
             return;
         }
-        markListening(runtime);
-        tryRecognize(runtime);
+        resumeListening(runtime);
     }
 
     private boolean executeIntentAction(RuntimeSession runtime, PendingIntentAction action) {
@@ -1504,12 +1866,14 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void end(RuntimeSession runtime, String reason) {
+        markCallEnded(runtime.customerLegUuid);
         sessions.remove(key(runtime.tenantId, runtime.customerLegUuid));
         releaseOwnership(runtime.customerLegUuid);
         if (!runtime.closed.compareAndSet(false, true)) {
             return;
         }
         runtime.recognizing.set(false);
+        runtime.openingRecognitionActive.set(false);
         runtime.turnGeneration.incrementAndGet();
         runtime.turnInProgress.set(false);
         runtime.llmStreaming.set(false);
@@ -1518,6 +1882,7 @@ public class AiRealtimeMrcpEventService {
         runtime.workflowSpeak.set(false);
         runtime.pendingConfirmation.set(null);
         runtime.postPlaybackAction.set(null);
+        runtime.clearDeferredRecognition();
         synchronized (runtime.pendingSpeakSegments) {
             runtime.pendingSpeakSegments.clear();
         }
@@ -1572,8 +1937,8 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void tryRecognizeDuringPlayback(RuntimeSession runtime, boolean opening) {
-        if (runtime.closed.get() || !runtime.bargeInEnabled || (opening && !runtime.openingBargeInEnabled)
-            || !runtime.waitingSpeakComplete.get()) {
+        if (runtime.closed.get() || !shouldStartRecognitionDuringPlayback(opening, runtime.bargeInEnabled,
+            runtime.openingBargeInEnabled, runtime.waitingSpeakComplete.get())) {
             return;
         }
         if (!runtime.recognizing.compareAndSet(false, true)) {
@@ -1586,15 +1951,28 @@ public class AiRealtimeMrcpEventService {
                 end(runtime, "CHANNEL_GONE_BEFORE_BARGE_IN_RECOGNIZE");
                 return;
             }
-            gateway().recognize(runtime.nodeId, runtime.customerLegUuid, true, runtime.bargeInMode);
-            log.info("AI UniMRCP 已在播报阶段启动打断识别，sessionId={}，businessCallId={}，customerLegUuid={}，opening={}，mode={}，gatewayCostMs={}",
+            boolean interruptible = runtime.bargeInEnabled && (!opening || runtime.openingBargeInEnabled);
+            gateway().recognize(runtime.nodeId, runtime.customerLegUuid, interruptible, runtime.bargeInMode);
+            if (opening) {
+                runtime.openingRecognitionActive.set(true);
+            }
+            log.info("AI UniMRCP 已在播报阶段启动识别，sessionId={}，businessCallId={}，customerLegUuid={}，opening={}，interruptible={}，mode={}，gatewayCostMs={}",
                 runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, opening,
-                runtime.bargeInMode, elapsedMillis(recognizeNanos));
+                interruptible, runtime.bargeInMode, elapsedMillis(recognizeNanos));
         } catch (Exception exception) {
+            if (opening) {
+                runtime.openingRecognitionActive.set(false);
+            }
             runtime.recognizing.set(false);
-            log.warn("AI UniMRCP 播报阶段启动打断识别失败，本段继续播放，sessionId={}，businessCallId={}，error={}",
+            log.warn("AI UniMRCP 播报阶段启动识别失败，本段继续播放，sessionId={}，businessCallId={}，error={}",
                 runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
         }
+    }
+
+    static boolean shouldStartRecognitionDuringPlayback(boolean opening, boolean bargeInEnabled,
+                                                        boolean openingBargeInEnabled,
+                                                        boolean waitingSpeakComplete) {
+        return waitingSpeakComplete && bargeInEnabled && (!opening || openingBargeInEnabled);
     }
 
     private void handleBargeInBegin(RuntimeSession runtime) {
@@ -1881,13 +2259,17 @@ public class AiRealtimeMrcpEventService {
                 runtime.lastAssistantText = result.getText();
                 appendRealtimeTranscriptSegment(runtime, SPEAKER_AI, SOURCE_AI_GENERATED,
                     result.getText(), LocalDateTime.now(), runtime.agentId);
-                speak(runtime, result.getText(), null, false);
+                boolean opening = runtime.workflowOpeningPending.compareAndSet(true, false);
+                speak(runtime, result.getText(), null, opening);
             }
-            case "PLAY_MEDIA" -> playWorkflowMedia(runtime, result);
+            case "PLAY_MEDIA" -> {
+                runtime.workflowOpeningPending.set(false);
+                playWorkflowMedia(runtime, result);
+            }
             case "WAIT_INPUT" -> {
+                runtime.workflowOpeningPending.set(false);
                 runtime.workflowSpeak.set(false);
-                markListening(runtime);
-                tryRecognize(runtime);
+                resumeListening(runtime);
             }
             case "TRANSFER_QUEUE", "TRANSFER_EXTENSION", "TRANSFER_IVR" ->
                 executeWorkflowTransfer(runtime, actionType, result.getTarget());
@@ -1921,7 +2303,7 @@ public class AiRealtimeMrcpEventService {
         }
         long timeoutMs = media.durationMs() == null
             ? 120_000L
-            : Math.max(2_000L, Math.min(120_000L, media.durationMs() + 3_000L));
+            : Math.min(120_000L, media.durationMs() + 120L);
         ScheduledFuture<?> timeout = scheduler.schedule(
             () -> TenantHelper.dynamic(runtime.tenantId, () -> completeWorkflowMedia(runtime, "TIMEOUT")),
             Instant.now().plusMillis(timeoutMs));
@@ -2088,8 +2470,7 @@ public class AiRealtimeMrcpEventService {
         runtime.workflowActive.set(false);
         runtime.workflowSpeak.set(false);
         runtime.workflowStreamingReply.set(false);
-        markListening(runtime);
-        tryRecognize(runtime);
+        resumeListening(runtime);
         log.info("AI 语音工作流正常结束，已交回默认 AI 对话，sessionId={}，businessCallId={}，executionId={}",
             runtime.entity.getId(), runtime.businessCallId, runtime.workflowExecutionId);
     }
@@ -2354,6 +2735,10 @@ public class AiRealtimeMrcpEventService {
         return "CHANNEL_EXECUTE_COMPLETE".equals(eventName) && "speak".equalsIgnoreCase(application);
     }
 
+    static boolean isOpeningParkEntered(String eventName, String application) {
+        return "CHANNEL_EXECUTE".equals(eventName) && "park".equalsIgnoreCase(application);
+    }
+
     private boolean isMediaPlaybackComplete(String eventName, String application) {
         return "CHANNEL_EXECUTE_COMPLETE".equals(eventName) && "playback".equalsIgnoreCase(application);
     }
@@ -2401,6 +2786,14 @@ public class AiRealtimeMrcpEventService {
     private Long parseLong(String value) {
         try {
             return StringUtils.isBlank(value) ? null : Long.valueOf(value);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private Integer parseInteger(String value) {
+        try {
+            return StringUtils.isBlank(value) ? null : Integer.valueOf(value);
         } catch (Exception ignored) {
             return null;
         }
@@ -2459,16 +2852,41 @@ public class AiRealtimeMrcpEventService {
             properties.getUnimrcp().getStreamingSpeakCompleteTimeoutMs());
     }
 
+    private long audioReadyCompletionTimeout(RuntimeSession runtime, String text) {
+        long configured = properties.getUnimrcp().getStreamingAudioSendTimeoutMs() == null
+            ? 120000L : properties.getUnimrcp().getStreamingAudioSendTimeoutMs();
+        return Math.max(speakCompletionTimeout(runtime, text), Math.max(30000L, Math.min(configured, 300000L)));
+    }
+
+    static long resolvePlaybackCompletionTimeout(long audioBytes, int sampleRate, Long configuredTimeoutMs) {
+        long duration = pcmDurationMillis(audioBytes, sampleRate);
+        long configured = configuredTimeoutMs == null ? 30000L : configuredTimeoutMs;
+        long boundedMinimum = Math.max(15000L, Math.min(configured, 300000L));
+        long durationWithMargin = duration + Math.max(10000L, duration / 2L);
+        return Math.max(boundedMinimum, durationWithMargin);
+    }
+
+    static long pcmDurationMillis(long audioBytes, int sampleRate) {
+        int normalizedRate = sampleRate > 0 ? sampleRate : 8000;
+        long bytesPerSecond = normalizedRate * 2L;
+        return audioBytes <= 0 ? 0L : (audioBytes * 1000L + bytesPerSecond - 1L) / bytesPerSecond;
+    }
+
     static long resolveSpeakCompletionTimeout(VoiceTransport transport, long estimatedDelay,
                                                Long streamingTimeoutMs) {
+        long normalizedEstimate = Math.max(1200L, estimatedDelay);
+        long estimateWithMargin = Math.max(normalizedEstimate + 5000L,
+            (normalizedEstimate * 3L + 1L) / 2L);
         if (transport != VoiceTransport.WS) {
-            return estimatedDelay;
+            return estimateWithMargin;
         }
-        long configured = streamingTimeoutMs == null ? 5000L : streamingTimeoutMs;
+        long configured = streamingTimeoutMs == null ? 12000L : streamingTimeoutMs;
         // 配置只控制短文本的最短等待窗口。旧环境即使仍覆盖为 180000，
         // 也不能让实时通话因完成事件丢失而固定阻塞数分钟。
-        long safeTimeout = Math.max(5000L, Math.min(configured, 15000L));
-        return Math.max(estimatedDelay, safeTimeout);
+        // 首包迟迟不到时，短文本会在 12 到 15 秒内主动切换 HTTP 重播；收到首包后，
+        // 同一定时器改为只保护实际播放阶段，避免在回退音频尚未播放完成时提前打开 ASR。
+        long safeTimeout = Math.max(12000L, Math.min(configured, 15000L));
+        return Math.max(estimateWithMargin, safeTimeout);
     }
 
     private long elapsedMillis(long startNanos) {
@@ -2493,8 +2911,8 @@ public class AiRealtimeMrcpEventService {
         }
     }
 
-    private record ActiveSpeak(String turnId, int seq, String text, long startedNanos, long generation,
-                               boolean opening, boolean control) {
+    static record ActiveSpeak(String turnId, int seq, String text, long startedNanos, long generation,
+                              boolean opening, boolean control) {
     }
 
     private record PendingIntentAction(String intentCode, String intentName, String actionType,
@@ -2511,7 +2929,7 @@ public class AiRealtimeMrcpEventService {
         private final String ttsVoice;
         private final AiRealtimeCallSession entity;
         private final boolean openingPreplayed;
-        private final VoiceTransport voiceTransport;
+        private volatile VoiceTransport voiceTransport;
         private final String voiceTransportWsUrl;
         private final boolean bargeInEnabled;
         private final boolean openingBargeInEnabled;
@@ -2528,6 +2946,7 @@ public class AiRealtimeMrcpEventService {
         private final AtomicBoolean turnInProgress = new AtomicBoolean();
         private final AtomicBoolean waitingSpeakComplete = new AtomicBoolean();
         private final AtomicBoolean recognizing = new AtomicBoolean();
+        private final AtomicBoolean openingRecognitionActive = new AtomicBoolean();
         private final AtomicBoolean interrupting = new AtomicBoolean();
         private final AtomicBoolean controlResumeInProgress = new AtomicBoolean();
         private final AtomicInteger controlBargeInCount = new AtomicInteger();
@@ -2540,10 +2959,15 @@ public class AiRealtimeMrcpEventService {
         final Deque<String> pendingSpeakSegments = new ArrayDeque<>();
         final AtomicReference<AiRealtimeCallTurn> currentTurn = new AtomicReference<>();
         final AtomicReference<ActiveSpeak> activeSpeak = new AtomicReference<>();
+        final AtomicReference<ActiveSpeak> audioReadySpeak = new AtomicReference<>();
+        final AtomicBoolean httpFallbackActivated = new AtomicBoolean();
+        final AtomicBoolean httpFallbackPending = new AtomicBoolean();
         final AtomicReference<PendingIntentAction> pendingConfirmation = new AtomicReference<>();
         final AtomicReference<PendingIntentAction> postPlaybackAction = new AtomicReference<>();
+        final DeferredRecognitionSlot deferredRecognition = new DeferredRecognitionSlot();
         final AtomicBoolean llmStreaming = new AtomicBoolean();
         final AtomicBoolean workflowActive = new AtomicBoolean();
+        final AtomicBoolean workflowOpeningPending = new AtomicBoolean(true);
         final AtomicBoolean workflowSpeak = new AtomicBoolean();
         final AtomicBoolean workflowMediaPlayback = new AtomicBoolean();
         final AtomicBoolean workflowStreamingReply = new AtomicBoolean();
@@ -2554,7 +2978,7 @@ public class AiRealtimeMrcpEventService {
         /** 当前轮内的 TTS 段序号，随 speak 递增；每轮开始由 processTurn 重置。 */
         final AtomicInteger speakSegmentSeq = new AtomicInteger();
         volatile SentenceSegmenter segmenter;
-        private volatile String lastRecognition;
+        private final Set<String> recentRecognitionEventIds = new LinkedHashSet<>();
         private volatile String lastAssistantText;
         private volatile String workflowExecutionId;
         private volatile String workflowStreamTurnId;
@@ -2600,28 +3024,73 @@ public class AiRealtimeMrcpEventService {
             this.lastActivityAt = LocalDateTime.now();
         }
 
-        private synchronized boolean acceptRecognition(String text) {
-            String normalized = text.toLowerCase(Locale.ROOT).trim();
-            if (normalized.equals(lastRecognition)) {
+        private boolean acceptRecognition() {
+            return turnInProgress.compareAndSet(false, true);
+        }
+
+        private synchronized boolean claimRecognitionEvent(String eventId) {
+            if (StringUtils.isBlank(eventId)) {
+                return true;
+            }
+            if (!recentRecognitionEventIds.add(eventId)) {
                 return false;
             }
-            if (!turnInProgress.compareAndSet(false, true)) {
-                return false;
+            while (recentRecognitionEventIds.size() > MAX_RECENT_RECOGNITION_EVENTS) {
+                var iterator = recentRecognitionEventIds.iterator();
+                iterator.next();
+                iterator.remove();
             }
-            lastRecognition = normalized;
             return true;
         }
 
-        private synchronized boolean isDuplicateRecognition(String text) {
-            String normalized = StringUtils.blankToDefault(text, "").toLowerCase(Locale.ROOT).trim();
-            return StringUtils.isNotBlank(normalized) && normalized.equals(lastRecognition);
+        private void deferRecognition(String text, long receivedAtNanos, LocalDateTime recognizedAt,
+                                      boolean transcriptPersisted) {
+            if (StringUtils.isBlank(text)) {
+                return;
+            }
+            deferredRecognition.offer(new DeferredRecognition(text.trim(), receivedAtNanos,
+                recognizedAt == null ? LocalDateTime.now() : recognizedAt, transcriptPersisted));
         }
 
-        private synchronized void allowRecognitionRetry(String text) {
-            String normalized = StringUtils.blankToDefault(text, "").toLowerCase(Locale.ROOT).trim();
-            if (normalized.equals(lastRecognition)) {
-                lastRecognition = null;
+        private DeferredRecognition pollDeferredRecognition() {
+            return deferredRecognition.poll();
+        }
+
+        private void clearDeferredRecognition() {
+            deferredRecognition.clear();
+        }
+    }
+
+    private boolean isEndedCall(String customerLegUuid) {
+        return StringUtils.isNotBlank(customerLegUuid)
+            && RedisUtils.hasKey(ENDED_CALL_UUID_KEY_PREFIX + customerLegUuid);
+    }
+
+    private void markCallEnded(String customerLegUuid) {
+        if (StringUtils.isNotBlank(customerLegUuid)) {
+            RedisUtils.setCacheObject(ENDED_CALL_UUID_KEY_PREFIX + customerLegUuid, Boolean.TRUE, ENDED_CALL_TTL);
+        }
+    }
+
+    record DeferredRecognition(String text, long receivedAtNanos, LocalDateTime recognizedAt,
+                               boolean transcriptPersisted) {
+    }
+
+    static final class DeferredRecognitionSlot {
+        private final AtomicReference<DeferredRecognition> value = new AtomicReference<>();
+
+        void offer(DeferredRecognition recognition) {
+            if (recognition != null) {
+                value.set(recognition);
             }
+        }
+
+        DeferredRecognition poll() {
+            return value.getAndSet(null);
+        }
+
+        void clear() {
+            value.set(null);
         }
     }
 }

@@ -79,11 +79,12 @@ public class SpeechProviderDefinitionRegistry {
                     option("cn-shanghai", "华东2 上海"), option("cn-beijing", "华北2 北京")))),
             capabilities(
                 capability(SpeechCapability.TTS, "语音合成", "nls-tts"),
-                unsupported(SpeechCapability.STREAMING_TTS, "实时语音合成"),
+                capability(SpeechCapability.STREAMING_TTS, "实时语音合成", "nls-flowing-tts"),
                 capability(SpeechCapability.RECORDING_ASR, "录音识别", "nls-asr"),
                 capability(SpeechCapability.STREAMING_ASR, "实时语音识别", "nls-realtime-asr")),
             Map.of(
                 SpeechCapability.TTS, "wss://nls-gateway-{region}.aliyuncs.com/ws/v1",
+                SpeechCapability.STREAMING_TTS, "wss://nls-gateway-cn-beijing.aliyuncs.com/ws/v1",
                 SpeechCapability.RECORDING_ASR, "wss://nls-gateway-{region}.aliyuncs.com/ws/v1",
                 SpeechCapability.STREAMING_ASR, "wss://nls-gateway-{region}.aliyuncs.com/ws/v1"));
     }

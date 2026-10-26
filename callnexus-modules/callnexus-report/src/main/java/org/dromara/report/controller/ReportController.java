@@ -11,6 +11,7 @@ import org.dromara.report.domain.request.ReportQuery;
 import org.dromara.report.domain.response.AgentReportResponse;
 import org.dromara.report.domain.response.AgentPresenceLogResponse;
 import org.dromara.report.domain.response.CallDetailResponse;
+import org.dromara.report.domain.response.CallAgentStatisticResponse;
 import org.dromara.report.domain.response.CallDistributionResponse;
 import org.dromara.report.domain.response.OverviewKpiResponse;
 import org.dromara.report.domain.response.OutboundAttemptDetailResponse;
@@ -20,6 +21,7 @@ import org.dromara.report.domain.response.OutboundTrendPointResponse;
 import org.dromara.report.domain.response.QueueReportResponse;
 import org.dromara.report.domain.response.ReportAgentOptionResponse;
 import org.dromara.report.domain.response.ReportQueueOptionResponse;
+import org.dromara.report.domain.response.ReportSkillGroupOptionResponse;
 import org.dromara.report.domain.response.ReportTrendPointResponse;
 import org.dromara.report.domain.response.SatisfactionDetailResponse;
 import org.dromara.report.domain.response.SatisfactionRankingResponse;
@@ -52,6 +54,13 @@ public class ReportController {
     @SaCheckPermission(value = {"callcenter:report-queue:view", "callcenter:report-satisfaction:view"}, mode = SaMode.OR)
     public R<List<ReportQueueOptionResponse>> queueOptions() {
         return R.ok(service.queueOptions());
+    }
+
+    @GetMapping("/skill-group-options")
+    @SaCheckPermission(value = {"callcenter:report-call:view", "callcenter:report-agent:view",
+        "callcenter:report-queue:view", "callcenter:report-satisfaction:view"}, mode = SaMode.OR)
+    public R<List<ReportSkillGroupOptionResponse>> skillGroupOptions() {
+        return R.ok(service.skillGroupOptions());
     }
 
     @GetMapping("/satisfaction/summary")
@@ -144,10 +153,16 @@ public class ReportController {
         return service.callDetails(query, pageQuery);
     }
 
+    @GetMapping("/calls/statistics")
+    @SaCheckPermission("callcenter:report-call:view")
+    public TableDataInfo<CallAgentStatisticResponse> callStatistics(ReportQuery query, PageQuery pageQuery) {
+        return service.callStatistics(query, pageQuery);
+    }
+
     @PostMapping("/calls/export")
     @SaCheckPermission("callcenter:report-call:view")
     public void exportCalls(ReportQuery query, HttpServletResponse response) {
-        service.exportCallDetails(query, response);
+        service.exportCallStatistics(query, response);
     }
 
     @GetMapping("/agents/summary")

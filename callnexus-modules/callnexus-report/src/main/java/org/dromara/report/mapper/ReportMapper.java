@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Select;
 import org.dromara.report.domain.response.AgentReportResponse;
 import org.dromara.report.domain.response.AgentPresenceLogResponse;
 import org.dromara.report.domain.response.CallDetailResponse;
+import org.dromara.report.domain.response.CallAgentStatisticResponse;
 import org.dromara.report.domain.response.CallDistributionResponse;
 import org.dromara.report.domain.response.OverviewKpiResponse;
 import org.dromara.report.domain.response.OutboundAttemptDetailResponse;
@@ -15,6 +16,7 @@ import org.dromara.report.domain.response.OutboundTrendPointResponse;
 import org.dromara.report.domain.response.QueueReportResponse;
 import org.dromara.report.domain.response.ReportAgentOptionResponse;
 import org.dromara.report.domain.response.ReportQueueOptionResponse;
+import org.dromara.report.domain.response.ReportSkillGroupOptionResponse;
 import org.dromara.report.domain.response.ReportTrendPointResponse;
 import org.dromara.report.domain.response.SatisfactionDetailResponse;
 import org.dromara.report.domain.response.SatisfactionRankingResponse;
@@ -48,6 +50,14 @@ public interface ReportMapper {
         ORDER BY enabled DESC, queue_code ASC
         """)
     List<ReportQueueOptionResponse> selectQueueOptions(@Param("tenantId") String tenantId);
+
+    @Select("""
+        SELECT id, group_code AS groupCode, group_name AS groupName, enabled
+        FROM cc_skill_group
+        WHERE tenant_id = #{tenantId} AND deleted = 0
+        ORDER BY enabled DESC, group_code ASC
+        """)
+    List<ReportSkillGroupOptionResponse> selectSkillGroupOptions(@Param("tenantId") String tenantId);
 
     @Select("""
         <script>
@@ -84,6 +94,7 @@ public interface ReportMapper {
     @Select("""
         <script>
         SELECT CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(sat.create_time, '%Y-%m-%d %H:00')
+                    WHEN #{granularity} = 'MONTH' THEN DATE_FORMAT(sat.create_time, '%Y-%m')
                     ELSE DATE_FORMAT(sat.create_time, '%Y-%m-%d') END AS bucket,
                COUNT(*) AS invitationCount,
                COALESCE(SUM(sat.status = 'SUBMITTED'), 0) AS submittedCount,
@@ -266,9 +277,25 @@ public interface ReportMapper {
         FROM cc_call_session s
         LEFT JOIN cc_agent a ON a.tenant_id = s.tenant_id
             AND a.id = COALESCE(s.owner_agent_id, s.agent_id) AND a.deleted = 0
+        <if test="skillGroupId != null">
+        LEFT JOIN cc_call_queue q ON q.tenant_id = s.tenant_id
+            AND q.id = s.handling_queue_id AND q.deleted = 0
+        LEFT JOIN cc_outbound_task outbound_task ON outbound_task.tenant_id = s.tenant_id
+            AND outbound_task.id = s.outbound_task_id AND outbound_task.deleted = 0
+        LEFT JOIN cc_customer_dial_attempt dial_attempt ON dial_attempt.tenant_id = s.tenant_id
+            AND dial_attempt.business_call_id = s.business_call_id AND dial_attempt.deleted = 0
+        LEFT JOIN cc_customer_assignment assignment ON assignment.tenant_id = s.tenant_id
+            AND assignment.id = dial_attempt.assignment_id AND assignment.deleted = 0
+        </if>
         WHERE s.tenant_id = #{tenantId} AND s.started_at &gt;= #{startAt} AND s.started_at &lt; #{endAt}
         <if test="direction != null and direction != ''">AND s.direction = #{direction}</if>
         <if test="agentId != null">AND COALESCE(s.owner_agent_id, s.agent_id) = #{agentId}</if>
+        <if test="skillGroupId != null">
+          AND ((s.direction = 'INBOUND' AND q.skill_group_id = #{skillGroupId})
+            OR (s.direction = 'OUTBOUND' AND COALESCE(outbound_task.skill_group_id,
+                 CASE WHEN outbound_task.target_type = 'SKILL_GROUP' THEN outbound_task.target_id END,
+                 assignment.skill_group_id) = #{skillGroupId}))
+        </if>
         <if test="keyword != null and keyword != ''">
           AND (s.caller_number LIKE CONCAT('%', #{keyword}, '%') OR s.called_number LIKE CONCAT('%', #{keyword}, '%')
                OR s.handling_queue_name LIKE CONCAT('%', #{keyword}, '%'))
@@ -281,25 +308,44 @@ public interface ReportMapper {
                                         @Param("nowAt") LocalDateTime nowAt,
                                         @Param("direction") String direction,
                                         @Param("agentId") Long agentId,
+                                        @Param("skillGroupId") Long skillGroupId,
                                         @Param("keyword") String keyword);
 
     @Select("""
         <script>
         SELECT CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(s.started_at, '%Y-%m-%d %H:00')
+                    WHEN #{granularity} = 'MONTH' THEN DATE_FORMAT(s.started_at, '%Y-%m')
                     ELSE DATE_FORMAT(s.started_at, '%Y-%m-%d') END AS bucket,
                COUNT(*) AS totalCalls,
                SUM(s.direction = 'INBOUND') AS inboundCalls,
                SUM(s.direction = 'OUTBOUND') AS outboundCalls,
                SUM(s.answered_at IS NOT NULL) AS answeredCalls
         FROM cc_call_session s
+        <if test="skillGroupId != null">
+        LEFT JOIN cc_call_queue q ON q.tenant_id = s.tenant_id
+            AND q.id = s.handling_queue_id AND q.deleted = 0
+        LEFT JOIN cc_outbound_task outbound_task ON outbound_task.tenant_id = s.tenant_id
+            AND outbound_task.id = s.outbound_task_id AND outbound_task.deleted = 0
+        LEFT JOIN cc_customer_dial_attempt dial_attempt ON dial_attempt.tenant_id = s.tenant_id
+            AND dial_attempt.business_call_id = s.business_call_id AND dial_attempt.deleted = 0
+        LEFT JOIN cc_customer_assignment assignment ON assignment.tenant_id = s.tenant_id
+            AND assignment.id = dial_attempt.assignment_id AND assignment.deleted = 0
+        </if>
         WHERE s.tenant_id = #{tenantId} AND s.started_at &gt;= #{startAt} AND s.started_at &lt; #{endAt}
         <if test="direction != null and direction != ''">AND s.direction = #{direction}</if>
         <if test="agentId != null">AND COALESCE(s.owner_agent_id, s.agent_id) = #{agentId}</if>
+        <if test="skillGroupId != null">
+          AND ((s.direction = 'INBOUND' AND q.skill_group_id = #{skillGroupId})
+            OR (s.direction = 'OUTBOUND' AND COALESCE(outbound_task.skill_group_id,
+                 CASE WHEN outbound_task.target_type = 'SKILL_GROUP' THEN outbound_task.target_id END,
+                 assignment.skill_group_id) = #{skillGroupId}))
+        </if>
         <if test="keyword != null and keyword != ''">
           AND (s.caller_number LIKE CONCAT('%', #{keyword}, '%') OR s.called_number LIKE CONCAT('%', #{keyword}, '%')
                OR s.handling_queue_name LIKE CONCAT('%', #{keyword}, '%'))
         </if>
         GROUP BY CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(s.started_at, '%Y-%m-%d %H:00')
+                      WHEN #{granularity} = 'MONTH' THEN DATE_FORMAT(s.started_at, '%Y-%m')
                       ELSE DATE_FORMAT(s.started_at, '%Y-%m-%d') END
         ORDER BY bucket
         </script>
@@ -310,22 +356,39 @@ public interface ReportMapper {
                                                 @Param("granularity") String granularity,
                                                 @Param("direction") String direction,
                                                 @Param("agentId") Long agentId,
+                                                @Param("skillGroupId") Long skillGroupId,
                                                 @Param("keyword") String keyword);
 
     @Select("""
         <script>
         SELECT CASE
-                 WHEN answered_at IS NOT NULL THEN 'ANSWERED'
-                 WHEN hangup_cause IN ('USER_BUSY') THEN 'BUSY'
-                 WHEN hangup_cause IN ('CALL_REJECTED') THEN 'REJECTED'
-                 WHEN hangup_cause IN ('NO_ANSWER', 'NO_USER_RESPONSE', 'ORIGINATOR_CANCEL') THEN 'NO_ANSWER'
+                 WHEN s.answered_at IS NOT NULL THEN 'ANSWERED'
+                 WHEN s.hangup_cause IN ('USER_BUSY') THEN 'BUSY'
+                 WHEN s.hangup_cause IN ('CALL_REJECTED') THEN 'REJECTED'
+                 WHEN s.hangup_cause IN ('NO_ANSWER', 'NO_USER_RESPONSE', 'ORIGINATOR_CANCEL') THEN 'NO_ANSWER'
                  ELSE 'FAILED'
                END AS category,
                COUNT(*) AS count
         FROM cc_call_session s
+        <if test="skillGroupId != null">
+        LEFT JOIN cc_call_queue q ON q.tenant_id = s.tenant_id
+            AND q.id = s.handling_queue_id AND q.deleted = 0
+        LEFT JOIN cc_outbound_task outbound_task ON outbound_task.tenant_id = s.tenant_id
+            AND outbound_task.id = s.outbound_task_id AND outbound_task.deleted = 0
+        LEFT JOIN cc_customer_dial_attempt dial_attempt ON dial_attempt.tenant_id = s.tenant_id
+            AND dial_attempt.business_call_id = s.business_call_id AND dial_attempt.deleted = 0
+        LEFT JOIN cc_customer_assignment assignment ON assignment.tenant_id = s.tenant_id
+            AND assignment.id = dial_attempt.assignment_id AND assignment.deleted = 0
+        </if>
         WHERE s.tenant_id = #{tenantId} AND s.started_at &gt;= #{startAt} AND s.started_at &lt; #{endAt}
         <if test="direction != null and direction != ''">AND s.direction = #{direction}</if>
         <if test="agentId != null">AND COALESCE(s.owner_agent_id, s.agent_id) = #{agentId}</if>
+        <if test="skillGroupId != null">
+          AND ((s.direction = 'INBOUND' AND q.skill_group_id = #{skillGroupId})
+            OR (s.direction = 'OUTBOUND' AND COALESCE(outbound_task.skill_group_id,
+                 CASE WHEN outbound_task.target_type = 'SKILL_GROUP' THEN outbound_task.target_id END,
+                 assignment.skill_group_id) = #{skillGroupId}))
+        </if>
         <if test="keyword != null and keyword != ''">
           AND (s.caller_number LIKE CONCAT('%', #{keyword}, '%') OR s.called_number LIKE CONCAT('%', #{keyword}, '%')
                OR s.handling_queue_name LIKE CONCAT('%', #{keyword}, '%'))
@@ -338,6 +401,7 @@ public interface ReportMapper {
                                                        @Param("endAt") LocalDateTime endAt,
                                                        @Param("direction") String direction,
                                                        @Param("agentId") Long agentId,
+                                                       @Param("skillGroupId") Long skillGroupId,
                                                        @Param("keyword") String keyword);
 
     @Select("""
@@ -353,12 +417,28 @@ public interface ReportMapper {
                s.hangup_cause AS hangupCause
         FROM cc_call_session s
         LEFT JOIN cc_agent a ON a.tenant_id = s.tenant_id AND a.id = COALESCE(s.owner_agent_id, s.agent_id) AND a.deleted = 0
+        <if test="skillGroupId != null">
+        LEFT JOIN cc_call_queue q ON q.tenant_id = s.tenant_id
+            AND q.id = s.handling_queue_id AND q.deleted = 0
+        LEFT JOIN cc_outbound_task outbound_task ON outbound_task.tenant_id = s.tenant_id
+            AND outbound_task.id = s.outbound_task_id AND outbound_task.deleted = 0
+        LEFT JOIN cc_customer_dial_attempt dial_attempt ON dial_attempt.tenant_id = s.tenant_id
+            AND dial_attempt.business_call_id = s.business_call_id AND dial_attempt.deleted = 0
+        LEFT JOIN cc_customer_assignment assignment ON assignment.tenant_id = s.tenant_id
+            AND assignment.id = dial_attempt.assignment_id AND assignment.deleted = 0
+        </if>
         WHERE s.tenant_id = #{tenantId} AND s.started_at &gt;= #{startAt} AND s.started_at &lt; #{endAt}
         <if test="direction != null and direction != ''">AND s.direction = #{direction}</if>
         <if test="answerResult == 'ANSWERED'">AND s.answered_at IS NOT NULL</if>
         <if test="answerResult == 'UNANSWERED'">AND s.answered_at IS NULL</if>
         <if test="agentId != null">AND COALESCE(s.owner_agent_id, s.agent_id) = #{agentId}</if>
         <if test="queueId != null">AND s.handling_queue_id = #{queueId}</if>
+        <if test="skillGroupId != null">
+          AND ((s.direction = 'INBOUND' AND q.skill_group_id = #{skillGroupId})
+            OR (s.direction = 'OUTBOUND' AND COALESCE(outbound_task.skill_group_id,
+                 CASE WHEN outbound_task.target_type = 'SKILL_GROUP' THEN outbound_task.target_id END,
+                 assignment.skill_group_id) = #{skillGroupId}))
+        </if>
         <if test="keyword != null and keyword != ''">
           AND (s.caller_number LIKE CONCAT('%', #{keyword}, '%') OR s.called_number LIKE CONCAT('%', #{keyword}, '%')
                OR a.agent_name LIKE CONCAT('%', #{keyword}, '%') OR s.handling_queue_name LIKE CONCAT('%', #{keyword}, '%'))
@@ -375,7 +455,82 @@ public interface ReportMapper {
                                                 @Param("answerResult") String answerResult,
                                                 @Param("agentId") Long agentId,
                                                 @Param("queueId") Long queueId,
+                                                @Param("skillGroupId") Long skillGroupId,
                                                 @Param("keyword") String keyword);
+
+    @Select("""
+        <script>
+        SELECT CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(s.started_at, '%Y-%m-%d %H:00')
+                    WHEN #{granularity} = 'MONTH' THEN DATE_FORMAT(s.started_at, '%Y-%m')
+                    ELSE DATE_FORMAT(s.started_at, '%Y-%m-%d') END AS bucket,
+               COALESCE(s.owner_agent_id, s.agent_id) AS agentId,
+               COALESCE(a.agent_name, COALESCE(s.owner_agent_extension, s.agent_extension), '未知坐席') AS agentName,
+               MAX(COALESCE(s.owner_agent_extension, s.agent_extension)) AS agentExtension,
+               COUNT(*) AS totalCalls,
+               COALESCE(SUM(s.answered_at IS NOT NULL), 0) AS answeredCalls,
+               COALESCE(ROUND(SUM(s.answered_at IS NOT NULL) * 100.0 / NULLIF(COUNT(*), 0), 2), 0) AS answerRate,
+               COALESCE(SUM(s.direction = 'OUTBOUND'), 0) AS outboundCalls,
+               COALESCE(SUM(s.direction = 'OUTBOUND' AND s.answered_at IS NOT NULL), 0) AS outboundAnsweredCalls,
+               COALESCE(ROUND(SUM(s.direction = 'OUTBOUND' AND s.answered_at IS NOT NULL) * 100.0
+                    / NULLIF(SUM(s.direction = 'OUTBOUND'), 0), 2), 0) AS outboundAnswerRate,
+               COALESCE(SUM(CASE WHEN s.direction = 'OUTBOUND' AND s.answered_at IS NOT NULL
+                    THEN COALESCE(NULLIF(s.billable_seconds, 0),
+                         GREATEST(0, TIMESTAMPDIFF(SECOND, s.answered_at, COALESCE(s.ended_at, #{nowAt})))) ELSE 0 END), 0) AS outboundTalkSeconds,
+               COALESCE(ROUND(AVG(CASE WHEN s.direction = 'OUTBOUND' AND s.answered_at IS NOT NULL
+                    THEN COALESCE(NULLIF(s.billable_seconds, 0),
+                         GREATEST(0, TIMESTAMPDIFF(SECOND, s.answered_at, COALESCE(s.ended_at, #{nowAt})))) END)), 0) AS outboundAverageTalkSeconds,
+               COALESCE(SUM(s.direction = 'INBOUND'), 0) AS inboundCalls,
+               COALESCE(SUM(s.direction = 'INBOUND' AND s.answered_at IS NOT NULL), 0) AS inboundAnsweredCalls,
+               COALESCE(ROUND(SUM(s.direction = 'INBOUND' AND s.answered_at IS NOT NULL) * 100.0
+                    / NULLIF(SUM(s.direction = 'INBOUND'), 0), 2), 0) AS inboundAnswerRate,
+               COALESCE(SUM(CASE WHEN s.direction = 'INBOUND' AND s.answered_at IS NOT NULL
+                    THEN COALESCE(NULLIF(s.billable_seconds, 0),
+                         GREATEST(0, TIMESTAMPDIFF(SECOND, s.answered_at, COALESCE(s.ended_at, #{nowAt})))) ELSE 0 END), 0) AS inboundTalkSeconds,
+               COALESCE(ROUND(AVG(CASE WHEN s.direction = 'INBOUND' AND s.answered_at IS NOT NULL
+                    THEN COALESCE(NULLIF(s.billable_seconds, 0),
+                         GREATEST(0, TIMESTAMPDIFF(SECOND, s.answered_at, COALESCE(s.ended_at, #{nowAt})))) END)), 0) AS inboundAverageTalkSeconds
+        FROM cc_call_session s
+        LEFT JOIN cc_agent a ON a.tenant_id = s.tenant_id
+            AND a.id = COALESCE(s.owner_agent_id, s.agent_id) AND a.deleted = 0
+        <if test="skillGroupId != null">
+        LEFT JOIN cc_call_queue q ON q.tenant_id = s.tenant_id
+            AND q.id = s.handling_queue_id AND q.deleted = 0
+        LEFT JOIN cc_outbound_task outbound_task ON outbound_task.tenant_id = s.tenant_id
+            AND outbound_task.id = s.outbound_task_id AND outbound_task.deleted = 0
+        LEFT JOIN cc_customer_dial_attempt dial_attempt ON dial_attempt.tenant_id = s.tenant_id
+            AND dial_attempt.business_call_id = s.business_call_id AND dial_attempt.deleted = 0
+        LEFT JOIN cc_customer_assignment assignment ON assignment.tenant_id = s.tenant_id
+            AND assignment.id = dial_attempt.assignment_id AND assignment.deleted = 0
+        </if>
+        WHERE s.tenant_id = #{tenantId} AND s.started_at &gt;= #{startAt} AND s.started_at &lt; #{endAt}
+          AND COALESCE(s.owner_agent_id, s.agent_id) IS NOT NULL
+        <if test="direction != null and direction != ''">AND s.direction = #{direction}</if>
+        <if test="agentId != null">AND COALESCE(s.owner_agent_id, s.agent_id) = #{agentId}</if>
+        <if test="skillGroupId != null">
+          AND ((s.direction = 'INBOUND' AND q.skill_group_id = #{skillGroupId})
+            OR (s.direction = 'OUTBOUND' AND COALESCE(outbound_task.skill_group_id,
+                 CASE WHEN outbound_task.target_type = 'SKILL_GROUP' THEN outbound_task.target_id END,
+                 assignment.skill_group_id) = #{skillGroupId}))
+        </if>
+        <if test="keyword != null and keyword != ''">
+          AND (s.caller_number LIKE CONCAT('%', #{keyword}, '%') OR s.called_number LIKE CONCAT('%', #{keyword}, '%')
+               OR a.agent_name LIKE CONCAT('%', #{keyword}, '%') OR s.handling_queue_name LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        GROUP BY bucket, COALESCE(s.owner_agent_id, s.agent_id),
+                 COALESCE(a.agent_name, COALESCE(s.owner_agent_extension, s.agent_extension), '未知坐席')
+        ORDER BY bucket DESC, agentName ASC
+        </script>
+        """)
+    Page<CallAgentStatisticResponse> selectCallAgentStatistics(Page<CallAgentStatisticResponse> page,
+                                                                @Param("tenantId") String tenantId,
+                                                                @Param("startAt") LocalDateTime startAt,
+                                                                @Param("endAt") LocalDateTime endAt,
+                                                                @Param("nowAt") LocalDateTime nowAt,
+                                                                @Param("granularity") String granularity,
+                                                                @Param("direction") String direction,
+                                                                @Param("agentId") Long agentId,
+                                                                @Param("skillGroupId") Long skillGroupId,
+                                                                @Param("keyword") String keyword);
 
     @Select("""
         <script>
@@ -596,6 +751,7 @@ public interface ReportMapper {
     @Select("""
         <script>
         SELECT CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(attempt.started_at, '%Y-%m-%d %H:00')
+                    WHEN #{granularity} = 'MONTH' THEN DATE_FORMAT(attempt.started_at, '%Y-%m')
                     ELSE DATE_FORMAT(attempt.started_at, '%Y-%m-%d') END AS bucket,
                COUNT(*) AS attemptCount,
                COALESCE(SUM(attempt.answered_at IS NOT NULL), 0) AS answeredCount,
@@ -612,6 +768,7 @@ public interface ReportMapper {
                OR attempt.phone_number LIKE CONCAT('%', #{keyword}, '%'))
         </if>
         GROUP BY CASE WHEN #{granularity} = 'HOUR' THEN DATE_FORMAT(attempt.started_at, '%Y-%m-%d %H:00')
+                      WHEN #{granularity} = 'MONTH' THEN DATE_FORMAT(attempt.started_at, '%Y-%m')
                       ELSE DATE_FORMAT(attempt.started_at, '%Y-%m-%d') END
         ORDER BY bucket
         </script>

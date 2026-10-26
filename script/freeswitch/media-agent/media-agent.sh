@@ -8,6 +8,8 @@ media_root="${CALLNEXUS_MEDIA_ROOT:-/var/lib/freeswitch/sounds/callnexus}"
 poll_seconds="${CALLNEXUS_POLL_SECONDS:-10}"
 agent_version="${CALLNEXUS_AGENT_VERSION:-1.0.0}"
 work_dir="${CALLNEXUS_AGENT_WORK_DIR:-/tmp/callnexus-media-agent}"
+sip_security_enabled="${CALLNEXUS_SIP_SECURITY_ENABLED:-false}"
+sip_ports="${CALLNEXUS_SIP_PORTS:-5060,5080}"
 
 mkdir -p "${work_dir}" "${media_root}"
 
@@ -74,12 +76,65 @@ process_task() {
   report "${task_id}" "${lease_token}" true ""
 }
 
+security_report() {
+  local task_id="$1" lease_token="$2" success="$3" reason="${4:-}"
+  reason="$(printf '%s' "${reason}" | tail -c 900 | jq -Rs .)"
+  api -X POST "${api_base_url%/}/api/internal/freeswitch/sip-registration-security/tasks/${task_id}/result" \
+    -H "Content-Type: application/json" \
+    --data "{\"leaseToken\":\"${lease_token}\",\"success\":${success},\"failureReason\":${reason}}" >/dev/null
+}
+
+security_iptables() {
+  local action="$1" source_ip="$2" command="iptables"
+  [[ "${source_ip}" == *:* ]] && command="ip6tables"
+  if [[ "${action}" == "BLOCK_IP" ]]; then
+    "${command}" -C INPUT -s "${source_ip}" -p udp -m multiport --dports "${sip_ports}" -j DROP 2>/dev/null || \
+      "${command}" -I INPUT 1 -s "${source_ip}" -p udp -m multiport --dports "${sip_ports}" -j DROP
+    "${command}" -C INPUT -s "${source_ip}" -p tcp -m multiport --dports "${sip_ports}" -j DROP 2>/dev/null || \
+      "${command}" -I INPUT 1 -s "${source_ip}" -p tcp -m multiport --dports "${sip_ports}" -j DROP
+  elif [[ "${action}" == "UNBLOCK_IP" ]]; then
+    while "${command}" -C INPUT -s "${source_ip}" -p udp -m multiport --dports "${sip_ports}" -j DROP 2>/dev/null; do
+      "${command}" -D INPUT -s "${source_ip}" -p udp -m multiport --dports "${sip_ports}" -j DROP
+    done
+    while "${command}" -C INPUT -s "${source_ip}" -p tcp -m multiport --dports "${sip_ports}" -j DROP 2>/dev/null; do
+      "${command}" -D INPUT -s "${source_ip}" -p tcp -m multiport --dports "${sip_ports}" -j DROP
+    done
+  else
+    return 2
+  fi
+}
+
+process_security_task() {
+  local task="$1" task_id lease_token action source_ip error_file
+  task_id="$(jq -r '.data.taskId' <<<"${task}")"
+  lease_token="$(jq -r '.data.leaseToken' <<<"${task}")"
+  action="$(jq -r '.data.action' <<<"${task}")"
+  source_ip="$(jq -r '.data.sourceIp' <<<"${task}")"
+  error_file="${work_dir}/${task_id}.security.error"
+  if security_iptables "${action}" "${source_ip}" 2>"${error_file}"; then
+    security_report "${task_id}" "${lease_token}" true ""
+  else
+    security_report "${task_id}" "${lease_token}" false "$(cat "${error_file}")"
+  fi
+  rm -f "${error_file}"
+}
+
 while true; do
   heartbeat
+  processed=false
   task="$(api -X POST "${api_base_url%/}/api/internal/freeswitch/media-agent/tasks/claim" 2>/dev/null || true)"
   if [[ "$(jq -r '.data.taskId // empty' <<<"${task}" 2>/dev/null)" != "" ]]; then
     process_task "${task}"
-  else
+    processed=true
+  fi
+  if [[ "${sip_security_enabled,,}" == "true" ]]; then
+    security_task="$(api -X POST "${api_base_url%/}/api/internal/freeswitch/sip-registration-security/tasks/claim" 2>/dev/null || true)"
+    if [[ "$(jq -r '.data.taskId // empty' <<<"${security_task}" 2>/dev/null)" != "" ]]; then
+      process_security_task "${security_task}"
+      processed=true
+    fi
+  fi
+  if [[ "${processed}" == "false" ]]; then
     sleep "${poll_seconds}"
   fi
 done

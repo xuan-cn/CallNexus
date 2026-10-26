@@ -171,6 +171,20 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
     @Override
     public TtsTestResponse testProvider(Long id, TtsTestRequest request) {
         AiSpeechProvider provider = requireEnabledTtsProvider(id);
+        return testProvider(provider, request);
+    }
+
+    @Override
+    public TtsTestResponse testProvider(AiSpeechProviderRequest providerRequest, TtsTestRequest request) {
+        AiSpeechProvider provider = previewProvider(providerRequest);
+        validateProvider(provider);
+        if (!Boolean.TRUE.equals(provider.getEnabled()) || !Boolean.TRUE.equals(provider.getTtsEnabled())) {
+            throw new ServiceException("语音服务商未启用普通 TTS 能力");
+        }
+        return testProvider(provider, request);
+    }
+
+    private TtsTestResponse testProvider(AiSpeechProvider provider, TtsTestRequest request) {
         try {
             TtsGenerateResult result = generateAudio(provider, request.getText(), chooseVoice(provider, request.getVoice()), "TTS_TEST", Map.of());
             if (result == null || result.audioBytes() == null || result.audioBytes().length == 0) {
@@ -1071,8 +1085,12 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         provider.setStreamingAsrEndpointMode(normalizeMode(request.getStreamingAsrEndpointMode()));
         provider.setEndpointUrl(resolveEndpoint(definition, SpeechCapability.TTS, provider.getTtsEndpointMode(), request.getEndpointUrl(), credentials));
         provider.setHttpMethod(StringUtils.isBlank(request.getHttpMethod()) ? "POST" : request.getHttpMethod().trim().toUpperCase());
-        if (StringUtils.isNotBlank(request.getAuthType())) provider.setAuthType(request.getAuthType().trim().toUpperCase());
-        if (StringUtils.isNotBlank(request.getAuthHeaderName())) provider.setAuthHeaderName(request.getAuthHeaderName());
+        // NLS maps AccessKey ID and Secret from the structured credential fields above.
+        // Do not let legacy generic auth fields overwrite the mapped AccessKey ID.
+        if (!"ALIYUN_NLS".equals(provider.getProviderType())) {
+            if (StringUtils.isNotBlank(request.getAuthType())) provider.setAuthType(request.getAuthType().trim().toUpperCase());
+            if (StringUtils.isNotBlank(request.getAuthHeaderName())) provider.setAuthHeaderName(request.getAuthHeaderName());
+        }
         provider.setDefaultFormat(StringUtils.isBlank(request.getDefaultFormat()) ? "wav" : request.getDefaultFormat());
         provider.setDefaultSampleRate(request.getDefaultSampleRate() == null ? 8000 : request.getDefaultSampleRate());
         provider.setTimeoutSeconds(request.getTimeoutSeconds() == null ? 30 : request.getTimeoutSeconds());
@@ -1710,7 +1728,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
         response.setEndpointUrl(provider.getEndpointUrl());
         response.setHttpMethod(provider.getHttpMethod());
         response.setAuthType(provider.getAuthType());
-        response.setAuthHeaderName(provider.getAuthHeaderName());
+        response.setAuthHeaderName("ALIYUN_NLS".equals(provider.getProviderType()) ? null : provider.getAuthHeaderName());
         response.setAuthConfigured(StringUtils.isNotBlank(provider.getAuthToken()));
         response.setDefaultVoice(provider.getDefaultVoice());
         response.setDefaultFormat(provider.getDefaultFormat());

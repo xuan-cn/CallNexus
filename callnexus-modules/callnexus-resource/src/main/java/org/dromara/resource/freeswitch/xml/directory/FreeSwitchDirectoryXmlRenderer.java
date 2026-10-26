@@ -6,12 +6,14 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class FreeSwitchDirectoryXmlRenderer {
-    public String render(SipDirectoryAccountResponse account) {
+    public String render(SipDirectoryAccountResponse account, String authAclCode) {
         String extension = FreeSwitchXmlRenderer.escape(account.getExtension());
         String authUsername = FreeSwitchXmlRenderer.escape(account.getAuthUsername());
         String domain = FreeSwitchXmlRenderer.escape(account.getDomain());
         String displayName = FreeSwitchXmlRenderer.escape(account.getDisplayName());
         String password = FreeSwitchXmlRenderer.escape(account.getAuthPassword());
+        String authAcl = authAclCode == null || authAclCode.isBlank() ? "" :
+            "                            <param name=\"auth-acl\" value=\"" + FreeSwitchXmlRenderer.escape(authAclCode) + "\"/>\n";
         return """
             <document type="freeswitch/xml">
               <section name="directory">
@@ -25,6 +27,7 @@ public class FreeSwitchDirectoryXmlRenderer {
                         <user id="%s" number-alias="%s">
                           <params>
                             <param name="password" value="%s"/>
+%s
                           </params>
                           <variables>
                             <variable name="user_context" value="default"/>
@@ -38,6 +41,6 @@ public class FreeSwitchDirectoryXmlRenderer {
                 </domain>
               </section>
             </document>
-            """.formatted(domain, extension, extension, authUsername, extension, password, extension, displayName);
+            """.formatted(domain, extension, extension, authUsername, extension, password, authAcl, extension, displayName);
     }
 }

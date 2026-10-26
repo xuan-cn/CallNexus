@@ -62,6 +62,14 @@ public interface WorkflowService {
     Long getInstanceIdByBusinessId(String businessId);
 
     /**
+     * 判断当前登录用户是否拥有业务当前活动任务的办理权限。
+     *
+     * @param businessId 业务id
+     * @return 是否为当前活动任务办理人
+     */
+    boolean hasCurrentUserTaskAccess(String businessId);
+
+    /**
      * 新增租户流程定义
      *
      * @param tenantId 租户id

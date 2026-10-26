@@ -33,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+    import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 @Slf4j
@@ -42,7 +43,7 @@ public class AiRealtimeTtsInternalService {
     private static final int MAX_TEXT_LENGTH = 2000;
     private static final long CACHE_TTL_MILLIS = 10 * 60 * 1000L;
     private static final int MAX_CACHE_ENTRIES = 256;
-    private static final long FIRST_AUDIO_TIMEOUT_SECONDS = 5L;
+    private static final long FIRST_AUDIO_TIMEOUT_SECONDS = 15L;
     private static final long STREAM_AUDIO_IDLE_TIMEOUT_SECONDS = 10L;
 
     private final FreeSwitchNodeQueryService nodeQueryService;
@@ -124,7 +125,7 @@ public class AiRealtimeTtsInternalService {
      * <p>本次不实现文本缓存：不同 chunk 到达是异步的，缓存会破坏 chunk 边界；且实时对话
      * 短句复用率低，缓存收益有限。老 HTTP 路径的缓存不受影响。</p>
      */
-    public void generateStream(AiRealtimeTtsRequest request, StreamingTtsListener listener) {
+    public StreamingExecution generateStream(AiRealtimeTtsRequest request, StreamingTtsListener listener) {
         if (listener == null) {
             throw new ServiceException("AI 实时 TTS 流式合成缺少监听器");
         }
@@ -144,16 +145,10 @@ public class AiRealtimeTtsInternalService {
         String voice = request.getVoice();
         StreamingTtsRequest streamingRequest = new StreamingTtsRequest(voice, format, sampleRate, Map.of());
 
-        AtomicBoolean finished = new AtomicBoolean();
+        StreamingExecution execution = new StreamingExecution();
         AtomicBoolean timedOut = new AtomicBoolean();
         AtomicBoolean firstAudioReceived = new AtomicBoolean();
-        long streamStartedNanos = System.nanoTime();
         AtomicLong lastAudioActivityNanos = new AtomicLong(System.nanoTime());
-        // session 由外层 open() 返回，onCompleted/onError 里负责 close，
-        // generateStream 本身在 commit+finish 后就返回，等待事件异步驱动。
-        StreamingTtsSession[] sessionRef = new StreamingTtsSession[1];
-        ScheduledFuture<?>[] timerRef = new ScheduledFuture<?>[1];
-
         StreamingTtsListener wrapped = new StreamingTtsListener() {
             @Override
             public void onStarted() {
@@ -162,7 +157,7 @@ public class AiRealtimeTtsInternalService {
 
             @Override
             public void onAudio(byte[] audioBytes) {
-                if (finished.get() || timedOut.get()) {
+                if (execution.isFinished() || timedOut.get()) {
                     return;
                 }
                 firstAudioReceived.set(true);
@@ -176,26 +171,24 @@ public class AiRealtimeTtsInternalService {
 
             @Override
             public void onCompleted() {
-                if (!finished.compareAndSet(false, true)) {
+                if (!execution.markFinished()) {
                     return;
                 }
-                cancelTimer(timerRef);
                 safeInvoke(listener::onCompleted, "onCompleted");
-                closeQuietly(sessionRef[0]);
+                execution.releaseResources();
             }
 
             @Override
             public void onError(String message) {
-                if (!finished.compareAndSet(false, true)) {
+                if (!execution.markFinished()) {
                     return;
                 }
-                cancelTimer(timerRef);
                 try {
                     listener.onError(message);
                 } catch (Exception exception) {
                     log.warn("AI 实时 TTS 流式 onError 回调异常", exception);
                 }
-                closeQuietly(sessionRef[0]);
+                execution.releaseResources();
             }
         };
 
@@ -205,10 +198,21 @@ public class AiRealtimeTtsInternalService {
         } catch (Exception exception) {
             throw new ServiceException("打开流式 TTS 会话失败：" + rootMessage(exception));
         }
-        sessionRef[0] = session;
+        execution.attachSession(session);
 
-        timerRef[0] = aiRealtimeScheduler.scheduleWithFixedDelay(() -> {
-            if (finished.get()) {
+        long firstAudioWaitStartedNanos;
+        try {
+            session.append(request.getText());
+            session.commit();
+            firstAudioWaitStartedNanos = System.nanoTime();
+        } catch (Exception exception) {
+            // 若发送控制事件本身失败，立刻走 onError 收尾。
+            wrapped.onError("发送流式 TTS 事件失败：" + rootMessage(exception));
+            throw new ServiceException("发送流式 TTS 事件失败：" + rootMessage(exception));
+        }
+
+        ScheduledFuture<?> timer = aiRealtimeScheduler.scheduleWithFixedDelay(() -> {
+            if (execution.isFinished()) {
                 return;
             }
             long now = System.nanoTime();
@@ -216,27 +220,73 @@ public class AiRealtimeTtsInternalService {
             long timeoutSeconds = waitingFirstAudio
                 ? FIRST_AUDIO_TIMEOUT_SECONDS : STREAM_AUDIO_IDLE_TIMEOUT_SECONDS;
             long idleNanos = waitingFirstAudio
-                ? now - streamStartedNanos : now - lastAudioActivityNanos.get();
+                ? now - firstAudioWaitStartedNanos : now - lastAudioActivityNanos.get();
             if (idleNanos < Duration.ofSeconds(timeoutSeconds).toNanos()) {
                 return;
             }
             if (!timedOut.compareAndSet(false, true)) {
                 return;
             }
-            String stage = waitingFirstAudio ? "首包" : "连续音频";
+            String stage = waitingFirstAudio ? "" : "连续音频";
             log.warn("AI 实时 TTS {}等待超过 {}s，强制关闭 session，providerCode={}",
                 stage, timeoutSeconds, provider.getProviderCode());
             wrapped.onError("流式 TTS " + stage + "等待超过" + timeoutSeconds + "秒");
         }, Duration.ofSeconds(1));
-
+        execution.attachTimer(timer);
         try {
-            session.append(request.getText());
-            session.commit();
             session.finish();
         } catch (Exception exception) {
-            // 若发送控制事件本身失败，立刻走 onError 收尾。
-            wrapped.onError("发送流式 TTS 事件失败：" + rootMessage(exception));
-            throw new ServiceException("发送流式 TTS 事件失败：" + rootMessage(exception));
+            wrapped.onError("结束流式 TTS 输入失败：" + rootMessage(exception));
+            throw new ServiceException("结束流式 TTS 输入失败：" + rootMessage(exception));
+        }
+        return execution;
+    }
+
+    /**
+     * 一次上游流式 TTS 执行。下游 WebSocket 或通话被取消时必须同步关闭，
+     * 避免遗留百炼连接和首包超时任务继续运行。
+     */
+    public static final class StreamingExecution implements AutoCloseable {
+        private final AtomicBoolean finished = new AtomicBoolean();
+        private final AtomicReference<StreamingTtsSession> session = new AtomicReference<>();
+        private final AtomicReference<ScheduledFuture<?>> timer = new AtomicReference<>();
+
+        private boolean markFinished() {
+            return finished.compareAndSet(false, true);
+        }
+
+        public boolean isFinished() {
+            return finished.get();
+        }
+
+        void attachSession(StreamingTtsSession value) {
+            session.set(value);
+            if (finished.get()) {
+                closeQuietly(session.getAndSet(null));
+            }
+        }
+
+        void attachTimer(ScheduledFuture<?> value) {
+            timer.set(value);
+            if (finished.get()) {
+                cancelTimer(timer.getAndSet(null));
+            }
+        }
+
+        void releaseResources() {
+            cancelTimer(timer.getAndSet(null));
+            closeQuietly(session.getAndSet(null));
+        }
+
+        public void cancel() {
+            if (markFinished()) {
+                releaseResources();
+            }
+        }
+
+        @Override
+        public void close() {
+            cancel();
         }
     }
 
@@ -262,8 +312,7 @@ public class AiRealtimeTtsInternalService {
         }
     }
 
-    private static void cancelTimer(ScheduledFuture<?>[] holder) {
-        ScheduledFuture<?> future = holder[0];
+    private static void cancelTimer(ScheduledFuture<?> future) {
         if (future != null) {
             future.cancel(false);
         }

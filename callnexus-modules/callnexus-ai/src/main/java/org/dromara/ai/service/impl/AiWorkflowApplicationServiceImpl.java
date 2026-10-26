@@ -3,6 +3,7 @@ package org.dromara.ai.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
 import org.dromara.ai.domain.AiAgent;
 import org.dromara.ai.domain.AiAgentWorkflowBinding;
@@ -315,6 +316,10 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             });
         }
         Map<String, JsonNode> nodes = new HashMap<>();
+        JsonNode commonIntentFallback = root.path("settings").path("intentFallback");
+        if (commonIntentFallback.isObject()) {
+            validateIntentFallbackConfig("流程公共兜底策略", commonIntentFallback, result);
+        }
         List<String> startIds = new ArrayList<>();
         for (JsonNode node : nodesNode) {
             String id = node.path("id").asText("").trim();
@@ -323,7 +328,9 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             else if (nodes.putIfAbsent(id, node) != null) result.getErrors().add("节点 ID 重复：" + id);
             if (!NODE_TYPES.contains(type)) result.getErrors().add("不支持的节点类型：" + type);
             if ("START".equals(type)) startIds.add(id);
-            validateNodeConfig(id, type, node.path("config"), customVariableKeys, result);
+            JsonNode config = "INTENT_ROUTE".equals(type)
+                ? effectiveIntentConfig(node.path("config"), commonIntentFallback) : node.path("config");
+            validateNodeConfig(id, type, config, customVariableKeys, result);
         }
         if (startIds.size() != 1) result.getErrors().add("流程必须且只能包含一个开始节点");
         Map<String, Set<String>> outgoing = new HashMap<>();
@@ -348,8 +355,9 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             if ("LOOP_LIMIT".equals(sourceType) && !condition.isEmpty() && !Set.of("CONTINUE", "LIMIT").contains(condition)) {
                 result.getErrors().add("次数限制分支只能选择“继续循环”或“达到上限”：" + source);
             }
-            if ("INTENT_ROUTE".equals(sourceType) && !condition.isEmpty() && !"FALLBACK".equals(condition)
-                && !configuredIntentCodes(nodes.get(source).path("config")).contains(condition)) {
+            if ("INTENT_ROUTE".equals(sourceType) && !condition.isEmpty()
+                && !Set.of("FALLBACK", "CONTINUE").contains(condition)
+                && !configuredIntentCodes(effectiveIntentConfig(nodes.get(source).path("config"), commonIntentFallback)).contains(condition)) {
                 result.getErrors().add("意图分支未包含在节点已选意图中：" + source + " / " + condition);
             }
             if (!condition.isEmpty() && !conditions.computeIfAbsent(source, key -> new HashSet<>()).add(condition)) {
@@ -362,14 +370,17 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
                 result.getErrors().add("非终止节点没有后续连线：" + entry.getKey());
             }
             if ("INTENT_ROUTE".equals(type)) {
-                Set<String> configuredCodes = configuredIntentCodes(entry.getValue().path("config"));
+                JsonNode config = effectiveIntentConfig(entry.getValue().path("config"), commonIntentFallback);
+                Set<String> configuredCodes = configuredIntentCodes(config);
                 Set<String> configuredBranches = conditions.getOrDefault(entry.getKey(), Set.of());
                 configuredCodes.stream()
                     .filter(code -> !configuredBranches.contains(code))
                     .forEach(code -> result.getErrors().add(
                         "意图判断节点已选择意图，但未配置对应连线：" + entry.getKey() + " / " + code));
-                if (!configuredBranches.contains("FALLBACK")) {
-                    result.getErrors().add("意图判断节点缺少“未命中任何意图”连线：" + entry.getKey());
+                String requiredFallbackBranch = requiredIntentFallbackBranch(config);
+                if (requiredFallbackBranch != null && !configuredBranches.contains(requiredFallbackBranch)) {
+                    String branchName = "FALLBACK".equals(requiredFallbackBranch) ? "未命中任何意图" : "未命中后继续";
+                    result.getErrors().add("意图判断节点缺少“" + branchName + "”连线：" + entry.getKey());
                 }
             }
             if ("LOOP_LIMIT".equals(type)) {
@@ -412,6 +423,7 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
         if ("INTENT_ROUTE".equals(type) && configuredIntentCodes(config).isEmpty()) {
             result.getErrors().add("意图判断节点至少需要选择一个意图：" + nodeId);
         }
+        if ("INTENT_ROUTE".equals(type)) validateIntentFallbackConfig(nodeId, config, result);
         if ("CONDITION".equals(type)) {
             if (config.path("variable").asText("").isBlank()) result.getErrors().add("条件判断节点未选择判断字段：" + nodeId);
             String operator = config.path("operator").asText("");
@@ -468,6 +480,51 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             if (!code.isEmpty()) result.add(code);
         });
         return result;
+    }
+
+    private String requiredIntentFallbackBranch(JsonNode config) {
+        String mode = config.path("fallbackMode").asText("EDGE");
+        if (Set.of("FIXED_RETRY", "AI_RETRY").contains(mode)) {
+            String action = config.path("retryLimitAction").asText("CONTINUE");
+            if (!Set.of("EDGE", "CONTINUE").contains(action)) return null;
+            return "EDGE".equals(action) ? "FALLBACK" : "CONTINUE";
+        }
+        return Set.of("FIXED_CONTINUE", "AI_CONTINUE").contains(mode) ? "CONTINUE" : "FALLBACK";
+    }
+
+    private JsonNode effectiveIntentConfig(JsonNode nodeConfig, JsonNode commonConfig) {
+        if (!"INHERIT".equals(nodeConfig.path("fallbackMode").asText("EDGE"))) return nodeConfig;
+        ObjectNode effective = commonConfig.isObject()
+            ? ((ObjectNode) commonConfig).deepCopy() : OBJECT_MAPPER.createObjectNode();
+        if (!effective.hasNonNull("fallbackMode")) effective.put("fallbackMode", "EDGE");
+        if (nodeConfig.has("intentCodes")) effective.set("intentCodes", nodeConfig.path("intentCodes"));
+        return effective;
+    }
+
+    private void validateIntentFallbackConfig(String owner, JsonNode config, AiWorkflowValidationResponse result) {
+        String mode = config.path("fallbackMode").asText("EDGE");
+        if (!Set.of("EDGE", "FIXED_RETRY", "AI_RETRY", "FIXED_CONTINUE", "AI_CONTINUE").contains(mode)) {
+            result.getErrors().add(owner + "选择了无效的未命中处理方式");
+        }
+        if (Set.of("FIXED_RETRY", "FIXED_CONTINUE").contains(mode)
+            && config.path("fallbackText").asText("").isBlank()) {
+            result.getErrors().add(owner + "未填写未命中回复话术");
+        }
+        if (!Set.of("FIXED_RETRY", "AI_RETRY").contains(mode)) return;
+        int maxRetries = config.path("maxRetries").asInt(2);
+        if (maxRetries < 1 || maxRetries > 10) {
+            result.getErrors().add(owner + "的最大重试次数必须在 1 到 10 之间");
+        }
+        String action = config.path("retryLimitAction").asText("CONTINUE");
+        if (!Set.of("EDGE", "CONTINUE", "TRANSFER_QUEUE", "TRANSFER_EXTENSION", "HANGUP", "END").contains(action)) {
+            result.getErrors().add(owner + "选择了无效的重试上限处理方式");
+        }
+        if ("TRANSFER_QUEUE".equals(action) && config.path("limitQueueCode").asText("").isBlank()) {
+            result.getErrors().add(owner + "达到上限后转技能组，但未选择目标技能组");
+        }
+        if ("TRANSFER_EXTENSION".equals(action) && config.path("limitExtension").asText("").isBlank()) {
+            result.getErrors().add(owner + "达到上限后转分机，但未填写目标分机");
+        }
     }
 
     private Set<String> reachable(String start, Map<String, Set<String>> outgoing) {

@@ -576,6 +576,30 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
         appendAssignmentTag(customerId, tag);
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void recordClickDialResult(Long customerId, Long attemptId, String content) {
+        requireCustomer(customerId);
+        if (attemptId == null) return;
+        CustomerFollowUp followUp = followUpMapper.selectOne(new LambdaQueryWrapper<CustomerFollowUp>()
+            .eq(CustomerFollowUp::getSourceType, "CLICK_DIAL")
+            .eq(CustomerFollowUp::getSourceId, attemptId)
+            .last("LIMIT 1"));
+        if (followUp == null) {
+            followUp = new CustomerFollowUp();
+            followUp.setCustomerId(customerId);
+            followUp.setFollowUpByName(LoginHelper.getUsername());
+            followUp.setSourceType("CLICK_DIAL");
+            followUp.setSourceId(attemptId);
+            followUp.setContent(content);
+            followUpMapper.insert(followUp);
+            return;
+        }
+        followUp.setContent(content);
+        followUp.setFollowUpByName(LoginHelper.getUsername());
+        followUpMapper.updateById(followUp);
+    }
+
     private void appendAssignmentTag(Long customerId, String tag) {
         String normalized = cleanText(tag);
         if (normalized == null) return;

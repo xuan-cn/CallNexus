@@ -91,6 +91,17 @@ public class AiSpeechProviderController {
         return R.ok(service.testProvider(id, request));
     }
 
+    @PostMapping("/preview/tts/test")
+    @SaCheckPermission("callcenter:ai-speech:test")
+    public R<TtsTestResponse> previewTts(@Valid @RequestBody AiSpeechProviderRequest providerRequest,
+                                         @RequestParam String text,
+                                         @RequestParam(required = false) String voice) {
+        TtsTestRequest request = new TtsTestRequest();
+        request.setText(text);
+        request.setVoice(voice);
+        return R.ok(service.testProvider(providerRequest, request));
+    }
+
     @PostMapping("/media/generate")
     @SaCheckPermission("callcenter:media-asset:create")
     public R<Long> generateMedia(@Valid @RequestBody TtsMediaGenerateRequest request) {

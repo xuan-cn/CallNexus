@@ -16,7 +16,7 @@ public interface AiRealtimeTelephonyGateway {
      * @param turnEnd 是否为本轮最后一段
      */
     void speak(Long nodeId, String customerLegUuid, String text, String voice,
-               String turnId, int seq, boolean turnEnd);
+               String turnId, int seq, long generation, boolean turnEnd);
 
     void recognize(Long nodeId, String customerLegUuid, boolean bargeInEnabled, String bargeInMode);
 

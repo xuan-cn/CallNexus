@@ -51,9 +51,10 @@ public class AiRealtimeDialplanService implements AiAgentDialplanQueryService {
             return new UniMrcpOpeningPrompt(null, null, null);
         }
         AiAgent agent = requireAgent(agentId);
-        String text = StringUtils.isBlank(agent.getWelcomeMessage())
-            ? "您好，我是" + agent.getAgentName() + "，请问有什么可以帮您？"
-            : agent.getWelcomeMessage().trim();
+        if (StringUtils.isBlank(agent.getWelcomeMessage())) {
+            return new UniMrcpOpeningPrompt(null, null, null);
+        }
+        String text = agent.getWelcomeMessage().trim();
         AiSpeechProvider provider = defaultRealtimeTtsProvider();
         String voice = StringUtils.isBlank(provider.getDefaultVoice())
             ? properties.getUnimrcp().getVoice()

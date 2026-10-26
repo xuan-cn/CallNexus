@@ -27,7 +27,7 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
 
     @Override
     public void speak(Long nodeId, String customerLegUuid, String text, String voice,
-                      String turnId, int seq, boolean turnEnd) {
+                      String turnId, int seq, long generation, boolean turnEnd) {
         requireCallId(customerLegUuid);
         EslEndpoint endpoint = endpoint(nodeId);
         // 下发轮次上下文，供 callnexussynth 插件按 (callId,turnId) 复用同一条 TTS WebSocket。
@@ -38,14 +38,15 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
             variables.append(";callnexus_ai_turn_id=").append(safeVar(turnId));
         }
         variables.append(";callnexus_ai_segment_seq=").append(Math.max(1, seq));
+        variables.append(";callnexus_ai_generation=").append(Math.max(0L, generation));
         variables.append(";callnexus_ai_turn_end=").append(turnEnd);
         eslCommandGateway.sendRawCommand(endpoint,
             "api uuid_setvar_multi " + customerLegUuid + " " + variables);
         String command = render(properties.getUnimrcp().getSpeakCommandTemplate(), customerLegUuid, text, voice);
         long startNanos = System.nanoTime();
         eslCommandGateway.sendRawCommand(endpoint, command);
-        log.info("AI UniMRCP 播报命令已提交，nodeId={}，customerLegUuid={}，voice={}，turnId={}，seq={}，turnEnd={}，textLength={}，costMs={}，command={}",
-            nodeId, customerLegUuid, voice, turnId, seq, turnEnd, text == null ? 0 : text.length(),
+        log.info("AI UniMRCP 播报命令已提交，nodeId={}，customerLegUuid={}，voice={}，turnId={}，seq={}，generation={}，turnEnd={}，textLength={}，costMs={}，command={}",
+            nodeId, customerLegUuid, voice, turnId, seq, generation, turnEnd, text == null ? 0 : text.length(),
             elapsedMillis(startNanos), command);
     }
 

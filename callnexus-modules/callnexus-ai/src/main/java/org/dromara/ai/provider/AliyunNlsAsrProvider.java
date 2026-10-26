@@ -46,16 +46,19 @@ public class AliyunNlsAsrProvider implements AsrProvider, StreamingAsrProvider {
         }
         Dict commonConfig = commonConfig(provider);
         String appKey = firstText(commonConfig, "appKey", "app_key", "app-key");
+        String accessKeyId = StringUtils.blankToDefault(
+            firstText(commonConfig, "accessKeyId", "access_key_id", "access-key-id"),
+            provider.getAuthHeaderName());
         if (StringUtils.isBlank(appKey)) {
             throw new ServiceException("阿里云 NLS AppKey 不能为空，请在备注 JSON 中配置 appKey");
         }
-        if (StringUtils.isBlank(provider.getAuthHeaderName()) || StringUtils.isBlank(provider.getAuthToken())) {
+        if (StringUtils.isBlank(accessKeyId) || StringUtils.isBlank(provider.getAuthToken())) {
             throw new ServiceException("阿里云 NLS AccessKey ID 和 AccessKey Secret 不能为空");
         }
 
         String region = StringUtils.blankToDefault(firstText(commonConfig, "region"), DEFAULT_REGION);
         String endpoint = endpoint(provider, region);
-        String token = createToken(provider.getAuthHeaderName(), provider.getAuthToken(), region);
+        String token = createToken(accessKeyId, provider.getAuthToken(), region);
         String format = format(provider, request);
         int sampleRate = sampleRate(provider, request);
         List<AsrSegment> segments = new CopyOnWriteArrayList<>();
@@ -112,16 +115,19 @@ public class AliyunNlsAsrProvider implements AsrProvider, StreamingAsrProvider {
     public StreamingAsrSession open(AiSpeechProvider provider, StreamingAsrRequest request, StreamingAsrListener listener) {
         Dict commonConfig = commonConfig(provider);
         String appKey = firstText(commonConfig, "appKey", "app_key", "app-key");
+        String accessKeyId = StringUtils.blankToDefault(
+            firstText(commonConfig, "accessKeyId", "access_key_id", "access-key-id"),
+            provider.getAuthHeaderName());
         if (StringUtils.isBlank(appKey)) {
             throw new ServiceException("阿里云 NLS AppKey 不能为空，请在备注 JSON 中配置 appKey");
         }
-        if (StringUtils.isBlank(provider.getAuthHeaderName()) || StringUtils.isBlank(provider.getAuthToken())) {
+        if (StringUtils.isBlank(accessKeyId) || StringUtils.isBlank(provider.getAuthToken())) {
             throw new ServiceException("阿里云 NLS AccessKey ID 和 AccessKey Secret 不能为空");
         }
         String region = StringUtils.blankToDefault(firstText(commonConfig, "region"), DEFAULT_REGION);
         String endpoint = StringUtils.isNotBlank(provider.getStreamingAsrEndpointUrl())
             ? provider.getStreamingAsrEndpointUrl().trim() : endpoint(provider, region);
-        String token = createToken(provider.getAuthHeaderName(), provider.getAuthToken(), region);
+        String token = createToken(accessKeyId, provider.getAuthToken(), region);
         int rate = request.sampleRate() == null || request.sampleRate() <= 0 ? 16000 : request.sampleRate();
         List<AsrSegment> segments = new CopyOnWriteArrayList<>();
         NlsClient client = new NlsClient(endpoint, token);
@@ -295,6 +301,9 @@ public class AliyunNlsAsrProvider implements AsrProvider, StreamingAsrProvider {
         try {
             AccessToken accessToken = new AccessToken(accessKeyId, accessKeySecret);
             accessToken.apply();
+            if (StringUtils.isBlank(accessToken.getToken())) {
+                throw new ServiceException("获取阿里云 NLS Token 失败，请检查 AccessKey ID、AccessKey Secret 及 RAM 权限");
+            }
             if (accessToken.getExpireTime() > 0 && accessToken.getExpireTime() < Instant.now().getEpochSecond()) {
                 throw new ServiceException("阿里云 NLS Token 已过期");
             }

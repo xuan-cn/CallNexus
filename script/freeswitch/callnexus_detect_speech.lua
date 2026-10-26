@@ -18,7 +18,7 @@ if profile == nil or profile == "" then
 end
 
 if grammar == nil or grammar == "" then
-    grammar = "{start-input-timers=true,no-input-timeout=15000}builtin:speech/transcribe transcribe"
+    grammar = "{start-input-timers=true,no-input-timeout=15000,speech-complete-timeout=800,speech-incomplete-timeout=1200}builtin:speech/transcribe transcribe"
 end
 
 currentSession:execute("set", "fire_asr_events=true")

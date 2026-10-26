@@ -107,16 +107,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
 
     @Override
     public Long create(OutboundTaskRequest request) {
-        OutboundTask task = new OutboundTask();
-        applyTask(task, request);
-        task.setTaskType("PREVIEW");
-        task.setStatus("DRAFT");
-        try {
-            taskMapper.insert(task);
-        } catch (DuplicateKeyException exception) {
-            throw new ServiceException("外呼任务编码已存在");
-        }
-        return task.getId();
+        throw new ServiceException("点击拨号已改为坐席客户工作台，不再创建预览外呼任务");
     }
 
     @Override

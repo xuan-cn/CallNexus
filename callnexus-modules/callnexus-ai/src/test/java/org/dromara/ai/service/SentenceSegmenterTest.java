@@ -24,7 +24,7 @@ class SentenceSegmenterTest {
         List<String> segments = segmenter.append(text);
 
         assertEquals(1, segments.size());
-        assertEquals(24, segments.get(0).length());
+        assertEquals(16, segments.get(0).length());
     }
 
     @Test

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.dromara.ai.domain.AiWorkflow;
 import org.dromara.ai.domain.AiAgentWorkflowBinding;
 import org.dromara.ai.domain.AiWorkflowExecution;
@@ -39,9 +40,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final int MAX_NODES_PER_RESUME = 50;
@@ -153,9 +156,21 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         if (inputId.equals(execution.getLastInputId())) return voiceResponse(execution, context);
         if ("WAITING_TTS".equals(execution.getStatus())) {
             resumeWait(executionId, "TTS", "INTERRUPTED");
+            String afterTtsActionType = context.afterTtsActionType;
+            String afterTtsActionTarget = context.afterTtsActionTarget;
             clearPendingAction(context);
-            execution.setStatus("RUNNING");
-            run(execution, version, definition(version), context);
+            if (afterTtsActionType != null && !afterTtsActionType.isBlank()) {
+                completeDirectAction(execution, context, afterTtsActionType, afterTtsActionTarget);
+                execution.setContextJson(writeContext(context));
+                updateExecution(execution);
+                return voiceResponse(execution, context);
+            } else if (context.resumeSameNode) {
+                execution.setStatus("WAITING_INPUT");
+                createWait(execution, findNode(definition(version), execution.getCurrentNodeId()), "INPUT", 15);
+            } else {
+                execution.setStatus("RUNNING");
+                run(execution, version, definition(version), context);
+            }
             if (!"WAITING_INPUT".equals(execution.getStatus())) return voiceResponse(execution, context);
         }
         resumeInput(execution, version, context, inputId, text);
@@ -169,10 +184,24 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         RuntimeContext context = readContext(execution.getContextJson());
         if (!"WAITING_TTS".equals(execution.getStatus())) return voiceResponse(execution, context);
         resumeWait(executionId, "TTS", "RESUMED");
+        String afterTtsActionType = context.afterTtsActionType;
+        String afterTtsActionTarget = context.afterTtsActionTarget;
         clearPendingAction(context);
-        execution.setStatus("RUNNING");
         AiWorkflowVersion version = requireVersion(execution.getWorkflowVersionId());
-        run(execution, version, definition(version), context);
+        if (afterTtsActionType != null && !afterTtsActionType.isBlank()) {
+            completeDirectAction(execution, context, afterTtsActionType, afterTtsActionTarget);
+            execution.setContextJson(writeContext(context));
+            updateExecution(execution);
+        } else if (context.resumeSameNode) {
+            execution.setStatus("WAITING_INPUT");
+            context.pendingActionType = "WAIT_INPUT";
+            createWait(execution, findNode(definition(version), execution.getCurrentNodeId()), "INPUT", 15);
+            execution.setContextJson(writeContext(context));
+            updateExecution(execution);
+        } else {
+            execution.setStatus("RUNNING");
+            run(execution, version, definition(version), context);
+        }
         return voiceResponse(execution, context);
     }
 
@@ -213,9 +242,12 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
             AiWorkflowNodeResult result;
             try {
                 result = handlerRegistry.require(nodeType).execute(new AiWorkflowNodeContext(
-                    node, context.variables, context.lastInput, execution.getAiAgentId(), execution.getChannelType()));
+                    node, context.variables, context.lastInput, execution.getAiAgentId(), execution.getChannelType(),
+                    workflowSettings(definition)));
                 context.variables.putAll(result.variableUpdates());
-                if ("SPEAK".equals(result.status()) && result.output() != null) context.outputMessages.add(result.output());
+                if (Set.of("SPEAK", "SPEAK_RETRY", "SPEAK_ACTION").contains(result.status()) && result.output() != null) {
+                    context.outputMessages.add(result.output());
+                }
                 logNode(execution, node, result, context.lastInput, startedAt, null);
             } catch (Exception exception) {
                 logNode(execution, node, null, context.lastInput, startedAt, exception);
@@ -235,6 +267,8 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                         createWait(execution, node, "TTS", 120);
                     }
                 }
+                case "SPEAK_RETRY" -> waitForRetryInput(execution, node, context, result.output(), false);
+                case "SPEAK_ACTION" -> speakThenAction(execution, node, context, result);
                 case "PLAY_MEDIA" -> {
                     execution.setCurrentNodeId(nextNodeId(definition, node.path("id").asText(), result.branchValue()));
                     if (!"TEST".equals(execution.getChannelType())) {
@@ -256,6 +290,7 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                     execution.setStatus("WAITING_TTS");
                     createWait(execution, node, "TTS", 120);
                 }
+                case "STREAM_AI_RETRY" -> waitForRetryInput(execution, node, context, result.output(), true);
                 case "WAIT_INPUT" -> {
                     execution.setStatus("WAITING_INPUT");
                     context.pendingActionType = "WAIT_INPUT";
@@ -268,7 +303,7 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                     createWait(execution, node, result.waitType(), 120);
                 }
                 case "TRANSFERRED" -> {
-                    context.pendingActionType = nodeType;
+                    context.pendingActionType = result.waitType() == null ? nodeType : result.waitType();
                     context.pendingActionTarget = result.output();
                     finish(execution, "TRANSFERRED");
                 }
@@ -280,6 +315,7 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                     context.pendingActionType = "COMPLETED";
                     finish(execution, "COMPLETED");
                 }
+                case "DIRECT_ACTION" -> completeDirectAction(execution, context, result.waitType(), result.output());
                 default -> fail(execution, "INVALID_NODE_RESULT", "节点返回了无效状态：" + result.status());
             }
         }
@@ -333,7 +369,16 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         if (!"WAITING_INPUT".equals(execution.getStatus())) throw new ServiceException("当前工作流不在等待客户输入状态");
         AiWorkflowWait wait = activeWait(execution.getExecutionId());
         if (wait == null || !"INPUT".equals(wait.getWaitType())) throw new ServiceException("工作流输入等待令牌不存在或已失效");
-        if (wait.getExpiresAt() != null && wait.getExpiresAt().isBefore(LocalDateTime.now())) throw new ServiceException("等待客户输入已超时");
+        LocalDateTime now = LocalDateTime.now();
+        if (wait.getExpiresAt() != null && wait.getExpiresAt().isBefore(now)) {
+            if (!isVoiceChannel(execution.getChannelType())) {
+                throw new ServiceException("等待客户输入已超时");
+            }
+            // 语音终端可能在等待窗口内已经开始说话，但最终 ASR 结果在窗口后才到达。
+            // 执行仍处于 WAITING_INPUT 且令牌仍为 WAITING 时，接受这条有效语音，避免直接终止通话。
+            log.warn("语音工作流收到迟到的有效输入，继续执行，executionId={}，waitId={}，overdueMs={}",
+                execution.getExecutionId(), wait.getId(), Duration.between(wait.getExpiresAt(), now).toMillis());
+        }
         wait.setStatus("RESUMED");
         wait.setResumedAt(LocalDateTime.now());
         waitMapper.updateById(wait);
@@ -343,9 +388,64 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         execution.setLastInputId(inputId);
         execution.setTurnNo(execution.getTurnNo() + 1);
         JsonNode definition = definition(version);
-        execution.setCurrentNodeId(nextNodeId(definition, execution.getCurrentNodeId(), null));
+        if (context.resumeSameNode) context.resumeSameNode = false;
+        else execution.setCurrentNodeId(nextNodeId(definition, execution.getCurrentNodeId(), null));
         execution.setStatus("RUNNING");
         run(execution, version, definition, context);
+    }
+
+    private boolean isVoiceChannel(String channelType) {
+        return channelType != null && channelType.startsWith("VOICE_");
+    }
+
+    private void waitForRetryInput(AiWorkflowExecution execution, JsonNode node, RuntimeContext context,
+                                   String output, boolean streamAi) {
+        context.resumeSameNode = true;
+        if ("TEST".equals(execution.getChannelType())) {
+            execution.setStatus("WAITING_INPUT");
+            context.pendingActionType = "WAIT_INPUT";
+            createWait(execution, node, "INPUT", 3600);
+            return;
+        }
+        context.pendingActionType = streamAi ? "STREAM_AI" : "SPEAK";
+        context.pendingActionText = output;
+        context.pendingActionTarget = streamAi ? "MODEL_REPLY" : null;
+        execution.setStatus("WAITING_TTS");
+        createWait(execution, node, "TTS", 120);
+    }
+
+    private void speakThenAction(AiWorkflowExecution execution, JsonNode node, RuntimeContext context,
+                                 AiWorkflowNodeResult result) {
+        if ("TEST".equals(execution.getChannelType())) {
+            completeDirectAction(execution, context, result.waitType(), result.branchValue());
+            return;
+        }
+        context.pendingActionType = "SPEAK";
+        context.pendingActionText = result.output();
+        context.afterTtsActionType = result.waitType();
+        context.afterTtsActionTarget = result.branchValue();
+        execution.setStatus("WAITING_TTS");
+        createWait(execution, node, "TTS", 120);
+    }
+
+    private void completeDirectAction(AiWorkflowExecution execution, RuntimeContext context,
+                                      String actionType, String target) {
+        switch (actionType == null ? "" : actionType) {
+            case "TRANSFER_QUEUE", "TRANSFER_EXTENSION", "TRANSFER_IVR" -> {
+                context.pendingActionType = actionType;
+                context.pendingActionTarget = target;
+                finish(execution, "TRANSFERRED");
+            }
+            case "HANGUP" -> {
+                context.pendingActionType = "HANGUP";
+                finish(execution, "COMPLETED");
+            }
+            case "END" -> {
+                context.pendingActionType = "COMPLETED";
+                finish(execution, "COMPLETED");
+            }
+            default -> fail(execution, "INVALID_DIRECT_ACTION", "不支持的意图兜底动作：" + actionType);
+        }
     }
 
     private void resumeWait(String executionId, String waitType, String status) {
@@ -360,6 +460,14 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         context.pendingActionType = null;
         context.pendingActionText = null;
         context.pendingActionTarget = null;
+        context.afterTtsActionType = null;
+        context.afterTtsActionTarget = null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> workflowSettings(JsonNode definition) {
+        JsonNode settings = definition.path("settings");
+        return settings.isObject() ? OBJECT_MAPPER.convertValue(settings, Map.class) : Map.of();
     }
 
     private void createWait(AiWorkflowExecution execution, JsonNode node, String waitType, long timeoutSeconds) {
@@ -551,5 +659,8 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         private String pendingActionType;
         private String pendingActionText;
         private String pendingActionTarget;
+        private boolean resumeSameNode;
+        private String afterTtsActionType;
+        private String afterTtsActionTarget;
     }
 }

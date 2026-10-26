@@ -164,6 +164,8 @@ mybatis-plus:
       # AUTO 自增 NONE 空 INPUT 用户输入 ASSIGN_ID 雪花 ASSIGN_UUID 唯一 UUID
       # 如需改为自增 需要将数据库表全部设置为自增
       idType: ASSIGN_ID
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
 
 # 数据加密
 mybatis-encryptor:
@@ -306,7 +308,11 @@ ai:
     detect-script: ${CALLNEXUS_AI_UNIMRCP_DETECT_SCRIPT:/usr/share/freeswitch/scripts/callnexus_detect_speech.lua}
     speak-complete-delay-ms: ${CALLNEXUS_AI_UNIMRCP_SPEAK_COMPLETE_DELAY_MS:600}
     # WS 播报完成事件丢失时的最短兜底时间；长文本仍按预计播放时长自动延长。
-    streaming-speak-complete-timeout-ms: ${CALLNEXUS_AI_UNIMRCP_STREAMING_SPEAK_COMPLETE_TIMEOUT_MS:5000}
+    streaming-speak-complete-timeout-ms: ${CALLNEXUS_AI_UNIMRCP_STREAMING_SPEAK_COMPLETE_TIMEOUT_MS:12000}
+    # 已收到首段 PCM 后，等待当前段全部音频发送到 UniMRCP 插件的阶段超时。
+    streaming-audio-send-timeout-ms: ${CALLNEXUS_AI_UNIMRCP_STREAMING_AUDIO_SEND_TIMEOUT_MS:120000}
+    # 全部 PCM 已发送后，等待 FreeSWITCH 播放完成事件的最短看门狗时间；长音频按实际时长自动延长。
+    playback-complete-timeout-ms: ${CALLNEXUS_AI_UNIMRCP_PLAYBACK_COMPLETE_TIMEOUT_MS:30000}
     recognize-retry-delay-ms: ${CALLNEXUS_AI_UNIMRCP_RECOGNIZE_RETRY_DELAY_MS:500}
     recognize-stall-timeout-ms: ${CALLNEXUS_AI_UNIMRCP_RECOGNIZE_STALL_TIMEOUT_MS:25000}
     channel-probe-interval-ms: ${CALLNEXUS_AI_UNIMRCP_CHANNEL_PROBE_INTERVAL_MS:2000}

@@ -33,7 +33,10 @@ import java.util.concurrent.RejectedExecutionException;
 public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
     private static final int CONNECT_TIMEOUT_MILLIS = 5000;
     private static final long RECONNECT_DELAY_MILLIS = 5000;
-    private static final String EVENT_COMMAND = "event plain " + String.join(" ", EslEventNames.subscribedEvents());
+    private static final String CHANNEL_EVENT_COMMAND =
+        "event plain " + String.join(" ", EslEventNames.subscribedChannelEvents());
+    private static final String CUSTOM_EVENT_COMMAND =
+        "event plain CUSTOM " + String.join(" ", EslEventNames.subscribedCustomEventSubclasses());
     private static final String EVENT_BODY_HEADER = "CallNexus-Event-Body";
 
     private final FreeSwitchNodeQueryService nodeQueryService;
@@ -106,10 +109,12 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
                 requireContentType(readFrame(input), "auth/request");
                 write(output, "auth " + node.getEslPassword());
                 requireAccepted(readFrame(input));
-                write(output, EVENT_COMMAND);
+                write(output, CHANNEL_EVENT_COMMAND);
                 requireAccepted(readFrame(input));
-                log.info("FreeSWITCH ESL event listener connected, nodeId={}, host={}, port={}",
-                    node.getNodeId(), node.getEslHost(), node.getEslPort());
+                write(output, CUSTOM_EVENT_COMMAND);
+                requireAccepted(readFrame(input));
+                log.info("FreeSWITCH ESL event listener connected, nodeId={}, host={}, port={}, customSubclasses={}",
+                    node.getNodeId(), node.getEslHost(), node.getEslPort(), EslEventNames.subscribedCustomEventSubclasses());
                 executor.submit(() -> runtimeReconciler.reconcileWithRetry(node.getNodeId()));
                 while (running && !socket.isClosed()) {
                     EslFrame frame = readFrame(input);

@@ -38,7 +38,9 @@ public class AiKnowledgeProperties {
         private String grammar = "{start-input-timers=true,no-input-timeout=15000,speech-complete-timeout=800,speech-incomplete-timeout=1200}builtin:speech/transcribe transcribe";
         private String detectScript = "/usr/share/freeswitch/scripts/callnexus_detect_speech.lua";
         private Long speakCompleteDelayMs = 600L;
-        private Long streamingSpeakCompleteTimeoutMs = 5000L;
+        private Long streamingSpeakCompleteTimeoutMs = 12000L;
+        private Long streamingAudioSendTimeoutMs = 120000L;
+        private Long playbackCompleteTimeoutMs = 30000L;
         private Long recognizeRetryDelayMs = 500L;
         private Long recognizeStallTimeoutMs = 25000L;
         private Long channelProbeIntervalMs = 2000L;

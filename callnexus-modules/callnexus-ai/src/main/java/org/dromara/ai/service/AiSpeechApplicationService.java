@@ -9,7 +9,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
-public interface AiSpeechApplicationService {
+public interface    AiSpeechApplicationService {
     List<AiSpeechProviderResponse> providers();
     Long createProvider(AiSpeechProviderRequest request);
     void updateProvider(Long id, AiSpeechProviderRequest request);
@@ -19,6 +19,7 @@ public interface AiSpeechApplicationService {
     SpeechProviderTestResponse testProviderConnection(Long id);
     SpeechProviderTestResponse testStreamingProvider(Long id, SpeechCapability capability);
     TtsTestResponse testProvider(Long id, TtsTestRequest request);
+    TtsTestResponse testProvider(AiSpeechProviderRequest providerRequest, TtsTestRequest request);
     SpeechProviderCatalogResponse providerCatalog(Long id, boolean refresh);
     List<String> providerVoices(Long id);
     AsrTestResponse testAsrProvider(Long id, MultipartFile file, String format, Integer sampleRate);

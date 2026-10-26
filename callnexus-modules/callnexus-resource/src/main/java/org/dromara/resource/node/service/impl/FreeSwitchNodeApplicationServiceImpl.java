@@ -234,6 +234,8 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
             <param name="sip-ip" value="%s"/>
             <param name="ext-rtp-ip" value="%s"/>
             <param name="ext-sip-ip" value="%s"/>
+            <param name="accept-blind-reg" value="false"/>
+            <param name="accept-blind-auth" value="false"/>
             """.formatted(escapeXml(rtpIp), escapeXml(sipIp), escapeXml(extRtpIp), escapeXml(extSipIp));
         String commands = """
             fs_cli -x "reloadxml"

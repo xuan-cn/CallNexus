@@ -16,6 +16,7 @@ public class AiAgent extends TenantEntity {
     private String description;
     private Long chatModelId;
     private String systemPrompt;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String welcomeMessage;
     private String voiceTransport;
     private String voiceTransportWsUrl;

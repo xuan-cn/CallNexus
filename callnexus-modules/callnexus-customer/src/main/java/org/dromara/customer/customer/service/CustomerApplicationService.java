@@ -32,4 +32,5 @@ public interface CustomerApplicationService {
     TableDataInfo<CustomerFollowUpResponse> pageFollowUps(Long customerId, PageQuery pageQuery);
     Long addFollowUp(Long customerId, String content);
     void recordOutboundResult(Long customerId, Long attemptId, String content, String tag);
+    void recordClickDialResult(Long customerId, Long attemptId, String content);
 }

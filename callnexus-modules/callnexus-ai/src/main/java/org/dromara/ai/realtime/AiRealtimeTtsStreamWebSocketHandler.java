@@ -11,6 +11,7 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.CloseStatus;
@@ -21,7 +22,9 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -33,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * UniMRCP callnexussynth 插件的 TTS 流式 WebSocket 端点。
@@ -83,17 +87,20 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
     private final Executor consumeExecutor;
     private final ThreadPoolTaskScheduler scheduler;
     private final AiRealtimeTtsConnectionRegistry connectionRegistry;
+    private final ApplicationEventPublisher eventPublisher;
 
     private final Map<String, StreamState> states = new ConcurrentHashMap<>();
 
     public AiRealtimeTtsStreamWebSocketHandler(AiRealtimeTtsInternalService ttsService,
                                                @Qualifier("aiRealtimeExecutor") Executor consumeExecutor,
                                                @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler scheduler,
-                                               AiRealtimeTtsConnectionRegistry connectionRegistry) {
+                                               AiRealtimeTtsConnectionRegistry connectionRegistry,
+                                               ApplicationEventPublisher eventPublisher) {
         this.ttsService = ttsService;
         this.consumeExecutor = consumeExecutor;
         this.scheduler = scheduler;
         this.connectionRegistry = connectionRegistry;
+        this.eventPublisher = eventPublisher;
     }
 
     @Override
@@ -129,8 +136,21 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
             case "text" -> handleText(session, state, node);
             case "flush" -> handleFlush(session, state, node);
             case "cancel" -> handleCancel(session, state);
+            case "audio_ready" -> handleAudioReady(session, state, node);
             default -> log.debug("AI 实时 TTS WS 忽略未知消息类型，sessionId={}，type={}", session.getId(), type);
         }
+    }
+
+    private void handleAudioReady(WebSocketSession session, StreamState state, JsonNode node) {
+        if (StringUtils.isBlank(state.tenantId) || StringUtils.isBlank(state.callId)) {
+            log.warn("AI 实时 TTS WS 收到 audio_ready 但会话标识不完整，sessionId={}", session.getId());
+            return;
+        }
+        Integer sequence = node.path("seq").isInt() ? node.path("seq").asInt() : null;
+        eventPublisher.publishEvent(new AiRealtimeTtsAudioReadyEvent(
+            state.tenantId, state.callId, state.turnId, sequence));
+        log.info("AI 实时 TTS WS 已确认首段音频进入插件缓冲，sessionId={}，callId={}，turnId={}，seq={}",
+            session.getId(), state.callId, state.turnId, sequence);
     }
 
     @Override
@@ -139,6 +159,7 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
         if (removed != null) {
             removed.cancelled.set(true);
             removed.consuming.set(false);
+            cancelActiveTts(removed);
             cancelIdleTimer(removed);
             connectionRegistry.unregister(removed.callId, session.getId());
         }
@@ -213,6 +234,7 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
     private void cancelSession(WebSocketSession session, StreamState state, String reason, boolean notifyPeer) {
         state.cancelled.set(true);
         state.consuming.set(false);
+        cancelActiveTts(state);
         state.segmentQueue.clear();
         if (state.segmenter != null) {
             state.segmenter.drain();
@@ -293,7 +315,14 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void sendSegmentCompleted(WebSocketSession session, StreamState state, Segment segment, int bytes) {
-        sendJson(session, Map.of("type", "segmentEnd", "bytes", bytes));
+        if (!sendJson(session, Map.of("type", "segmentEnd", "bytes", bytes))) {
+            log.warn("AI 实时 TTS WS 段结束标记发送失败，不发布音频发送完成事件，sessionId={}，callId={}，turnId={}，seq={}",
+                session.getId(), state.callId, state.turnId, segment.seq());
+            return;
+        }
+        eventPublisher.publishEvent(new AiRealtimeTtsSegmentSentEvent(
+            state.tenantId, state.callId, state.turnId, segment.seq(), bytes,
+            state.sampleRate == null ? 8000 : state.sampleRate));
         if (segment.seq() == null) {
             return;
         }
@@ -395,18 +424,29 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
                 }
                 log.warn("AI TTS 上游流式合成失败，将回退到 HTTP 一次性 TTS（FreeSWITCH 侧仍为内部 WS），sessionId={}，text={}，error={}",
                     session.getId(), sentence, message);
-                fallbackHttp(session, state, segment);
+                fallbackHttp(session, state, segment, message);
                 done.countDown();
             }
         };
 
+        AiRealtimeTtsInternalService.StreamingExecution execution = null;
         try {
-            ttsService.generateStream(request, listener);
+            execution = ttsService.generateStream(request, listener);
+            AiRealtimeTtsInternalService.StreamingExecution previous = state.activeTts.getAndSet(execution);
+            if (previous != null && previous != execution) {
+                previous.cancel();
+            }
+            if (state.cancelled.get() || !session.isOpen()) {
+                if (state.activeTts.compareAndSet(execution, null)) {
+                    execution.cancel();
+                }
+                done.countDown();
+            }
         } catch (Exception exception) {
             if (fallbackTriggered.compareAndSet(false, true)) {
                 log.warn("AI TTS 上游流式入口异常，回退 HTTP（FreeSWITCH 侧仍为内部 WS），sessionId={}，text={}",
                     session.getId(), sentence, exception);
-                fallbackHttp(session, state, segment);
+                fallbackHttp(session, state, segment, exception.getMessage());
             }
             done.countDown();
         }
@@ -418,27 +458,42 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
+        } finally {
+            if (execution != null) {
+                state.activeTts.compareAndSet(execution, null);
+            }
         }
     }
 
-    private void fallbackHttp(WebSocketSession session, StreamState state, Segment segment) {
+    private void fallbackHttp(WebSocketSession session, StreamState state, Segment segment, String reason) {
         String sentence = segment.text();
         if (state.cancelled.get() || !session.isOpen()) {
             return;
         }
+        eventPublisher.publishEvent(new AiRealtimeTtsFallbackStartedEvent(
+            state.tenantId, state.callId, state.turnId, segment.seq(), reason));
         long startNanos = System.nanoTime();
         try {
-            AiRealtimeTtsRequest request = buildRequest(state, sentence);
-            AiRealtimeTtsInternalService.RealtimeTtsAudio audio = ttsService.generateForStream(request);
-            if (state.cancelled.get() || !session.isOpen()) {
-                return;
+            List<String> parts = splitHttpFallbackText(sentence);
+            int totalBytes = 0;
+            for (int index = 0; index < parts.size(); index++) {
+                String part = parts.get(index);
+                AiRealtimeTtsRequest request = buildRequest(state, part);
+                AiRealtimeTtsInternalService.RealtimeTtsAudio audio = ttsService.generateForStream(request);
+                if (state.cancelled.get() || !session.isOpen()) {
+                    return;
+                }
+                synchronized (session) {
+                    session.sendMessage(new BinaryMessage(ByteBuffer.wrap(audio.bytes())));
+                }
+                totalBytes += audio.bytes().length;
+                log.info("AI 实时 TTS WS HTTP fallback 分句已推送，sessionId={}，part={}/{}, textLen={}，bytes={}，costMs={}",
+                    session.getId(), index + 1, parts.size(), part.length(), audio.bytes().length,
+                    (System.nanoTime() - startNanos) / 1_000_000L);
             }
-            synchronized (session) {
-                session.sendMessage(new BinaryMessage(ByteBuffer.wrap(audio.bytes())));
-                sendSegmentCompleted(session, state, segment, audio.bytes().length);
-            }
-            log.info("AI 实时 TTS WS 段合成完成（http fallback），sessionId={}，textLen={}，bytes={}，costMs={}",
-                session.getId(), sentence.length(), audio.bytes().length,
+            sendSegmentCompleted(session, state, segment, totalBytes);
+            log.info("AI 实时 TTS WS 段合成完成（http fallback），sessionId={}，textLen={}，parts={}，bytes={}，costMs={}",
+                session.getId(), sentence.length(), parts.size(), totalBytes,
                 (System.nanoTime() - startNanos) / 1_000_000L);
         } catch (Exception exception) {
             log.warn("AI 实时 TTS WS HTTP fallback 失败，sessionId={}，text={}",
@@ -518,6 +573,7 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         state.consuming.set(false);
+        cancelActiveTts(state);
         cancelIdleTimer(state);
         if (!session.isOpen()) {
             return;
@@ -531,16 +587,38 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private void sendJson(WebSocketSession session, Object value) {
+    private void cancelActiveTts(StreamState state) {
+        AiRealtimeTtsInternalService.StreamingExecution execution = state.activeTts.getAndSet(null);
+        if (execution != null) {
+            execution.cancel();
+        }
+    }
+
+    static List<String> splitHttpFallbackText(String text) {
+        if (StringUtils.isBlank(text)) {
+            return List.of();
+        }
+        SentenceSegmenter segmenter = new SentenceSegmenter();
+        List<String> parts = new ArrayList<>(segmenter.append(text.trim()));
+        String tail = segmenter.drain();
+        if (StringUtils.isNotBlank(tail)) {
+            parts.add(tail);
+        }
+        return parts.isEmpty() ? List.of(text.trim()) : parts;
+    }
+
+    private boolean sendJson(WebSocketSession session, Object value) {
         if (!session.isOpen()) {
-            return;
+            return false;
         }
         try {
             synchronized (session) {
                 session.sendMessage(new TextMessage(MAPPER.writeValueAsString(value)));
             }
+            return true;
         } catch (Exception exception) {
             log.debug("AI 实时 TTS WS 发送 JSON 失败，sessionId={}，error={}", session.getId(), exception.getMessage());
+            return false;
         }
     }
 
@@ -564,6 +642,7 @@ public class AiRealtimeTtsStreamWebSocketHandler extends TextWebSocketHandler {
         final AtomicBoolean consuming = new AtomicBoolean();
         final AtomicBoolean closing = new AtomicBoolean();
         final AtomicLong lastActivityMs = new AtomicLong(System.currentTimeMillis());
+        final AtomicReference<AiRealtimeTtsInternalService.StreamingExecution> activeTts = new AtomicReference<>();
     }
 
     private record Segment(Integer seq, String text) {

@@ -88,7 +88,7 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
 
     @Override
     public TicketResponse get(Long id) {
-        Ticket ticket = requireTicket(id);
+        Ticket ticket = requireReadableTicket(id);
         TicketResponse response = toResponse(ticket);
         response.setFormData(formSubmissionService.getFormData(FormBusinessType.TICKET, id));
         return response;
@@ -248,6 +248,22 @@ public class TicketApplicationServiceImpl implements TicketApplicationService {
         Ticket ticket = LoginHelper.isLogin()
             ? ticketMapper.selectDataScopeById(id)
             : ticketMapper.selectById(id);
+        if (ticket == null) {
+            throw new ServiceException("工单不存在或无权访问");
+        }
+        return ticket;
+    }
+
+    private Ticket requireReadableTicket(Long id) {
+        Ticket ticket = LoginHelper.isLogin()
+            ? ticketMapper.selectDataScopeById(id)
+            : ticketMapper.selectById(id);
+        if (ticket == null && LoginHelper.isLogin()) {
+            WorkflowService workflowService = workflowServiceProvider.getIfAvailable();
+            if (workflowService != null && workflowService.hasCurrentUserTaskAccess(String.valueOf(id))) {
+                ticket = ticketMapper.selectById(id);
+            }
+        }
         if (ticket == null) {
             throw new ServiceException("工单不存在或无权访问");
         }

@@ -7,6 +7,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.tenant.core.TenantEntity;
 
+import java.time.LocalDateTime;
+
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("cc_customer_assignment")
@@ -23,6 +25,13 @@ public class CustomerAssignment extends TenantEntity {
     private Long importBatchId;
     private String remark;
     private Boolean enabled;
+    private String dialStatus;
+    private Integer attemptCount;
+    private LocalDateTime lastCalledAt;
+    private String lastResultCode;
+    private String lastResultRemark;
+    private LocalDateTime nextFollowUpAt;
+    private LocalDateTime completedAt;
     @TableLogic
     private Boolean deleted;
 }

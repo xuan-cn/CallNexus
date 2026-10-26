@@ -6,9 +6,12 @@ import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.dto.CompleteTaskDTO;
 import org.dromara.common.core.domain.dto.StartProcessDTO;
 import org.dromara.common.core.domain.dto.StartProcessReturnDTO;
+import org.dromara.common.core.domain.dto.UserDTO;
 import org.dromara.common.core.service.WorkflowService;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.warm.flow.orm.entity.FlowInstance;
+import org.dromara.warm.flow.orm.entity.FlowTask;
 import org.dromara.workflow.common.ConditionalOnEnable;
 import org.dromara.workflow.common.enums.MessageTypeEnum;
 import org.dromara.workflow.domain.FlowInstanceBizExt;
@@ -102,6 +105,25 @@ public class WorkflowServiceImpl implements WorkflowService {
     public Long getInstanceIdByBusinessId(String businessId) {
         FlowInstance flowInstance = flwInstanceService.selectInstByBusinessId(businessId);
         return ObjectUtil.isNotNull(flowInstance) ? flowInstance.getId() : null;
+    }
+
+    @Override
+    public boolean hasCurrentUserTaskAccess(String businessId) {
+        if (!LoginHelper.isLogin() || StringUtils.isBlank(businessId)) {
+            return false;
+        }
+        FlowInstance flowInstance = flwInstanceService.selectInstByBusinessId(businessId);
+        if (flowInstance == null) {
+            return false;
+        }
+        List<FlowTask> activeTasks = flwTaskService.selectByInstId(flowInstance.getId());
+        if (activeTasks.isEmpty()) {
+            return false;
+        }
+        List<UserDTO> assignees = flwTaskService.currentTaskAllUser(
+            activeTasks.stream().map(FlowTask::getId).toList());
+        Long currentUserId = LoginHelper.getUserId();
+        return assignees.stream().anyMatch(user -> ObjectUtil.equals(user.getUserId(), currentUserId));
     }
 
     /**

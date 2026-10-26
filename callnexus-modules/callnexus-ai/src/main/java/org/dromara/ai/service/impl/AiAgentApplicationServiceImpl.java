@@ -41,8 +41,7 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         2. 先归纳知识内容再回答用户问题，不要展示归纳或思考过程。
         3. 直接回答，不要出现“根据知识库回答”等字眼。
         4. 知识库中没有时，友善地回答用户问题，不要体现任何知识库字眼。
-        5. 已经发送了固定开场白：“您好，我是 CallNexus AI 助手，请问有什么可以帮您？”
-        6. 纯文本输出，不要使用 Markdown、加粗、列表符号。
+        5. 纯文本输出，不要使用 Markdown、加粗、列表符号。
         """;
 
     private final AiAgentMapper agentMapper;
@@ -139,14 +138,13 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         conversation.setLastMessageAt(LocalDateTime.now());
         conversationMapper.insert(conversation);
 
-        String welcome = StringUtils.isBlank(agent.getWelcomeMessage())
-            ? "您好，我是" + agent.getAgentName() + "，请问有什么可以帮您？"
-            : agent.getWelcomeMessage().trim();
-        AiMessage message = saveMessage(conversation, agent, "ASSISTANT", welcome, "GREETING", "COMPLETED", null);
+        String welcome = StringUtils.isBlank(agent.getWelcomeMessage()) ? null : agent.getWelcomeMessage().trim();
+        AiMessage message = welcome == null ? null
+            : saveMessage(conversation, agent, "ASSISTANT", welcome, "GREETING", "COMPLETED", null);
 
         AiConversationStartResponse response = new AiConversationStartResponse();
         response.setConversation(conversationResponse(conversation, agent.getAgentName()));
-        response.setMessage(messageResponse(message, List.of()));
+        response.setMessage(message == null ? null : messageResponse(message, List.of()));
         return response;
     }
 
@@ -590,7 +588,7 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         item.setDescription(request.getDescription());
         item.setChatModelId(request.getChatModelId());
         item.setSystemPrompt(request.getSystemPrompt());
-        item.setWelcomeMessage(request.getWelcomeMessage());
+        item.setWelcomeMessage(StringUtils.isBlank(request.getWelcomeMessage()) ? null : request.getWelcomeMessage().trim());
         String voiceTransport = defaultValue(request.getVoiceTransport(), "HTTP");
         if (!Set.of("HTTP", "WS").contains(voiceTransport)) {
             throw new ServiceException("未知的语音传输模式");

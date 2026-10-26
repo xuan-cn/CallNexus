@@ -37,6 +37,7 @@ import java.util.regex.Pattern;
 public class CallRealtimeAsrControlService {
 
     private static final String ACTIVE_KEY_PREFIX = "callnexus:call:realtime-asr:";
+    private static final String AI_REALTIME_OWNER_KEY_PREFIX = "callnexus:ai:realtime:owner:";
     private static final Duration ACTIVE_TTL = Duration.ofHours(4);
     private static final Pattern UUID_PATTERN = Pattern.compile("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
     private static final Set<String> AI_REALTIME_ACTIVE_STATES = Set.of(
@@ -44,6 +45,8 @@ public class CallRealtimeAsrControlService {
     private static final String LEG_CUSTOMER = "CUSTOMER";
     private static final String LEG_AGENT = "AGENT";
     private static final String EVENT_BODY_HEADER = "CallNexus-Event-Body";
+    private static final String VAR_AI_ACTIVE = "variable_callnexus_ai_active";
+    private static final String VAR_AI_AGENT_ID = "variable_callnexus_ai_agent_id";
 
     private final ConcurrentMap<String, RecognitionWatch> recognitionWatches = new ConcurrentHashMap<>();
 
@@ -56,6 +59,11 @@ public class CallRealtimeAsrControlService {
 
     public void handle(TelephonyEvent event) {
         if (!Boolean.TRUE.equals(properties.getCallRealtimeAsrEnabled())) {
+            return;
+        }
+        if ((EslEventNames.CHANNEL_BRIDGE.equals(event.eventName())
+            || EslEventNames.DETECTED_SPEECH.equals(event.eventName())) && yieldToAiRealtime(event)) {
+            relinquishGenericRecognition(event);
             return;
         }
         if (EslEventNames.CHANNEL_BRIDGE.equals(event.eventName())) {
@@ -211,6 +219,58 @@ public class CallRealtimeAsrControlService {
             RedisUtils.deleteObject(key);
             recognitionWatches.remove(watchKey(event.nodeId(), event.uuid()));
         }
+    }
+
+    private boolean yieldToAiRealtime(TelephonyEvent event) {
+        boolean explicitlyActive = "true".equalsIgnoreCase(header(event.headers(), VAR_AI_ACTIVE))
+            || StringUtils.isNotBlank(header(event.headers(), VAR_AI_AGENT_ID));
+        boolean ownershipPresent = false;
+        try {
+            ownershipPresent = RedisUtils.isExistsObject(AI_REALTIME_OWNER_KEY_PREFIX + event.uuid());
+        } catch (Exception exception) {
+            log.debug("Check AI realtime ownership failed, nodeId={}, uuid={}, error={}",
+                event.nodeId(), event.uuid(), exception.getMessage());
+        }
+        if (shouldYieldToAiRealtime(explicitlyActive, ownershipPresent, false)) {
+            return true;
+        }
+        String tenantId = nodeQueryService.findTenantId(event.nodeId());
+        if (StringUtils.isBlank(tenantId)) {
+            return false;
+        }
+        try {
+            boolean activeSession = TenantHelper.dynamic(tenantId, () -> realtimeCallSessionMapper.exists(
+                new LambdaQueryWrapper<AiRealtimeCallSession>()
+                    .eq(AiRealtimeCallSession::getCustomerLegUuid, event.uuid())
+                    .in(AiRealtimeCallSession::getSessionState, AI_REALTIME_ACTIVE_STATES)));
+            return shouldYieldToAiRealtime(false, false, activeSession);
+        } catch (Exception exception) {
+            log.debug("Check active AI realtime session failed, nodeId={}, uuid={}, error={}",
+                event.nodeId(), event.uuid(), exception.getMessage());
+            return false;
+        }
+    }
+
+    private void relinquishGenericRecognition(TelephonyEvent event) {
+        RecognitionWatch removed = recognitionWatches.remove(watchKey(event.nodeId(), event.uuid()));
+        boolean markerPresent = false;
+        try {
+            String key = activeKey(event.uuid());
+            markerPresent = RedisUtils.isExistsObject(key);
+            if (markerPresent) {
+                RedisUtils.deleteObject(key);
+            }
+        } catch (Exception exception) {
+            log.debug("Clear generic realtime ASR marker failed, nodeId={}, uuid={}, error={}",
+                event.nodeId(), event.uuid(), exception.getMessage());
+        }
+        log.info("Generic realtime ASR yielded to AI realtime session, nodeId={}, uuid={}, removedWatch={}, removedMarker={}",
+            event.nodeId(), event.uuid(), removed != null, markerPresent);
+    }
+
+    static boolean shouldYieldToAiRealtime(boolean explicitlyActive, boolean ownershipPresent,
+                                           boolean activeSessionPresent) {
+        return explicitlyActive || ownershipPresent || activeSessionPresent;
     }
 
     @Scheduled(fixedDelayString = "${ai.unimrcp.channel-probe-interval-ms:2000}")

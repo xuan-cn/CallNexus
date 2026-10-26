@@ -50,7 +50,9 @@ public class AliyunDashScopeRealtimeSpeechProvider
     private static final String DEFAULT_FILE_ASR_MODEL = "qwen3-asr-flash";
     private static final String DEFAULT_REALTIME_ASR_MODEL = "qwen3-asr-flash-realtime";
     private static final String DEFAULT_TTS_MODEL = "qwen3-tts-flash-realtime";
-    private static final int REALTIME_CONNECT_TIMEOUT_SECONDS = 5;
+    // TLS/WebSocket setup can exceed five seconds under transient network or provider load.
+    // Keep the provider timeout as the effective lower value, but allow a practical upper bound.
+    private static final int REALTIME_CONNECT_TIMEOUT_SECONDS = 15;
 
     @Override
     public String providerType() {
@@ -361,6 +363,8 @@ public class AliyunDashScopeRealtimeSpeechProvider
         private final StreamingTtsListener listener;
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean finishing = new AtomicBoolean();
+        private final AtomicBoolean firstAudioReceived = new AtomicBoolean();
+        private final AtomicBoolean completed = new AtomicBoolean();
 
         private DashScopeTtsSession(AiSpeechProvider provider, StreamingTtsRequest request,
                                     StreamingTtsListener listener) {
@@ -393,8 +397,14 @@ public class AliyunDashScopeRealtimeSpeechProvider
         protected void handle(JsonNode event) {
             String type = event.path("type").asText();
             switch (type) {
-                case "session.updated" -> ready.countDown();
+                case "session.updated" -> {
+                    log.info("百炼实时 TTS 会话配置完成，providerCode={}", provider.getProviderCode());
+                    ready.countDown();
+                }
+                case "input_text_buffer.committed" ->
+                    log.info("百炼实时 TTS 文本已提交，providerCode={}", provider.getProviderCode());
                 case "response.created" -> {
+                    log.info("百炼实时 TTS 已创建响应，providerCode={}", provider.getProviderCode());
                     if (started.compareAndSet(false, true)) {
                         listener.onStarted();
                     }
@@ -402,14 +412,18 @@ public class AliyunDashScopeRealtimeSpeechProvider
                 case "response.audio.delta" -> {
                     String audio = event.path("delta").asText(event.path("audio").asText(""));
                     if (StringUtils.isNotBlank(audio)) {
+                        if (firstAudioReceived.compareAndSet(false, true)) {
+                            log.info("百炼实时 TTS 已收到首包音频，providerCode={}", provider.getProviderCode());
+                        }
                         listener.onAudio(Base64.getDecoder().decode(audio));
                     }
                 }
-                case "response.audio.done" -> {
-                    started.set(false);
-                    listener.onCompleted();
+                case "response.audio.done", "response.done" -> complete(type);
+                case "session.finished" -> {
+                    log.info("百炼实时 TTS 会话已结束，providerCode={}，receivedAudio={}",
+                        provider.getProviderCode(), firstAudioReceived.get());
+                    closeSocket();
                 }
-                case "session.finished" -> closeSocket();
                 case "error" -> fail(errorMessage(event));
                 default -> log.trace("忽略百炼实时 TTS 事件，type={}", type);
             }
@@ -444,6 +458,15 @@ public class AliyunDashScopeRealtimeSpeechProvider
         @Override
         protected void fail(String message) {
             listener.onError("百炼实时 TTS 失败：" + message);
+        }
+
+        private void complete(String eventType) {
+            log.info("百炼实时 TTS 响应完成，providerCode={}，eventType={}，receivedAudio={}",
+                provider.getProviderCode(), eventType, firstAudioReceived.get());
+            started.set(false);
+            if (completed.compareAndSet(false, true)) {
+                listener.onCompleted();
+            }
         }
 
         private String voice() {

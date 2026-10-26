@@ -1,14 +1,19 @@
 package org.dromara.ai.service;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 
+import java.time.LocalDateTime;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("dev")
 class AiRealtimeMrcpEventServiceTest {
 
     @Test
@@ -43,18 +48,100 @@ class AiRealtimeMrcpEventServiceTest {
         assertFalse(AiRealtimeMrcpEventService.matchesSpeakCompletion(second, lateEvent));
         assertFalse(AiRealtimeMrcpEventService.matchesSpeakCompletion(second, null));
         assertTrue(AiRealtimeMrcpEventService.matchesSpeakCompletion(second, currentEvent));
+        assertTrue(AiRealtimeMrcpEventService.matchesSpeakCompletion(second + " ", currentEvent));
+    }
+
+    @Test
+    void shouldTreatEnteringParkAsOpeningPlaybackBoundary() {
+        assertTrue(AiRealtimeMrcpEventService.isOpeningParkEntered("CHANNEL_EXECUTE", "park"));
+        assertTrue(AiRealtimeMrcpEventService.isOpeningParkEntered("CHANNEL_EXECUTE", "PARK"));
+        assertFalse(AiRealtimeMrcpEventService.isOpeningParkEntered("CHANNEL_EXECUTE_COMPLETE", "park"));
+        assertFalse(AiRealtimeMrcpEventService.isOpeningParkEntered("CHANNEL_EXECUTE", "speak"));
+    }
+
+    @Test
+    void shouldOnlyRecognizeDuringOpeningWhenOpeningBargeInIsEnabled() {
+        assertFalse(AiRealtimeMrcpEventService.shouldStartRecognitionDuringPlayback(true, false, false, true));
+        assertFalse(AiRealtimeMrcpEventService.shouldStartRecognitionDuringPlayback(true, true, false, true));
+        assertTrue(AiRealtimeMrcpEventService.shouldStartRecognitionDuringPlayback(true, true, true, true));
+        assertFalse(AiRealtimeMrcpEventService.shouldStartRecognitionDuringPlayback(true, true, true, false));
+    }
+
+    @Test
+    void shouldOnlyListenDuringOrdinaryPlaybackWhenBargeInIsEnabled() {
+        assertTrue(AiRealtimeMrcpEventService.shouldStartRecognitionDuringPlayback(false, true, false, true));
+        assertFalse(AiRealtimeMrcpEventService.shouldStartRecognitionDuringPlayback(false, false, true, true));
+    }
+
+    @Test
+    void shouldMatchAudioReadyToCurrentSpeechSegment() {
+        AiRealtimeMrcpEventService.ActiveSpeak active = new AiRealtimeMrcpEventService.ActiveSpeak(
+            "turn-2", 3, "您好", 1L, 1L, false, false);
+
+        assertTrue(AiRealtimeMrcpEventService.matchesAudioReady(active, "turn-2", 3));
+        assertFalse(AiRealtimeMrcpEventService.matchesAudioReady(active, "turn-1", 3));
+        assertFalse(AiRealtimeMrcpEventService.matchesAudioReady(active, "turn-2", 2));
+    }
+
+    @Test
+    void shouldFallbackOnlyWhenWebSocketCompletesBeforeAudioIsReady() {
+        assertTrue(AiRealtimeMrcpEventService.shouldFallbackBeforeCompleting(VoiceTransport.WS, false));
+        assertFalse(AiRealtimeMrcpEventService.shouldFallbackBeforeCompleting(VoiceTransport.WS, true));
+        assertFalse(AiRealtimeMrcpEventService.shouldFallbackBeforeCompleting(VoiceTransport.HTTP, false));
+    }
+
+    @Test
+    void shouldAcceptFirstSpeakCompletionWithoutRelyingOnApplicationDataFormat() {
+        AiRealtimeMrcpEventService.ActiveSpeak opening = new AiRealtimeMrcpEventService.ActiveSpeak(
+            "opening", 1, "开场白", 1L, 1L, true, false);
+        AiRealtimeMrcpEventService.ActiveSpeak reply = new AiRealtimeMrcpEventService.ActiveSpeak(
+            "turn-2", 2, "当前回复", 1L, 2L, false, false);
+
+        assertTrue(AiRealtimeMrcpEventService.shouldAcceptSpeakCompletion(opening, null, null, null, null));
+        assertFalse(AiRealtimeMrcpEventService.shouldAcceptSpeakCompletion(opening, null, null, null, "unexpected"));
+        assertFalse(AiRealtimeMrcpEventService.shouldAcceptSpeakCompletion(reply, null, null, null, "previous"));
+    }
+
+    @Test
+    void shouldCorrelateSpeakCompletionByTurnSegmentAndGeneration() {
+        AiRealtimeMrcpEventService.ActiveSpeak active = new AiRealtimeMrcpEventService.ActiveSpeak(
+            "turn-7", 3, "当前回复", 1L, 9L, false, false);
+
+        assertTrue(AiRealtimeMrcpEventService.shouldAcceptSpeakCompletion(
+            active, "turn-7", 3, 9L, null));
+        assertFalse(AiRealtimeMrcpEventService.shouldAcceptSpeakCompletion(
+            active, "turn-6", 3, 9L, "当前回复"));
+        assertFalse(AiRealtimeMrcpEventService.shouldAcceptSpeakCompletion(
+            active, "turn-7", 2, 9L, "当前回复"));
+        assertFalse(AiRealtimeMrcpEventService.shouldAcceptSpeakCompletion(
+            active, "turn-7", 3, 8L, "当前回复"));
+        assertTrue(AiRealtimeMrcpEventService.shouldAcceptSpeakCompletion(
+            active, "turn-7", 3, 9L, "上一轮回复"));
+    }
+
+    @Test
+    void shouldIdentifyDuplicateRecognitionByEventInsteadOfText() {
+        assertEquals("sequence:17", AiRealtimeMrcpEventService.recognitionEventKey(
+            Map.of("Event-Sequence", "17", "CallNexus-Event-Body", "没有。")));
+        assertEquals("sequence:18", AiRealtimeMrcpEventService.recognitionEventKey(
+            Map.of("Event-Sequence", "18", "CallNexus-Event-Body", "没有。")));
+        assertEquals("timestamp:1792030536483100:channel:asr-1", AiRealtimeMrcpEventService.recognitionEventKey(
+            Map.of("Event-Date-Timestamp", "1792030536483100", "Channel-Identifier", "asr-1")));
+        assertNull(AiRealtimeMrcpEventService.recognitionEventKey(Map.of()));
     }
 
     @Test
     void shouldBoundWebSocketCompletionFallbackWithoutCuttingLongSpeech() {
-        assertEquals(5000L,
+        assertEquals(12000L,
             AiRealtimeMrcpEventService.resolveSpeakCompletionTimeout(VoiceTransport.WS, 4380L, 5000L));
         assertEquals(15000L,
             AiRealtimeMrcpEventService.resolveSpeakCompletionTimeout(VoiceTransport.WS, 4380L, 180000L));
-        assertEquals(42000L,
+        assertEquals(63000L,
             AiRealtimeMrcpEventService.resolveSpeakCompletionTimeout(VoiceTransport.WS, 42000L, 5000L));
-        assertEquals(4380L,
+        assertEquals(9380L,
             AiRealtimeMrcpEventService.resolveSpeakCompletionTimeout(VoiceTransport.HTTP, 4380L, 180000L));
+        assertEquals(32580L,
+            AiRealtimeMrcpEventService.resolveSpeakCompletionTimeout(VoiceTransport.WS, 21720L, 12000L));
     }
 
     @Test
@@ -65,6 +152,15 @@ class AiRealtimeMrcpEventServiceTest {
             + "核实完成后，我们会第一时间处理您的案件。感谢您的配合！";
 
         assertEquals(36160L, AiRealtimeMrcpEventService.estimateSpeakDelay(text));
+    }
+
+    @Test
+    void shouldCalculatePlaybackWatchdogFromPcmDuration() {
+        assertEquals(1000L, AiRealtimeMrcpEventService.pcmDurationMillis(16000L, 8000));
+        assertEquals(30000L,
+            AiRealtimeMrcpEventService.resolvePlaybackCompletionTimeout(16000L, 8000, 30000L));
+        assertEquals(90000L,
+            AiRealtimeMrcpEventService.resolvePlaybackCompletionTimeout(960000L, 8000, 30000L));
     }
 
     @Test
@@ -95,5 +191,35 @@ class AiRealtimeMrcpEventServiceTest {
         assertFalse(AiRealtimeMrcpEventService.controlBargeInAvailable(2, 2, now, 0L, cooldown));
         assertFalse(AiRealtimeMrcpEventService.controlBargeInAvailable(1, 2, now, now - cooldown + 1L, cooldown));
         assertTrue(AiRealtimeMrcpEventService.controlBargeInAvailable(1, 2, now, now - cooldown, cooldown));
+    }
+
+    @Test
+    void shouldKeepLatestRecognitionUntilRuntimeIsReady() {
+        AiRealtimeMrcpEventService.DeferredRecognitionSlot slot =
+            new AiRealtimeMrcpEventService.DeferredRecognitionSlot();
+        LocalDateTime firstAt = LocalDateTime.of(2026, 10, 21, 15, 45, 33);
+        LocalDateTime secondAt = firstAt.plusSeconds(12);
+
+        slot.offer(new AiRealtimeMrcpEventService.DeferredRecognition("生病。", 100L, firstAt, true));
+        slot.offer(new AiRealtimeMrcpEventService.DeferredRecognition("眼科。", 200L, secondAt, true));
+
+        AiRealtimeMrcpEventService.DeferredRecognition pending = slot.poll();
+        assertEquals("眼科。", pending.text());
+        assertEquals(200L, pending.receivedAtNanos());
+        assertEquals(secondAt, pending.recognizedAt());
+        assertTrue(pending.transcriptPersisted());
+        assertNull(slot.poll());
+    }
+
+    @Test
+    void shouldClearDeferredRecognitionWhenCallEnds() {
+        AiRealtimeMrcpEventService.DeferredRecognitionSlot slot =
+            new AiRealtimeMrcpEventService.DeferredRecognitionSlot();
+        slot.offer(new AiRealtimeMrcpEventService.DeferredRecognition(
+            "需要。", 100L, LocalDateTime.now(), false));
+
+        slot.clear();
+
+        assertNull(slot.poll());
     }
 }

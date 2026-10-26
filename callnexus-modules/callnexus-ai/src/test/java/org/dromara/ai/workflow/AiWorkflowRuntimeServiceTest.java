@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -131,6 +132,10 @@ class AiWorkflowRuntimeServiceTest {
         AiWorkflowVoiceExecutionResponse waitingInput = service.voiceTtsCompleted(voiceStarted.getExecutionId());
         assertThat(waitingInput.getStatus()).isEqualTo("WAITING_INPUT");
         assertThat(waitingInput.getActionType()).isEqualTo("WAIT_INPUT");
+
+        // Final ASR text can arrive just after the configured input deadline. As long as the
+        // voice execution is still waiting on the same token, it must remain processable.
+        storedWait[0].setExpiresAt(LocalDateTime.now().minusSeconds(1));
 
         AiWorkflowVoiceExecutionResponse secondSpeak = service.voiceInput(
             voiceStarted.getExecutionId(), "voice-turn-1", "需要");

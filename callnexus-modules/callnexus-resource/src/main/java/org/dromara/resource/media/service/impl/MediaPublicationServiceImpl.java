@@ -20,6 +20,7 @@ import org.dromara.resource.media.mapper.MediaAssetVersionMapper;
 import org.dromara.resource.media.mapper.MediaNodeSyncMapper;
 import org.dromara.resource.media.mapper.MediaPublicationMapper;
 import org.dromara.resource.media.service.MediaPublicationService;
+import org.dromara.resource.media.support.AudioMetadataExtractor;
 import org.dromara.resource.media.config.MediaStorageProperties;
 import org.dromara.resource.media.domain.MediaAssetCategory;
 import org.dromara.resource.node.domain.FreeSwitchNode;
@@ -67,6 +68,7 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
             throw new ServiceException("声音文件格式不支持");
         }
         String checksum = checksum(file);
+        AudioMetadataExtractor.AudioMetadata metadata = AudioMetadataExtractor.extract(file);
         SysOssVo oss = ossService.upload(file, storageProperties.getConfigKey(MediaAssetCategory.valueOf(asset.getCategory())));
         Integer next = versionMapper.selectList(new LambdaQueryWrapper<MediaAssetVersion>().eq(MediaAssetVersion::getMediaId, mediaId)
             .orderByDesc(MediaAssetVersion::getVersionNo).last("limit 1")).stream().findFirst().map(v -> v.getVersionNo() + 1).orElse(1);
@@ -78,7 +80,10 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
         version.setContentType(file.getContentType());
         version.setFileSuffix(oss.getFileSuffix());
         version.setFileSize(file.getSize());
-        version.setDurationMs(durationMs);
+        version.setDurationMs(metadata.durationMs());
+        version.setSampleRate(metadata.sampleRate());
+        version.setChannels(metadata.channels());
+        version.setCodec(metadata.codec());
         version.setChecksum(checksum);
         version.setStatus("DRAFT");
         versionMapper.insert(version);
@@ -88,7 +93,10 @@ public class MediaPublicationServiceImpl implements MediaPublicationService {
         asset.setContentType(file.getContentType());
         asset.setFileSuffix(oss.getFileSuffix());
         asset.setFileSize(file.getSize());
-        asset.setDurationMs(durationMs);
+        asset.setDurationMs(metadata.durationMs());
+        asset.setSampleRate(metadata.sampleRate());
+        asset.setChannels(metadata.channels());
+        asset.setCodec(metadata.codec());
         asset.setPublishStatus("DRAFT");
         assetMapper.updateById(asset);
         return version.getId();

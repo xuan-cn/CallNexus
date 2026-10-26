@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.resource.event.queue.AgentRingSignalEvent;
+import org.dromara.resource.acl.service.FreeSwitchAclQueryService;
 import org.dromara.resource.freeswitch.xml.FreeSwitchXmlRenderer;
 import org.dromara.resource.freeswitch.xml.directory.FreeSwitchDirectoryXmlRenderer;
 import org.dromara.resource.freeswitch.xml.gateway.FreeSwitchGatewayXmlRenderer;
@@ -12,6 +13,7 @@ import org.dromara.resource.gateway.service.FreeSwitchGatewayQueryService;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
 import org.dromara.resource.sip.service.SipAccountQueryService;
+import org.dromara.resource.sip.security.service.SipRegistrationSecurityService;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
@@ -20,6 +22,8 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class DirectoryUserXmlCurlHandler implements FreeSwitchXmlCurlHandler {
     private final SipAccountQueryService sipAccountQueryService;
+    private final SipRegistrationSecurityService registrationSecurityService;
+    private final FreeSwitchAclQueryService aclQueryService;
     private final FreeSwitchDirectoryXmlRenderer directoryXmlRenderer;
     private final FreeSwitchGatewayQueryService gatewayQueryService;
     private final FreeSwitchGatewayXmlRenderer gatewayXmlRenderer;
@@ -74,10 +78,36 @@ public class DirectoryUserXmlCurlHandler implements FreeSwitchXmlCurlHandler {
                 request.tenantId(), domain, requestedUser, authUsername, request.firstValue("action"));
             return FreeSwitchXmlRenderer.notFound();
         }
+        String sourceIp = firstNonBlank(request.firstValue("sip_network_ip"),
+            request.firstValue("network_addr"), request.firstValue("variable_sip_network_ip"));
+        if (registrationSecurityService.isBlocked(request.tenantId(), resolveNodeId(request), account.getId(), sourceIp)) {
+            log.warn("FreeSWITCH Directory 拒绝已被安全策略封禁的SIP注册，tenantId={}，domain={}，extension={}，sourceIp={}",
+                request.tenantId(), domain, account.getExtension(), sourceIp);
+            return FreeSwitchXmlRenderer.notFound();
+        }
         log.debug("FreeSWITCH Directory 身份解析成功，tenantId={}，domain={}，user={}，authUsername={}，extension={}，resolvedAuthUsername={}",
             request.tenantId(), domain, requestedUser, authUsername,
             account.getExtension(), account.getAuthUsername());
-        return directoryXmlRenderer.render(account);
+        String authAclCode = aclQueryService.findPublishedSipEndpointAclCode(
+            request.tenantId(), account.getNodeId());
+        return directoryXmlRenderer.render(account, authAclCode);
+    }
+
+    private Long resolveNodeId(FreeSwitchXmlCurlRequest request) {
+        try {
+            return nodeQueryService.resolveEnabledNodeId(request.tenantId(), null,
+                request.firstValue("FreeSWITCH-IPv4"), request.firstValue("FreeSWITCH-Hostname"), null);
+        } catch (Exception exception) {
+            log.warn("SIP注册安全检查无法解析FreeSWITCH节点，tenantId={}，domain={}", request.tenantId(), request.domain());
+            return null;
+        }
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (StringUtils.isNotBlank(value)) return value;
+        }
+        return null;
     }
 
     private boolean matchesRequestedUser(SipDirectoryAccountResponse account, String requestedUser) {

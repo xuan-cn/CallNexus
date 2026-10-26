@@ -12,6 +12,9 @@ import org.dromara.resource.sip.domain.request.SipAccountPageQuery;
 import org.dromara.resource.sip.domain.request.UpdateSipAccountRequest;
 import org.dromara.resource.sip.domain.response.SipAccountResponse;
 import org.dromara.resource.sip.service.SipAccountApplicationService;
+import org.dromara.resource.sip.security.domain.request.SipRegistrationLockRequest;
+import org.dromara.resource.sip.security.domain.response.SipRegistrationSecuritySummaryResponse;
+import org.dromara.resource.sip.security.service.SipRegistrationSecurityService;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -19,6 +22,7 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class SipAccountController {
     private final SipAccountApplicationService applicationService;
+    private final SipRegistrationSecurityService securityService;
 
     @GetMapping
     @SaCheckPermission("callcenter:sip-account:list")
@@ -55,6 +59,26 @@ public class SipAccountController {
     @SaCheckPermission("callcenter:sip-account:delete")
     public R<Void> delete(@PathVariable Long id) {
         applicationService.delete(id);
+        return R.ok();
+    }
+
+    @GetMapping("/{id}/security-summary")
+    @SaCheckPermission("callcenter:sip-account:query")
+    public R<SipRegistrationSecuritySummaryResponse> securitySummary(@PathVariable Long id) {
+        return R.ok(securityService.summary(id));
+    }
+
+    @PostMapping("/{id}/security-lock")
+    @SaCheckPermission("callcenter:sip-security:block")
+    public R<Void> securityLock(@PathVariable Long id, @Valid @RequestBody(required = false) SipRegistrationLockRequest request) {
+        securityService.manualLock(id, request == null ? null : request.getReason());
+        return R.ok();
+    }
+
+    @PostMapping("/{id}/security-unlock")
+    @SaCheckPermission("callcenter:sip-security:unblock")
+    public R<Void> securityUnlock(@PathVariable Long id, @Valid @RequestBody(required = false) SipRegistrationLockRequest request) {
+        securityService.unlock(id, request == null ? null : request.getReason());
         return R.ok();
     }
 }

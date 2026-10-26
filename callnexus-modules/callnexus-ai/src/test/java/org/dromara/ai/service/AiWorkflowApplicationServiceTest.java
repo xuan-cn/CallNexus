@@ -111,6 +111,50 @@ class AiWorkflowApplicationServiceTest {
     }
 
     @Test
+    void acceptsInternalRetryWithUnifiedContinueBranch() {
+        mockDraft("""
+            {"schemaVersion":"1.0","nodes":[
+              {"id":"start","type":"START","config":{}},
+              {"id":"intent","type":"INTENT_ROUTE","config":{"intentCodes":["CONFIRM_AGREE"],
+                "fallbackMode":"FIXED_RETRY","fallbackText":"请再确认一次","maxRetries":2,"retryLimitAction":"CONTINUE"}},
+              {"id":"confirm","type":"END","config":{}},
+              {"id":"continue","type":"END","config":{}}
+            ],"edges":[
+              {"source":"start","target":"intent"},
+              {"source":"intent","target":"confirm","condition":"CONFIRM_AGREE"},
+              {"source":"intent","target":"continue","condition":"CONTINUE"}
+            ]}
+            """);
+
+        AiWorkflowValidationResponse result = service.validateDraft(1L);
+
+        assertThat(result.isValid()).isTrue();
+        assertThat(result.getErrors()).isEmpty();
+    }
+
+    @Test
+    void acceptsInheritedPolicyWithDirectLimitActionAndNoFallbackEdge() {
+        mockDraft("""
+            {"schemaVersion":"1.0","settings":{"intentFallback":{
+              "fallbackMode":"FIXED_RETRY","fallbackText":"请再确认一次","maxRetries":2,
+              "retryLimitAction":"TRANSFER_EXTENSION","limitExtension":"1001"
+            }},"nodes":[
+              {"id":"start","type":"START","config":{}},
+              {"id":"intent","type":"INTENT_ROUTE","config":{"intentCodes":["CONFIRM_AGREE"],"fallbackMode":"INHERIT"}},
+              {"id":"confirm","type":"END","config":{}}
+            ],"edges":[
+              {"source":"start","target":"intent"},
+              {"source":"intent","target":"confirm","condition":"CONFIRM_AGREE"}
+            ]}
+            """);
+
+        AiWorkflowValidationResponse result = service.validateDraft(1L);
+
+        assertThat(result.isValid()).isTrue();
+        assertThat(result.getErrors()).isEmpty();
+    }
+
+    @Test
     void acceptsCycleControlledByLoopLimit() {
         mockDraft("""
             {"schemaVersion":"1.0","nodes":[

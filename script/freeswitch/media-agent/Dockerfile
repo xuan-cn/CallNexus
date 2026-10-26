@@ -1,6 +1,6 @@
 FROM alpine:3.21
 
-RUN apk add --no-cache bash curl ffmpeg jq ca-certificates
+RUN apk add --no-cache bash curl ffmpeg jq ca-certificates iptables
 COPY media-agent.sh /usr/local/bin/media-agent
 RUN chmod +x /usr/local/bin/media-agent
 

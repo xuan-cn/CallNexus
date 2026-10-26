@@ -11,6 +11,7 @@ import org.dromara.report.domain.request.ReportQuery;
 import org.dromara.report.domain.response.AgentReportResponse;
 import org.dromara.report.domain.response.AgentPresenceLogResponse;
 import org.dromara.report.domain.response.CallDetailResponse;
+import org.dromara.report.domain.response.CallAgentStatisticResponse;
 import org.dromara.report.domain.response.CallDistributionResponse;
 import org.dromara.report.domain.response.OverviewKpiResponse;
 import org.dromara.report.domain.response.OutboundAttemptDetailResponse;
@@ -20,6 +21,7 @@ import org.dromara.report.domain.response.OutboundTrendPointResponse;
 import org.dromara.report.domain.response.QueueReportResponse;
 import org.dromara.report.domain.response.ReportAgentOptionResponse;
 import org.dromara.report.domain.response.ReportQueueOptionResponse;
+import org.dromara.report.domain.response.ReportSkillGroupOptionResponse;
 import org.dromara.report.domain.response.ReportTrendPointResponse;
 import org.dromara.report.domain.response.SatisfactionDetailResponse;
 import org.dromara.report.domain.response.SatisfactionRankingResponse;
@@ -51,6 +53,10 @@ public class ReportService {
         return mapper.selectQueueOptions(TenantHelper.getTenantId());
     }
 
+    public List<ReportSkillGroupOptionResponse> skillGroupOptions() {
+        return mapper.selectSkillGroupOptions(TenantHelper.getTenantId());
+    }
+
     public SatisfactionSummaryResponse satisfactionSummary(ReportQuery query) {
         ReportRangeResolver.ReportRange range = range(query);
         return mapper.selectSatisfactionSummary(TenantHelper.getTenantId(), range.startAt(), range.endAt(),
@@ -68,13 +74,11 @@ public class ReportService {
         Map<String, SatisfactionTrendPointResponse> existing = new HashMap<>();
         rows.forEach(row -> existing.put(row.getBucket(), row));
         List<SatisfactionTrendPointResponse> result = new ArrayList<>();
-        LocalDateTime cursor = range.startAt();
+        LocalDateTime cursor = firstTrendBucket(range.startAt(), granularity);
         while (cursor.isBefore(range.endAt())) {
-            String bucket = "HOUR".equals(granularity)
-                ? String.format("%s %02d:00", cursor.toLocalDate(), cursor.getHour())
-                : cursor.toLocalDate().toString();
+            String bucket = trendBucket(cursor, granularity);
             result.add(existing.getOrDefault(bucket, emptySatisfactionTrend(bucket)));
-            cursor = "HOUR".equals(granularity) ? cursor.plusHours(1) : cursor.plusDays(1);
+            cursor = nextTrendBucket(cursor, granularity);
         }
         return result;
     }
@@ -121,7 +125,7 @@ public class ReportService {
     public OverviewKpiResponse overview(ReportQuery query) {
         ReportRangeResolver.ReportRange range = range(query);
         return mapper.selectOverview(TenantHelper.getTenantId(), range.startAt(), range.endAt(), LocalDateTime.now(),
-            query.getDirection(), query.getAgentId(), query.getKeyword());
+            query.getDirection(), query.getAgentId(), query.getSkillGroupId(), query.getKeyword());
     }
 
     public List<ReportTrendPointResponse> trend(ReportQuery query) {
@@ -129,14 +133,14 @@ public class ReportService {
         String granularity = granularity(query, range);
         List<ReportTrendPointResponse> rows = mapper.selectTrend(
             TenantHelper.getTenantId(), range.startAt(), range.endAt(), granularity,
-            query.getDirection(), query.getAgentId(), query.getKeyword());
+            query.getDirection(), query.getAgentId(), query.getSkillGroupId(), query.getKeyword());
         return fillTrend(rows, range, granularity);
     }
 
     public List<CallDistributionResponse> distribution(ReportQuery query) {
         ReportRangeResolver.ReportRange range = range(query);
         return mapper.selectDistribution(TenantHelper.getTenantId(), range.startAt(), range.endAt(),
-            query.getDirection(), query.getAgentId(), query.getKeyword());
+            query.getDirection(), query.getAgentId(), query.getSkillGroupId(), query.getKeyword());
     }
 
     public void exportOverview(ReportQuery query, HttpServletResponse response) {
@@ -147,7 +151,8 @@ public class ReportService {
         ReportRangeResolver.ReportRange range = range(query);
         Page<CallDetailResponse> page = mapper.selectCallDetails(
             pageQuery.build(), TenantHelper.getTenantId(), range.startAt(), range.endAt(), LocalDateTime.now(),
-            query.getDirection(), query.getAnswerResult(), query.getAgentId(), query.getQueueId(), query.getKeyword());
+            query.getDirection(), query.getAnswerResult(), query.getAgentId(), query.getQueueId(),
+            query.getSkillGroupId(), query.getKeyword());
         return TableDataInfo.build(page);
     }
 
@@ -155,8 +160,27 @@ public class ReportService {
         ReportRangeResolver.ReportRange range = range(query);
         Page<CallDetailResponse> page = mapper.selectCallDetails(
             exportPage(), TenantHelper.getTenantId(), range.startAt(), range.endAt(), LocalDateTime.now(),
-            query.getDirection(), query.getAnswerResult(), query.getAgentId(), query.getQueueId(), query.getKeyword());
+            query.getDirection(), query.getAnswerResult(), query.getAgentId(), query.getQueueId(),
+            query.getSkillGroupId(), query.getKeyword());
         ExcelUtil.exportExcel(page.getRecords(), "通话明细", CallDetailResponse.class, response);
+    }
+
+    public TableDataInfo<CallAgentStatisticResponse> callStatistics(ReportQuery query, PageQuery pageQuery) {
+        ReportRangeResolver.ReportRange range = range(query);
+        String granularity = granularity(query, range);
+        Page<CallAgentStatisticResponse> page = mapper.selectCallAgentStatistics(
+            pageQuery.build(), TenantHelper.getTenantId(), range.startAt(), range.endAt(), LocalDateTime.now(),
+            granularity, query.getDirection(), query.getAgentId(), query.getSkillGroupId(), query.getKeyword());
+        return TableDataInfo.build(page);
+    }
+
+    public void exportCallStatistics(ReportQuery query, HttpServletResponse response) {
+        ReportRangeResolver.ReportRange range = range(query);
+        String granularity = granularity(query, range);
+        Page<CallAgentStatisticResponse> page = mapper.selectCallAgentStatistics(
+            exportPage(), TenantHelper.getTenantId(), range.startAt(), range.endAt(), LocalDateTime.now(),
+            granularity, query.getDirection(), query.getAgentId(), query.getSkillGroupId(), query.getKeyword());
+        ExcelUtil.exportExcel(page.getRecords(), "坐席话务统计", CallAgentStatisticResponse.class, response);
     }
 
     public List<AgentReportResponse> agents(ReportQuery query) {
@@ -264,13 +288,11 @@ public class ReportService {
         Map<String, ReportTrendPointResponse> existing = new HashMap<>();
         rows.forEach(row -> existing.put(row.getBucket(), row));
         List<ReportTrendPointResponse> result = new ArrayList<>();
-        LocalDateTime cursor = range.startAt();
+        LocalDateTime cursor = firstTrendBucket(range.startAt(), granularity);
         while (cursor.isBefore(range.endAt())) {
-            String bucket = "HOUR".equals(granularity)
-                ? String.format("%s %02d:00", cursor.toLocalDate(), cursor.getHour())
-                : cursor.toLocalDate().toString();
+            String bucket = trendBucket(cursor, granularity);
             result.add(existing.getOrDefault(bucket, emptyTrend(bucket)));
-            cursor = "HOUR".equals(granularity) ? cursor.plusHours(1) : cursor.plusDays(1);
+            cursor = nextTrendBucket(cursor, granularity);
         }
         return result;
     }
@@ -285,19 +307,37 @@ public class ReportService {
         return point;
     }
 
+    private String trendBucket(LocalDateTime value, String granularity) {
+        if ("HOUR".equals(granularity)) {
+            return String.format("%s %02d:00", value.toLocalDate(), value.getHour());
+        }
+        if ("MONTH".equals(granularity)) {
+            return String.format("%d-%02d", value.getYear(), value.getMonthValue());
+        }
+        return value.toLocalDate().toString();
+    }
+
+    private LocalDateTime nextTrendBucket(LocalDateTime value, String granularity) {
+        if ("HOUR".equals(granularity)) return value.plusHours(1);
+        if ("MONTH".equals(granularity)) return value.plusMonths(1);
+        return value.plusDays(1);
+    }
+
+    private LocalDateTime firstTrendBucket(LocalDateTime value, String granularity) {
+        return "MONTH".equals(granularity) ? value.withDayOfMonth(1) : value;
+    }
+
     private List<OutboundTrendPointResponse> fillOutboundTrend(List<OutboundTrendPointResponse> rows,
                                                                 ReportRangeResolver.ReportRange range,
                                                                 String granularity) {
         Map<String, OutboundTrendPointResponse> existing = new HashMap<>();
         rows.forEach(row -> existing.put(row.getBucket(), row));
         List<OutboundTrendPointResponse> result = new ArrayList<>();
-        LocalDateTime cursor = range.startAt();
+        LocalDateTime cursor = firstTrendBucket(range.startAt(), granularity);
         while (cursor.isBefore(range.endAt())) {
-            String bucket = "HOUR".equals(granularity)
-                ? String.format("%s %02d:00", cursor.toLocalDate(), cursor.getHour())
-                : cursor.toLocalDate().toString();
+            String bucket = trendBucket(cursor, granularity);
             result.add(existing.getOrDefault(bucket, emptyOutboundTrend(bucket)));
-            cursor = "HOUR".equals(granularity) ? cursor.plusHours(1) : cursor.plusDays(1);
+            cursor = nextTrendBucket(cursor, granularity);
         }
         return result;
     }

@@ -171,7 +171,7 @@ public class AiRealtimeSessionManager {
             AiConversationStartResponse start = agentService.startRealtimeConversation(runtime.claims.agentId());
             runtime.entity.setConversationId(Long.valueOf(String.valueOf(start.getConversation().getId())));
             sessionMapper.updateById(runtime.entity);
-            play(runtime, start.getMessage().getContent(), null);
+            play(runtime, start.getMessage() == null ? null : start.getMessage().getContent(), null);
             log.info("AI 实时语音会话建立，sessionId={}，businessCallId={}，customerLegUuid={}，agentId={}",
                 runtime.entity.getId(), runtime.entity.getBusinessCallId(), runtime.entity.getCustomerLegUuid(), runtime.claims.agentId());
         } catch (Exception exception) {

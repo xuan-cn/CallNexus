@@ -1,8 +1,10 @@
 -- CallNexus MySQL 业务数据清理脚本
--- 目标：清空全部 CallNexus 业务数据及用户配置，仅保留内置基础数据、user_id=1 和 role_id=1。
+-- 基于 2026-10-14 实际数据库 call_nexus（MySQL 8.0.46）校验。
+-- 目标：清空全部 CallNexus 业务数据及用户配置，仅保留内置基础数据、user_id=1/callnexus 和 role_id=1/superadmin。
 -- 注意：应用代码硬编码 user_id=1 为超级管理员，不能改成其他用户 ID。
 -- 执行前必须停止 CallNexus、SnailJob、media-agent 及 FreeSWITCH 事件消费，并完成数据库备份。
 -- TRUNCATE 会隐式提交，执行后不能通过 ROLLBACK 恢复。
+-- 本脚本只清理数据库；不会删除 OSS/本地磁盘中的录音和媒体文件，也不会删除 Qdrant 中的向量集合。
 
 -- 完成备份并确认下面查询结果后，将 NO 改为 YES，再执行完整脚本。
 SET @confirm_cleanup = 'NO';
@@ -15,6 +17,28 @@ WHERE user_id = 1;
 SELECT role_id, tenant_id, role_name, role_key, status, del_flag
 FROM sys_role
 WHERE role_id = 1;
+
+-- 预览即将清空的业务表及估算行数。cc_callcenter_config_definition、cc_area_code、
+-- cc_mobile_number_segment 和 flow_spel 属于系统基础定义，不在清理范围内。
+SELECT table_name, table_rows
+FROM information_schema.tables
+WHERE table_schema = DATABASE()
+  AND table_type = 'BASE TABLE'
+  AND (
+    (LEFT(table_name, 3) = 'cc_' AND table_name NOT IN (
+      'cc_callcenter_config_definition', 'cc_area_code', 'cc_mobile_number_segment'
+    ))
+    OR (LEFT(table_name, 5) = 'flow_' AND table_name <> 'flow_spel')
+    OR table_name IN (
+      'sj_distributed_lock', 'sj_job_executor', 'sj_job_log_message', 'sj_job_summary',
+      'sj_job_task', 'sj_job_task_batch', 'sj_retry', 'sj_retry_dead_letter',
+      'sj_retry_summary', 'sj_retry_task', 'sj_retry_task_log_message',
+      'sj_server_node', 'sj_workflow_task_batch',
+      'sys_oper_log', 'sys_logininfor', 'sys_notice', 'sys_social',
+      'gen_table', 'gen_table_column', 'test_demo', 'test_tree', 'test_leave'
+    )
+  )
+ORDER BY table_name;
 
 DROP PROCEDURE IF EXISTS cleanup_callnexus_business_data;
 DELIMITER $$
@@ -37,11 +61,12 @@ BEGIN
             -- 清空流程定义、分类和全部流程实例，保留系统内置 SpEL 组件定义。
             OR (LEFT(table_name, 5) = 'flow_' AND table_name <> 'flow_spel')
 
-            -- SnailJob 仅清运行历史，保留调度任务、重试场景、通知和节点配置。
+            -- SnailJob 清运行历史及临时执行节点，保留任务、重试场景、通知和命名空间配置。
             OR table_name IN (
+                'sj_distributed_lock', 'sj_job_executor',
                 'sj_job_log_message', 'sj_job_summary', 'sj_job_task', 'sj_job_task_batch',
                 'sj_retry', 'sj_retry_dead_letter', 'sj_retry_summary', 'sj_retry_task',
-                'sj_retry_task_log_message', 'sj_workflow_task_batch',
+                'sj_retry_task_log_message', 'sj_server_node', 'sj_workflow_task_batch',
 
                 -- 系统运行日志及演示数据
                 'sys_oper_log', 'sys_logininfor', 'sys_notice', 'sys_social',
@@ -60,11 +85,17 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '终止清理：请先备份并将 @confirm_cleanup 设置为 YES';
     END IF;
 
-    IF (SELECT COUNT(*) FROM sys_user WHERE user_id = 1 AND del_flag = '0') <> 1 THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '终止清理：不存在有效的 user_id=1 超级管理员';
+    IF DATABASE() <> 'call_nexus' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '终止清理：当前数据库不是 call_nexus';
+    END IF;
+    IF (SELECT COUNT(*) FROM sys_user WHERE user_id = 1 AND user_name = 'callnexus' AND del_flag = '0') <> 1 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '终止清理：不存在有效的 user_id=1 / callnexus 管理员';
     END IF;
     IF (SELECT COUNT(*) FROM sys_role WHERE role_id = 1 AND role_key = 'superadmin' AND del_flag = '0') <> 1 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '终止清理：不存在有效的 role_id=1 / superadmin 角色';
+    END IF;
+    IF (SELECT COUNT(*) FROM sys_dept WHERE dept_id = 100 AND del_flag = '0') <> 1 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '终止清理：不存在有效的根部门 dept_id=100';
     END IF;
 
     SET FOREIGN_KEY_CHECKS = 0;
@@ -85,10 +116,12 @@ BEGIN
     -- 清理用户、角色关联，仅恢复 user_id=1 与 role_id=1 的关系。
     DELETE FROM sys_user_role;
     INSERT INTO sys_user_role (user_id, role_id) VALUES (1, 1);
-    DELETE FROM sys_user_post WHERE user_id <> 1;
-    DELETE FROM sys_role_dept WHERE role_id <> 1;
+    DELETE FROM sys_user_post;
+    DELETE FROM sys_role_dept;
     DELETE FROM sys_role_menu WHERE role_id <> 1;
-    UPDATE sys_dept SET leader = NULL WHERE leader IS NOT NULL AND leader <> 1;
+    UPDATE sys_user SET dept_id = 100 WHERE user_id = 1;
+    UPDATE sys_dept SET leader = NULL WHERE leader IS NOT NULL;
+    DELETE FROM sys_dept WHERE dept_id <> 100;
     DELETE FROM sys_user WHERE user_id <> 1;
     DELETE FROM sys_role WHERE role_id <> 1;
 
@@ -110,6 +143,7 @@ DROP PROCEDURE cleanup_callnexus_business_data;
 SELECT user_id, tenant_id, user_name, nick_name, status, del_flag FROM sys_user;
 SELECT role_id, tenant_id, role_name, role_key, status, del_flag FROM sys_role;
 SELECT user_id, role_id FROM sys_user_role;
+SELECT dept_id, parent_id, dept_name, leader, status, del_flag FROM sys_dept;
 
 -- 检查是否还有业务运行表残留数据；结果应全部为 0。
 SELECT
@@ -118,6 +152,7 @@ SELECT
     (SELECT COUNT(*) FROM cc_call_session) AS call_count,
     (SELECT COUNT(*) FROM cc_agent) AS agent_count,
     (SELECT COUNT(*) FROM cc_sip_account) AS sip_account_count,
+    (SELECT COUNT(*) FROM cc_sip_registration_block) AS sip_registration_block_count,
     (SELECT COUNT(*) FROM cc_skill_group) AS skill_group_count,
     (SELECT COUNT(*) FROM cc_freeswitch_node) AS freeswitch_node_count,
     (SELECT COUNT(*) FROM cc_ai_knowledge_base) AS knowledge_base_count,

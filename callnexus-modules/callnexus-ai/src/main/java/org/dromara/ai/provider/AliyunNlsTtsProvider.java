@@ -47,7 +47,9 @@ public class AliyunNlsTtsProvider implements TtsProvider {
     public TtsGenerateResult generate(AiSpeechProvider provider, TtsGenerateRequest request) {
         Dict config = config(provider);
         String appKey = firstText(config, "appKey", "app_key", "app-key");
-        String accessKeyId = provider.getAuthHeaderName();
+        String accessKeyId = StringUtils.blankToDefault(
+            firstText(config, "accessKeyId", "access_key_id", "access-key-id"),
+            provider.getAuthHeaderName());
         String accessKeySecret = provider.getAuthToken();
         if (StringUtils.isBlank(appKey)) {
             throw new ServiceException("阿里云 NLS AppKey 不能为空，请在备注 JSON 中配置 appKey");
@@ -125,6 +127,9 @@ public class AliyunNlsTtsProvider implements TtsProvider {
         try {
             AccessToken accessToken = new AccessToken(accessKeyId, accessKeySecret);
             accessToken.apply();
+            if (StringUtils.isBlank(accessToken.getToken())) {
+                throw new ServiceException("获取阿里云 NLS Token 失败，请检查 AccessKey ID、AccessKey Secret 及 RAM 权限");
+            }
             if (accessToken.getExpireTime() > 0 && accessToken.getExpireTime() < Instant.now().getEpochSecond()) {
                 throw new ServiceException("阿里云 NLS Token 已过期");
             }

@@ -35,8 +35,65 @@ class ReportRangeResolverTest {
     }
 
     @Test
+    void preservesSecondPrecisionAndIncludesSelectedEndSecond() {
+        ReportQuery query = new ReportQuery();
+        query.setBeginDate("2026-09-08 10:15:20");
+        query.setEndDate("2026-09-08 11:25:30");
+
+        ReportRangeResolver.ReportRange range = ReportRangeResolver.resolve(query, LocalDate.of(2026, 9, 8));
+
+        assertEquals("2026-09-08T10:15:20", range.startAt().toString());
+        assertEquals("2026-09-08T11:25:31", range.endAt().toString());
+    }
+
+    @Test
+    void rejectsReversedSecondPrecisionRange() {
+        ReportQuery query = new ReportQuery();
+        query.setBeginDate("2026-09-08 11:25:31");
+        query.setEndDate("2026-09-08 11:25:30");
+
+        assertThrows(ServiceException.class,
+            () -> ReportRangeResolver.resolve(query, LocalDate.of(2026, 9, 8)));
+    }
+
+    @Test
     void rejectsRangesLongerThanThirtyOneDays() {
         ReportQuery query = new ReportQuery();
+        query.setBeginDate("2026-08-01");
+        query.setEndDate("2026-09-01");
+
+        assertThrows(ServiceException.class,
+            () -> ReportRangeResolver.resolve(query, LocalDate.of(2026, 9, 8)));
+    }
+
+    @Test
+    void allowsDailyBucketsForUpToOneYear() {
+        ReportQuery query = new ReportQuery();
+        query.setGranularity("DAY");
+        query.setBeginDate("2026-01-01");
+        query.setEndDate("2026-12-31");
+
+        ReportRangeResolver.ReportRange range = ReportRangeResolver.resolve(query, LocalDate.of(2026, 12, 31));
+
+        assertEquals("DAY", ReportRangeResolver.granularity(query, range));
+    }
+
+    @Test
+    void allowsMonthlyBucketsForUpToFiveYears() {
+        ReportQuery query = new ReportQuery();
+        query.setGranularity("MONTH");
+        query.setBeginDate("2022-01-01");
+        query.setEndDate("2026-12-31");
+
+        ReportRangeResolver.ReportRange range = ReportRangeResolver.resolve(query, LocalDate.of(2026, 12, 31));
+
+        assertEquals("MONTH", ReportRangeResolver.granularity(query, range));
+    }
+
+    @Test
+    void keepsHourlyBucketsLimitedToThirtyOneDays() {
+        ReportQuery query = new ReportQuery();
+        query.setGranularity("HOUR");
         query.setBeginDate("2026-08-01");
         query.setEndDate("2026-09-01");
 

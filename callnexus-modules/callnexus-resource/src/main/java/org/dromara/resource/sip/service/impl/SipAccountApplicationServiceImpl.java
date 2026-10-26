@@ -22,6 +22,8 @@ import org.dromara.resource.sip.domain.response.SipDirectoryAccountResponse;
 import org.dromara.resource.sip.domain.response.SipRegistrationConfigResponse;
 import org.dromara.resource.sip.mapper.SipAccountMapper;
 import org.dromara.resource.sip.service.SipAccountApplicationService;
+import org.dromara.resource.sip.security.domain.response.SipRegistrationSecuritySummaryResponse;
+import org.dromara.resource.sip.security.service.SipRegistrationSecurityService;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -38,6 +40,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     private final SipAccountMapper mapper;
     private final FreeSwitchNodeMapper nodeMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final SipRegistrationSecurityService securityService;
 
     @Override
     public TableDataInfo<SipAccountResponse> page(SipAccountPageQuery query, PageQuery pageQuery) {
@@ -167,6 +170,9 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     @Override
     public SipRegistrationConfigResponse getRegistrationConfig(Long id) {
         SipAccount account = requireEnabledAccount(id);
+        if (securityService.isBlocked(account.getTenantId(), account.getNodeId(), account.getId(), null)) {
+            throw new ServiceException("SIP 分机已被安全策略锁定");
+        }
         FreeSwitchNode node = requireEnabledNode(account.getNodeId());
         SipRegistrationConfigResponse response = new SipRegistrationConfigResponse();
         response.setSipAccountId(account.getId());
@@ -265,6 +271,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         if (account == null) return null;
         SipDirectoryAccountResponse response = new SipDirectoryAccountResponse();
         response.setId(account.getId());
+        response.setNodeId(account.getNodeId());
         response.setExtension(account.getExtension());
         response.setAuthUsername(account.getAuthUsername());
         response.setDisplayName(account.getDisplayName());
@@ -355,6 +362,13 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         response.setDisplayName(account.getDisplayName());
         response.setDomain(account.getDomain());
         response.setEnabled(account.getEnabled());
+        SipRegistrationSecuritySummaryResponse security = securityService.summary(account.getId());
+        response.setSecurityStatus(security.getStatus());
+        response.setRecentFailureCount(security.getRecentFailureCount());
+        response.setLastFailureAt(security.getLastFailureAt());
+        response.setLastFailureIp(security.getLastFailureIp());
+        response.setLockedUntil(security.getLockedUntil());
+        response.setLockReason(security.getLockReason());
         response.setVersion(account.getVersion());
         response.setCreateTime(account.getCreateTime());
         return response;
