@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -47,6 +48,8 @@ public class AliyunDashScopeRealtimeSpeechProvider
     private static final String TYPE = "ALIYUN_DASHSCOPE";
     private static final String DEFAULT_REALTIME_ENDPOINT = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime";
     private static final String DEFAULT_ASR_ENDPOINT_TEMPLATE = "https://{workspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions";
+    private static final String DEFAULT_QWEN_AUDIO_ASR_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+    private static final String QWEN_AUDIO_ASR_ENDPOINT_TEMPLATE = "https://{workspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
     private static final String DEFAULT_FILE_ASR_MODEL = "qwen3-asr-flash";
     private static final String DEFAULT_REALTIME_ASR_MODEL = "qwen3-asr-flash-realtime";
     private static final String DEFAULT_TTS_MODEL = "qwen3-tts-flash-realtime";
@@ -69,13 +72,21 @@ public class AliyunDashScopeRealtimeSpeechProvider
             .connectTimeout(Duration.ofSeconds(timeout(provider)))
             .version(HttpClient.Version.HTTP_1_1)
             .build();
-        String payload = JsonUtils.toJsonString(buildFileAsrPayload(provider, request));
-        HttpRequest httpRequest = HttpRequest.newBuilder(URI.create(fileAsrEndpoint(provider)))
+        String model = fileAsrModel(provider);
+        boolean qwenAudioAsr = isQwenAudioAsrModel(model);
+        PreparedAudio preparedAudio = qwenAudioAsr ? prepareQwenAudio(request) : null;
+        String payload = JsonUtils.toJsonString(qwenAudioAsr
+            ? buildQwenAudioAsrPayload(provider, request, preparedAudio)
+            : buildFileAsrPayload(provider, request));
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(URI.create(fileAsrEndpoint(provider, model)))
             .timeout(Duration.ofSeconds(timeout(provider)))
             .header("Authorization", "Bearer " + provider.getAuthToken())
             .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
-            .build();
+            .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8));
+        if (qwenAudioAsr) {
+            requestBuilder.header("X-DashScope-SSE", "disable");
+        }
+        HttpRequest httpRequest = requestBuilder.build();
         HttpResponse<String> response;
         try {
             response = client.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -89,13 +100,18 @@ public class AliyunDashScopeRealtimeSpeechProvider
             throw new ServiceException("百炼 ASR HTTP 调用失败，HTTP状态码=" + response.statusCode()
                 + "，响应=" + StringUtils.blankToDefault(response.body(), ""));
         }
-        return parseFileAsrResponse(response.body());
+        return qwenAudioAsr ? parseQwenAudioAsrResponse(response.body()) : parseFileAsrResponse(response.body());
     }
 
     @Override
     public StreamingAsrSession open(AiSpeechProvider provider, StreamingAsrRequest request,
                                     StreamingAsrListener listener) {
         requireApiKey(provider);
+        if ("qwen-audio-3.1-asr-flash-message".equals(realtimeAsrModel(provider))) {
+            QwenMessageAsrSession session = new QwenMessageAsrSession(provider, request, listener);
+            session.connect();
+            return session;
+        }
         DashScopeAsrSession session = new DashScopeAsrSession(provider, request, listener);
         session.connect();
         return session;
@@ -124,6 +140,10 @@ public class AliyunDashScopeRealtimeSpeechProvider
         }
 
         protected void connect(String endpoint, String model) {
+            connect(endpoint, model, true);
+        }
+
+        protected void connect(String endpoint, String model, boolean realtimeProtocol) {
             int connectTimeoutSeconds = Math.min(timeout(provider), REALTIME_CONNECT_TIMEOUT_SECONDS);
             try {
                 WebSocket.Builder builder = HttpClient.newBuilder()
@@ -131,13 +151,15 @@ public class AliyunDashScopeRealtimeSpeechProvider
                     .build()
                     .newWebSocketBuilder()
                     .connectTimeout(Duration.ofSeconds(connectTimeoutSeconds))
-                    .header("Authorization", "Bearer " + provider.getAuthToken())
-                    .header("OpenAI-Beta", "realtime=v1");
+                    .header("Authorization", "Bearer " + provider.getAuthToken());
+                if (realtimeProtocol) {
+                    builder.header("OpenAI-Beta", "realtime=v1");
+                }
                 String workspaceId = option(provider.getCredentialJson(), "workspaceId");
                 if (StringUtils.isNotBlank(workspaceId)) {
                     builder.header("X-DashScope-WorkSpace", workspaceId);
                 }
-                socket = builder.buildAsync(URI.create(withModel(endpoint, model)), this).join();
+                socket = builder.buildAsync(URI.create(realtimeProtocol ? withModel(endpoint, model) : endpoint), this).join();
                 if (!ready.await(connectTimeoutSeconds, TimeUnit.SECONDS)) {
                     throw new ServiceException("连接百炼实时语音服务超时");
                 }
@@ -159,10 +181,19 @@ public class AliyunDashScopeRealtimeSpeechProvider
         }
 
         protected void sendText(String payload) {
+            sendFrame(payload, null);
+        }
+
+        protected void sendBinary(byte[] audio) {
+            sendFrame(null, audio.clone());
+        }
+
+        private void sendFrame(String payload, byte[] audio) {
             CompletableFuture<Void> current;
             synchronized (sendLock) {
                 outbound = outbound.handle((ignored, failure) -> null)
-                    .thenCompose(ignored -> socket.sendText(payload, true))
+                    .thenCompose(ignored -> audio == null ? socket.sendText(payload, true)
+                        : socket.sendBinary(ByteBuffer.wrap(audio), true))
                     .thenAccept(ignored -> { });
                 current = outbound;
             }
@@ -358,6 +389,144 @@ public class AliyunDashScopeRealtimeSpeechProvider
         }
     }
 
+    private static final class QwenMessageAsrSession extends AbstractDashScopeSession implements StreamingAsrSession {
+        private final StreamingAsrRequest request;
+        private final StreamingAsrListener listener;
+        private final String taskId = UUID.randomUUID().toString();
+        private final List<AsrSegment> segments = new ArrayList<>();
+        private final AtomicBoolean finishing = new AtomicBoolean();
+        private final AtomicBoolean terminal = new AtomicBoolean();
+
+        private QwenMessageAsrSession(AiSpeechProvider provider, StreamingAsrRequest request,
+                                      StreamingAsrListener listener) {
+            super(provider);
+            this.request = request;
+            this.listener = listener;
+        }
+
+        private void connect() {
+            if (sampleRate(provider, request.sampleRate()) != 16000) {
+                throw new ServiceException("Qwen Audio ASR Message requires 16000 Hz audio");
+            }
+            connect(qwenMessageAsrEndpoint(provider), realtimeAsrModel(provider), false);
+        }
+
+        @Override
+        protected void onConnected() {
+            sendText(JsonUtils.toJsonString(buildQwenMessageRunTask(provider, request, taskId)));
+        }
+
+        @Override
+        protected void handle(JsonNode event) {
+            if (!taskId.equals(event.path("header").path("task_id").asText())) {
+                return;
+            }
+            switch (event.path("header").path("event").asText()) {
+                case "task-started" -> ready.countDown();
+                case "result-generated" -> {
+                    AsrSegment segment = parseQwenMessageSegment(event);
+                    if (segment != null && !terminal.get()) {
+                        if (segment.finalResult()) {
+                            segments.add(segment);
+                        }
+                        if (segment.finalResult() || Boolean.TRUE.equals(provider.getAsrEnableIntermediateResult())) {
+                            listener.onResult(segment);
+                        }
+                    }
+                }
+                case "task-finished" -> {
+                    if (terminal.compareAndSet(false, true)) {
+                        List<AsrSegment> result = List.copyOf(segments);
+                        listener.onCompleted(new AsrTranscribeResult(
+                            String.join("\n", result.stream().map(AsrSegment::text).toList()), result));
+                    }
+                    closeSocket();
+                }
+                case "task-failed" -> {
+                    fail(event.path("header").path("error_code").asText() + ": "
+                        + event.path("header").path("error_message").asText());
+                    closeSocket();
+                    ready.countDown();
+                }
+                default -> { }
+            }
+        }
+
+        @Override
+        public synchronized void send(byte[] audioBytes) {
+            if (!closed.get() && !finishing.get() && audioBytes != null && audioBytes.length > 0) {
+                sendBinary(audioBytes);
+            }
+        }
+
+        @Override
+        public synchronized void finish() {
+            if (!closed.get() && finishing.compareAndSet(false, true)) {
+                sendText(JsonUtils.toJsonString(Map.of("header", Map.of("action", "finish-task",
+                    "task_id", taskId, "streaming", "duplex"), "payload", Map.of("input", Map.of()))));
+            }
+        }
+
+        @Override
+        public void close() {
+            terminal.set(true);
+            closeSocket();
+        }
+
+        @Override
+        protected void fail(String message) {
+            if (terminal.compareAndSet(false, true)) {
+                listener.onError("Bailian ASR Message: " + message);
+            }
+        }
+    }
+
+    static Map<String, Object> buildQwenMessageRunTask(AiSpeechProvider provider,
+                                                       StreamingAsrRequest request, String taskId) {
+        Map<String, Object> parameters = new LinkedHashMap<>();
+        parameters.put("format", StringUtils.blankToDefault(request.format(), "pcm"));
+        parameters.put("sample_rate", 16000);
+        parameters.put("intermediate_result_enabled", Boolean.TRUE.equals(provider.getAsrEnableIntermediateResult()));
+        parameters.put("heartbeat", true);
+        parameters.put("max_sentence_silence", provider.getAsrSilenceTimeoutMs() == null ? 800
+            : Math.max(200, Math.min(6000, provider.getAsrSilenceTimeoutMs())));
+        Dict options = dict(provider.getAsrOptionsJson());
+        for (String key : List.of("disfluency_removal_enabled", "keep_dialect", "vad_model",
+            "vocabulary_id", "vocabulary", "language_hints", "speech_noise_threshold")) {
+            if (options.containsKey(key)) {
+                parameters.put(key, options.get(key));
+            }
+        }
+        return Map.of("header", Map.of("action", "run-task", "task_id", taskId, "streaming", "duplex"),
+            "payload", Map.of("task_group", "audio", "task", "asr", "function", "recognition",
+                "model", realtimeAsrModel(provider), "parameters", parameters, "input", Map.of()));
+    }
+
+    static AsrSegment parseQwenMessageSegment(JsonNode event) {
+        JsonNode sentence = event.path("payload").path("output").path("sentence");
+        String text = sentence.path("text").asText("").trim();
+        if (sentence.path("heartbeat").asBoolean() || text.isEmpty()) {
+            return null;
+        }
+        return new AsrSegment(sentence.path("sentence_id").asInt(),
+            sentence.path("begin_time").isNumber() ? sentence.path("begin_time").asInt() : null,
+            sentence.path("end_time").isNumber() ? sentence.path("end_time").asInt() : null,
+            text, null, sentence.path("sentence_end").asBoolean());
+    }
+
+    static String qwenMessageAsrEndpoint(AiSpeechProvider provider) {
+        if ("CUSTOM".equalsIgnoreCase(provider.getStreamingAsrEndpointMode())
+            && StringUtils.isNotBlank(provider.getStreamingAsrEndpointUrl())) {
+            return provider.getStreamingAsrEndpointUrl().trim();
+        }
+        String workspace = option(provider.getCredentialJson(), "workspaceId");
+        if (StringUtils.isBlank(workspace)) {
+            workspace = option(provider.getCredentialJson(), "workspace_id");
+        }
+        return StringUtils.isBlank(workspace) ? "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+            : "wss://" + workspace + ".cn-beijing.maas.aliyuncs.com/api-ws/v1/inference";
+    }
+
     private static final class DashScopeTtsSession extends AbstractDashScopeSession implements StreamingTtsSession {
         private final StreamingTtsRequest request;
         private final StreamingTtsListener listener;
@@ -517,6 +686,72 @@ public class AliyunDashScopeRealtimeSpeechProvider
         return payload;
     }
 
+    static Map<String, Object> buildQwenAudioAsrPayload(AiSpeechProvider provider, AsrTranscribeRequest request,
+                                                         PreparedAudio audio) {
+        Map<String, Object> inputAudio = new LinkedHashMap<>();
+        inputAudio.put("data", audioDataUrl(audio.bytes(), audio.format()));
+
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("type", "input_audio");
+        content.put("input_audio", inputAudio);
+
+        Map<String, Object> message = new LinkedHashMap<>();
+        message.put("role", "user");
+        message.put("content", List.of(content));
+
+        Map<String, Object> parameters = new LinkedHashMap<>();
+        parameters.put("format", audio.format());
+        parameters.put("sample_rate", String.valueOf(audio.sampleRate()));
+        applyQwenAudioAsrOptions(parameters, provider.getAsrOptionsJson());
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("model", fileAsrModel(provider));
+        payload.put("input", Map.of("messages", List.of(message)));
+        payload.put("parameters", parameters);
+        return payload;
+    }
+
+    private static void applyQwenAudioAsrOptions(Map<String, Object> parameters, String json) {
+        Dict options = dict(json);
+        if (options == null) {
+            return;
+        }
+        copy(options, parameters, "speaker_diarization_enabled", "keep_dialect", "vocabulary_id",
+            "vocabulary", "language_hints");
+        if (!parameters.containsKey("language_hints") && options.containsKey("languageHints")) {
+            parameters.put("language_hints", options.get("languageHints"));
+        }
+    }
+
+    static PreparedAudio prepareQwenAudio(AsrTranscribeRequest request) {
+        String format = StringUtils.blankToDefault(request.format(), "wav").trim().toLowerCase(Locale.ROOT);
+        int sampleRate = request.sampleRate() == null || request.sampleRate() <= 0 ? 8000 : request.sampleRate();
+        if ("pcm".equals(format) || "l16".equals(format)) {
+            return new PreparedAudio(pcmToWav(request.audioBytes(), sampleRate), "wav", sampleRate);
+        }
+        return new PreparedAudio(request.audioBytes(), format, sampleRate);
+    }
+
+    private static byte[] pcmToWav(byte[] pcm, int sampleRate) {
+        int dataLength = pcm.length;
+        ByteBuffer wav = ByteBuffer.allocate(44 + dataLength).order(ByteOrder.LITTLE_ENDIAN);
+        wav.put("RIFF".getBytes(StandardCharsets.US_ASCII));
+        wav.putInt(36 + dataLength);
+        wav.put("WAVE".getBytes(StandardCharsets.US_ASCII));
+        wav.put("fmt ".getBytes(StandardCharsets.US_ASCII));
+        wav.putInt(16);
+        wav.putShort((short) 1);
+        wav.putShort((short) 1);
+        wav.putInt(sampleRate);
+        wav.putInt(sampleRate * 2);
+        wav.putShort((short) 2);
+        wav.putShort((short) 16);
+        wav.put("data".getBytes(StandardCharsets.US_ASCII));
+        wav.putInt(dataLength);
+        wav.put(pcm);
+        return wav.array();
+    }
+
     private static Map<String, Object> asrOptions(AiSpeechProvider provider) {
         Map<String, Object> result = new LinkedHashMap<>();
         Dict options = dict(provider.getAsrOptionsJson());
@@ -552,7 +787,10 @@ public class AliyunDashScopeRealtimeSpeechProvider
         };
     }
 
-    private static String fileAsrEndpoint(AiSpeechProvider provider) {
+    private static String fileAsrEndpoint(AiSpeechProvider provider, String model) {
+        if (isQwenAudioAsrModel(model)) {
+            return qwenAudioAsrEndpoint(provider);
+        }
         String endpoint = StringUtils.blankToDefault(provider.getRecordingAsrEndpointUrl(), DEFAULT_ASR_ENDPOINT_TEMPLATE).trim();
         String workspaceId = option(provider.getCredentialJson(), "workspaceId");
         if (StringUtils.isBlank(workspaceId)) {
@@ -571,6 +809,27 @@ public class AliyunDashScopeRealtimeSpeechProvider
             return endpoint + "chat/completions";
         }
         return endpoint;
+    }
+
+    static boolean isQwenAudioAsrModel(String model) {
+        return StringUtils.isNotBlank(model)
+            && model.trim().toLowerCase(Locale.ROOT).startsWith("qwen-audio-")
+            && model.trim().toLowerCase(Locale.ROOT).contains("-asr-");
+    }
+
+    static String qwenAudioAsrEndpoint(AiSpeechProvider provider) {
+        String configured = StringUtils.trimToNull(provider.getRecordingAsrEndpointUrl());
+        if ("CUSTOM".equalsIgnoreCase(provider.getRecordingAsrEndpointMode()) && configured != null) {
+            return configured;
+        }
+        String workspaceId = option(provider.getCredentialJson(), "workspaceId");
+        if (StringUtils.isBlank(workspaceId)) {
+            workspaceId = option(provider.getCredentialJson(), "workspace_id");
+        }
+        if (StringUtils.isNotBlank(workspaceId)) {
+            return QWEN_AUDIO_ASR_ENDPOINT_TEMPLATE.replace("{workspaceId}", workspaceId.trim());
+        }
+        return DEFAULT_QWEN_AUDIO_ASR_ENDPOINT;
     }
 
     private static String audioDataUrl(byte[] audioBytes, String format) {
@@ -613,6 +872,36 @@ public class AliyunDashScopeRealtimeSpeechProvider
             throw new ServiceException("百炼 ASR 未返回识别文本，响应=" + body);
         }
         return new AsrTranscribeResult(text, List.of(new AsrSegment(0, null, null, text, null, true)));
+    }
+
+    static AsrTranscribeResult parseQwenAudioAsrResponse(String body) {
+        JsonNode root;
+        try {
+            root = JsonUtils.getObjectMapper().readTree(body);
+        } catch (Exception exception) {
+            throw new ServiceException("解析百炼 Qwen Audio ASR 响应失败：" + exception.getMessage());
+        }
+        String error = root.path("error").path("message").asText("");
+        if (StringUtils.isBlank(error)) {
+            error = root.path("message").asText("");
+        }
+        String code = root.path("code").asText(root.path("error").path("code").asText(""));
+        if (StringUtils.isNotBlank(code) || root.has("error")) {
+            throw new ServiceException("百炼 Qwen Audio ASR 返回错误，code=" + code + "，message=" + error);
+        }
+        JsonNode output = root.path("output");
+        String text = output.path("text").asText("").trim();
+        if (StringUtils.isBlank(text)) {
+            text = output.path("sentence").path("text").asText("").trim();
+        }
+        if (StringUtils.isBlank(text)) {
+            throw new ServiceException("百炼 Qwen Audio ASR 未返回识别文本，响应=" + body);
+        }
+        JsonNode sentence = output.path("sentence");
+        Integer index = sentence.has("sentence_id") ? sentence.path("sentence_id").asInt() : 0;
+        Integer begin = sentence.has("begin_time") ? sentence.path("begin_time").asInt() : null;
+        Integer end = sentence.has("end_time") ? sentence.path("end_time").asInt() : null;
+        return new AsrTranscribeResult(text, List.of(new AsrSegment(index, begin, end, text, null, true)));
     }
 
     private static void copy(Dict source, Map<String, Object> target, String... keys) {
@@ -729,6 +1018,9 @@ public class AliyunDashScopeRealtimeSpeechProvider
     }
 
     private record WavAudio(byte[] pcm, int sampleRate) {
+    }
+
+    record PreparedAudio(byte[] bytes, String format, int sampleRate) {
     }
 
     private static String rootMessage(Throwable error) {

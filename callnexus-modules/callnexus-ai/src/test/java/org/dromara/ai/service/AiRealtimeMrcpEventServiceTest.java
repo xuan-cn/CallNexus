@@ -17,6 +17,69 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AiRealtimeMrcpEventServiceTest {
 
     @Test
+    void shouldUseCompletedApplicationInsteadOfConcurrentRecognitionChannelVariables() {
+        var application = AiRealtimeMrcpEventService.resolveEventApplication(Map.of(
+            "Application", "speak", "Application-Data", "unimrcp:profile|voice|opening",
+            "variable_current_application", "detect_speech",
+            "variable_current_application_data", "unimrcp grammar"));
+        assertEquals("speak", application.name());
+        assertEquals("unimrcp:profile|voice|opening", application.data());
+    }
+
+    @Test
+    void shouldNotCombineEventApplicationWithUnrelatedChannelApplicationData() {
+        var application = AiRealtimeMrcpEventService.resolveEventApplication(Map.of(
+            "Application", "speak", "variable_current_application_data", "unimrcp grammar"));
+        assertEquals("speak", application.name());
+        assertNull(application.data());
+        var fallback = AiRealtimeMrcpEventService.resolveEventApplication(Map.of(
+            "variable_current_application", "park", "variable_current_application_data", ""));
+        assertEquals("park", fallback.name());
+        assertNull(fallback.data());
+    }
+
+    @Test
+    void shouldNotControlOrInterruptAfterPlaybackHasCompleted() {
+        assertTrue(AiRealtimeMrcpEventService.hasInterruptiblePlayback(false, true, true, true));
+        assertFalse(AiRealtimeMrcpEventService.hasInterruptiblePlayback(false, false, true, true));
+        assertFalse(AiRealtimeMrcpEventService.hasInterruptiblePlayback(true, true, true, true));
+        assertFalse(AiRealtimeMrcpEventService.hasInterruptiblePlayback(false, true, false, true));
+        assertFalse(AiRealtimeMrcpEventService.hasInterruptiblePlayback(false, true, true, false));
+    }
+
+    @Test
+    void shouldResolveNodeControlWithoutChangingAssistantDefaults() {
+        var inherited = new AiRealtimeMrcpEventService.NodeBargeInPolicy(false, false,
+            "INTERRUPT", "assistant text", 2, 5000);
+        assertEquals(inherited, AiRealtimeMrcpEventService.resolveNodeBargeInPolicy(Map.of(), inherited));
+        var node = AiRealtimeMrcpEventService.resolveNodeBargeInPolicy(Map.of(
+            "nodeBargeInMode", "CONTROL_RESUME", "nodeControlText", "{{customer.name}} please wait",
+            "nodeControlMaxCount", 3, "nodeControlCooldownMs", 1200), inherited);
+        assertTrue(node.enabled());
+        assertTrue(node.openingEnabled());
+        assertEquals("CONTROL_RESUME", node.strategy());
+        assertEquals("{{customer.name}} please wait", node.text());
+        assertEquals(3, node.maxCount());
+        assertEquals(1200, node.cooldownMs());
+        assertFalse(inherited.enabled());
+    }
+
+    @Test
+    void shouldDisableNodeOrUsePlainInterruptionAndClampLimits() {
+        var inherited = new AiRealtimeMrcpEventService.NodeBargeInPolicy(true, true,
+            "CONTROL_RESUME", "assistant text", 2, 5000);
+        assertFalse(AiRealtimeMrcpEventService.resolveNodeBargeInPolicy(
+            Map.of("nodeBargeInMode", "DISABLED"), inherited).enabled());
+        var node = AiRealtimeMrcpEventService.resolveNodeBargeInPolicy(Map.of(
+            "nodeBargeInMode", "INTERRUPT", "nodeControlText", "", "nodeControlMaxCount", -1,
+            "nodeControlCooldownMs", 999999), inherited);
+        assertEquals("INTERRUPT", node.strategy());
+        assertEquals("assistant text", node.text());
+        assertEquals(1, node.maxCount());
+        assertEquals(60000, node.cooldownMs());
+    }
+
+    @Test
     void shouldMergeFollowupSegmentsWhileCurrentSegmentIsPlaying() {
         Deque<String> pending = new ArrayDeque<>();
         pending.add("如果您还想了解专业学费，");
@@ -172,14 +235,16 @@ class AiRealtimeMrcpEventServiceTest {
     }
 
     @Test
-    void shouldRequeueInterruptedSegmentBeforeRemainingSpeech() {
+    void shouldDiscardAllRemainingSpeechAndInvalidateOldModelStreamOnControlReplacement() {
         Deque<String> pending = new ArrayDeque<>();
+        pending.add("被打断的当前句。");
         pending.add("后续句子。");
+        java.util.concurrent.atomic.AtomicLong generation = new java.util.concurrent.atomic.AtomicLong(3L);
 
-        AiRealtimeMrcpEventService.requeueInterruptedSegment(pending, "被打断的当前句。");
+        AiRealtimeMrcpEventService.discardReplacedSpeech(pending, generation);
 
-        assertEquals("被打断的当前句。", pending.pollFirst());
-        assertEquals("后续句子。", pending.pollFirst());
+        assertTrue(pending.isEmpty());
+        assertEquals(4L, generation.get());
     }
 
     @Test

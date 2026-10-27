@@ -56,9 +56,11 @@ public class SpeechProviderDefinitionRegistry {
                     List.of("pcm"), List.of(8000, 16000, 24000),
                     qwen3Voices())),
             capability(SpeechCapability.RECORDING_ASR, "录音识别", "qwen3-asr-flash",
-                model("qwen3-asr-flash", "Qwen3 ASR Flash", true)),
+                model("qwen3-asr-flash", "Qwen3 ASR Flash", true),
+                model("qwen-audio-3.1-asr-flash", "Qwen Audio 3.1 ASR Flash", false)),
             capability(SpeechCapability.STREAMING_ASR, "实时语音识别", "qwen3-asr-flash-realtime",
-                model("qwen3-asr-flash-realtime", "Qwen3 ASR Flash Realtime", true))
+                model("qwen3-asr-flash-realtime", "Qwen3 ASR Flash Realtime", true),
+                model("qwen-audio-3.1-asr-flash-message", "Qwen Audio 3.1 ASR Flash Message", false))
         );
         return definition("ALIYUN_DASHSCOPE", "阿里云百炼", "千问语音合成与语音识别",
             List.of(secret("apiKey", "API Key", "请输入百炼 API Key", true),

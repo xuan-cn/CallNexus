@@ -256,6 +256,10 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
             }
             execution.setTotalNodeCount(execution.getTotalNodeCount() + 1);
             execution.setLastActiveAt(LocalDateTime.now());
+            if (Set.of("SPEAK", "SPEAK_RETRY", "SPEAK_ACTION", "STREAM_AI", "STREAM_AI_RETRY").contains(result.status())) {
+                context.playbackNodeId = node.path("id").asText();
+                context.playbackConfig = OBJECT_MAPPER.convertValue(node.path("config"), Map.class);
+            }
             switch (result.status()) {
                 case "CONTINUE" -> execution.setCurrentNodeId(nextNodeId(definition, node.path("id").asText(), result.branchValue()));
                 case "SPEAK" -> {
@@ -622,6 +626,8 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         result.setWorkflowVersionId(execution.getWorkflowVersionId());
         result.setStatus(execution.getStatus());
         result.setActionType(context.pendingActionType);
+        result.setPlaybackNodeId(context.playbackNodeId);
+        result.setPlaybackConfig(context.playbackConfig);
         result.setText(context.pendingActionText);
         result.setTarget(context.pendingActionTarget);
         result.setFailureMessage(execution.getFailureMessage());
@@ -656,6 +662,8 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         private Map<String, Object> variables = new LinkedHashMap<>();
         private List<String> outputMessages = new ArrayList<>();
         private String lastInput;
+        private String playbackNodeId;
+        private Map<String, Object> playbackConfig;
         private String pendingActionType;
         private String pendingActionText;
         private String pendingActionTarget;
