@@ -28,6 +28,8 @@ import org.dromara.ai.service.AiWorkflowRuntimeService;
 import org.dromara.ai.workflow.AiWorkflowNodeContext;
 import org.dromara.ai.workflow.AiWorkflowNodeHandlerRegistry;
 import org.dromara.ai.workflow.AiWorkflowNodeResult;
+import org.dromara.ai.workflow.AiWorkflowConversationRules;
+import org.dromara.ai.workflow.AiWorkflowAnswerPolicy;
 import org.dromara.common.core.exception.ServiceException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -57,6 +59,7 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
     private final AiWorkflowWaitMapper waitMapper;
     private final AiAgentWorkflowBindingMapper bindingMapper;
     private final AiWorkflowNodeHandlerRegistry handlerRegistry;
+    private final org.dromara.ai.workflow.AiConversationRuleMatcher ruleMatcher;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -102,6 +105,22 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         AiWorkflowVersion version = requireVersion(execution.getWorkflowVersionId());
         RuntimeContext context = readContext(execution.getContextJson());
         if (request.getInputId().equals(execution.getLastInputId())) return response(execution, version, context);
+        if ("PLAYBACK_COMPLETED".equals(request.getSignal()) && "WAITING_TTS".equals(execution.getStatus())) {
+            execution.setLastInputId(request.getInputId());
+            updateExecution(execution);
+            voiceTtsCompleted(executionId);
+            return execution(executionId);
+        }
+        if ("SILENCE".equals(request.getSignal())) {
+            signal(execution, version, context, request.getInputId(), "SILENCE");
+            return response(execution, version, context);
+        }
+        if ("INTERRUPT".equals(request.getSignal()) && "WAITING_TTS".equals(execution.getStatus())) {
+            voiceInput(executionId, request.getInputId(), request.getText());
+            return execution(executionId);
+        }
+        if (request.getSignal() != null && !request.getSignal().isBlank()) throw new ServiceException("不支持的测试事件");
+        if (request.getText() == null || request.getText().isBlank()) throw new ServiceException("客户输入不能为空");
         resumeInput(execution, version, context, request.getInputId(), request.getText());
         return response(execution, version, context);
     }
@@ -154,7 +173,21 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         AiWorkflowVersion version = requireVersion(execution.getWorkflowVersionId());
         RuntimeContext context = readContext(execution.getContextJson());
         if (inputId.equals(execution.getLastInputId())) return voiceResponse(execution, context);
+        if (isTerminal(execution.getStatus())) return voiceResponse(execution, context);
+        if (text == null || text.isBlank()) throw new ServiceException("客户输入不能为空");
         if ("WAITING_TTS".equals(execution.getStatus())) {
+            if (context.disclosureNodeId != null) {
+                if ("DISABLED".equals(context.playbackConfig.getOrDefault("disclosureBargeInMode", "DISABLED"))) return voiceResponse(execution, context);
+                resumeWait(executionId, "TTS", "INTERRUPTED");
+                context.variables.put("workflow.disclosure." + context.disclosureNodeId, "INTERRUPTED");
+                execution.setLastInputId(inputId);
+                execution.setTurnNo(execution.getTurnNo() + 1);
+                context.lastInput = text.trim();
+                JsonNode node = findNode(definition(version), context.disclosureNodeId);
+                if (!applyRule(execution, version, node, context, null, text)) replayDisclosure(execution, node, context, text);
+                persist(execution, context);
+                return voiceResponse(execution, context);
+            }
             resumeWait(executionId, "TTS", "INTERRUPTED");
             String afterTtsActionType = context.afterTtsActionType;
             String afterTtsActionTarget = context.afterTtsActionTarget;
@@ -184,6 +217,12 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         RuntimeContext context = readContext(execution.getContextJson());
         if (!"WAITING_TTS".equals(execution.getStatus())) return voiceResponse(execution, context);
         resumeWait(executionId, "TTS", "RESUMED");
+        if (context.disclosureNodeId != null) {
+            context.variables.put("workflow.disclosure." + context.disclosureNodeId,
+                "TEST".equals(execution.getChannelType()) ? "SIMULATED_COMPLETED" : "PLAYBACK_COMPLETED");
+            context.disclosureNodeId = null;
+            context.disclosureText = null;
+        }
         String afterTtsActionType = context.afterTtsActionType;
         String afterTtsActionTarget = context.afterTtsActionTarget;
         clearPendingAction(context);
@@ -206,6 +245,31 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AiWorkflowVoiceExecutionResponse voiceSignal(String executionId, String inputId, String event) {
+        AiWorkflowExecution execution = requireExecution(executionId);
+        RuntimeContext context = readContext(execution.getContextJson());
+        AiWorkflowVersion version = requireVersion(execution.getWorkflowVersionId());
+        if (!isTerminal(execution.getStatus()) && AiWorkflowConversationRules.match(AiWorkflowConversationRules.effective(definition(version),
+            findNode(definition(version), execution.getCurrentNodeId())), event, null) == null) return null;
+        signal(execution, version, context, inputId, event);
+        return voiceResponse(execution, context);
+    }
+
+    private void signal(AiWorkflowExecution execution, AiWorkflowVersion version, RuntimeContext context, String inputId, String event) {
+        if (!"SILENCE".equals(event)) throw new ServiceException("不支持的语音事件");
+        if (!"WAITING_INPUT".equals(execution.getStatus()) || inputId.equals(execution.getLastInputId())) return;
+        JsonNode node = findNode(definition(version), execution.getCurrentNodeId());
+        JsonNode rules = AiWorkflowConversationRules.effective(definition(version), node);
+        if (AiWorkflowConversationRules.match(rules, event, null) == null) return;
+        resumeWait(execution.getExecutionId(), "INPUT", "RESUMED");
+        execution.setLastInputId(inputId);
+        execution.setTurnNo(execution.getTurnNo() + 1);
+        applyRule(execution, version, node, context, event, "");
+        persist(execution, context);
+    }
+
+    @Override
     public AiWorkflowTestExecutionResponse execution(String executionId) {
         AiWorkflowExecution execution = requireExecution(executionId);
         return response(execution, requireVersion(execution.getWorkflowVersionId()), readContext(execution.getContextJson()));
@@ -217,6 +281,11 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         AiWorkflowExecution execution = requireExecution(executionId);
         if (isTerminal(execution.getStatus())) return;
         execution.setStatus("TERMINATED");
+        RuntimeContext context = readContext(execution.getContextJson());
+        if (context.disclosureNodeId != null) {
+            context.variables.put("workflow.disclosure." + context.disclosureNodeId, "ABORTED");
+            execution.setContextJson(writeContext(context));
+        }
         execution.setFailureMessage(trim(reason, 1000));
         execution.setEndedAt(LocalDateTime.now());
         execution.setLastActiveAt(LocalDateTime.now());
@@ -245,8 +314,21 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                     node, context.variables, context.lastInput, execution.getAiAgentId(), execution.getChannelType(),
                     workflowSettings(definition)));
                 context.variables.putAll(result.variableUpdates());
+                if ("DIALOGUE_STEP".equals(nodeType) && context.lastInput != null) {
+                    Object decision = result.variableUpdates().get("workflow.dialogue." + node.path("id").asText() + ".decision");
+                    String event = "OUT_OF_SCOPE".equals(decision) ? "OUT_OF_SCOPE" : "UNCLEAR".equals(decision) ? "INVALID" : null;
+                    if (decision != null && Set.of("EXACT", "KEYWORD", "INTENT", "SELECT", "CONFIRM", "DECLINE", "QUESTION").contains(decision)) {
+                        context.variables.put("workflow.rules." + node.path("id").asText() + ".INVALID.count", 0);
+                        context.variables.put("workflow.rules." + node.path("id").asText() + ".OUT_OF_SCOPE.count", 0);
+                    }
+                    if (event != null && applyRule(execution, version, node, context, event, context.lastInput)) {
+                        persist(execution, context);
+                        return;
+                    }
+                }
                 if (Set.of("SPEAK", "SPEAK_RETRY", "SPEAK_ACTION").contains(result.status()) && result.output() != null) {
                     context.outputMessages.add(result.output());
+                    context.variables.put("workflow.ruleQuestion", result.output());
                 }
                 logNode(execution, node, result, context.lastInput, startedAt, null);
             } catch (Exception exception) {
@@ -264,7 +346,14 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                 case "CONTINUE" -> execution.setCurrentNodeId(nextNodeId(definition, node.path("id").asText(), result.branchValue()));
                 case "SPEAK" -> {
                     execution.setCurrentNodeId(nextNodeId(definition, node.path("id").asText(), result.branchValue()));
-                    if (!"TEST".equals(execution.getChannelType())) {
+                    boolean required = node.path("config").path("requiredDisclosure").asBoolean(false);
+                    if (required) {
+                        context.disclosureNodeId = node.path("id").asText();
+                        context.disclosureText = result.output();
+                        context.disclosureInterruptions = 0;
+                        context.variables.put("workflow.disclosure." + context.disclosureNodeId, "PENDING");
+                    }
+                    if (required || !"TEST".equals(execution.getChannelType())) {
                         context.pendingActionType = "SPEAK";
                         context.pendingActionText = result.output();
                         execution.setStatus("WAITING_TTS");
@@ -392,10 +481,103 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         execution.setLastInputId(inputId);
         execution.setTurnNo(execution.getTurnNo() + 1);
         JsonNode definition = definition(version);
+        JsonNode waitingNode = findNode(definition, execution.getCurrentNodeId());
+        if (applyRule(execution, version, waitingNode, context, null, text)) {
+            persist(execution, context);
+            return;
+        }
+        context.variables.put("workflow.rules." + waitingNode.path("id").asText() + ".SILENCE.count", 0);
         if (context.resumeSameNode) context.resumeSameNode = false;
         else execution.setCurrentNodeId(nextNodeId(definition, execution.getCurrentNodeId(), null));
         execution.setStatus("RUNNING");
         run(execution, version, definition, context);
+    }
+
+    private void persist(AiWorkflowExecution execution, RuntimeContext context) {
+        execution.setContextJson(writeContext(context));
+        execution.setLastActiveAt(LocalDateTime.now());
+        updateExecution(execution);
+    }
+
+    private void replayDisclosure(AiWorkflowExecution execution, JsonNode node, RuntimeContext context, String input) {
+        String answer = "好的，我先把这段重要说明补充完整。";
+        String mode = AiWorkflowAnswerPolicy.mode(node.path("config"), true);
+        try {
+            boolean acknowledgement = Set.of("你好", "您好", "嗯", "嗯你好", "嗯您好", "喂", "嗯嗯", "好", "好的", "我在听", "在听").contains(
+                org.dromara.ai.workflow.handler.DialogueStepNodeHandler.normalize(input));
+            if (acknowledgement) log.info("必要告知收到明确问候或附和，跳过知识检索和 Chat 模型，executionId={}，nodeId={}", execution.getExecutionId(), context.disclosureNodeId);
+            if (!acknowledgement && !"OFF".equals(mode)) {
+                var query = OBJECT_MAPPER.createObjectNode().put("id", "disclosure-question").put("type", "KNOWLEDGE_QUERY");
+                query.putObject("config").put("queryTemplate", "{{conversation.currentInput}}").put("knowledgeOnly", "KNOWLEDGE_ONLY".equals(mode));
+                var reply = handlerRegistry.require("KNOWLEDGE_QUERY").execute(new AiWorkflowNodeContext(query, Map.of("conversation.currentInput", input), input, execution.getAiAgentId(), "TEST"));
+                Object source = reply.variableUpdates().get("ai.answerSource");
+                if (("MODEL_FALLBACK".equals(mode) && "MODEL".equals(source) || Set.of("FAQ_EXACT", "FAQ_SEMANTIC", "DOCUMENT", "DOCUMENT_DIRECT").contains(source)
+                    && Boolean.TRUE.equals(reply.variableUpdates().get("knowledge.hit")) && !Boolean.TRUE.equals(reply.variableUpdates().get("knowledge.fallback"))
+                    ) && reply.output() != null && !reply.output().isBlank()) answer = reply.output();
+            }
+        } catch (Exception ignored) { /* No provider errors or unsupported answers are spoken. */ }
+        context.disclosureInterruptions++;
+        if (context.disclosureInterruptions >= node.path("config").path("disclosureMaxInterruptions").asInt(2)) context.playbackConfig.put("disclosureBargeInMode", "DISABLED");
+        context.pendingActionType = "SPEAK";
+        context.pendingActionText = answer + "\n" + context.disclosureText;
+        context.outputMessages.add(context.pendingActionText);
+        execution.setStatus("WAITING_TTS");
+        createWait(execution, node, "TTS", 120);
+    }
+
+    private boolean applyRule(AiWorkflowExecution execution, AiWorkflowVersion version, JsonNode node, RuntimeContext context, String event, String text) {
+        LocalDateTime ruleStartedAt = LocalDateTime.now();
+        JsonNode rules = AiWorkflowConversationRules.effective(definition(version), node);
+        Map<String, Object> ruleDetails = new LinkedHashMap<>();
+        JsonNode rule;
+        if (event == null) {
+            var match = ruleMatcher.match(rules, node, text, execution.getAiAgentId(), context.variables);
+            rule = match.rule();
+            ruleDetails.putAll(match.details());
+            if (rule == null && !ruleDetails.isEmpty()) logNode(execution, node, new AiWorkflowNodeResult("RULE_CHECK", null,
+                "未触发公共规则，继续当前流程", null, Map.of("workflow.rule.details", ruleDetails)), text, ruleStartedAt, null);
+        } else {
+            rule = AiWorkflowConversationRules.match(rules, event, text);
+            ruleDetails.put("matchReason", "EVENT");
+            ruleDetails.put("aiCalled", false);
+        }
+        if (rule == null) return false;
+        String type = rule.path("event").asText();
+        String counter = "workflow.rules." + node.path("id").asText() + "." + type + ".count";
+        int count = context.variables.get(counter) instanceof Number value ? value.intValue() + 1 : 1;
+        context.variables.put(counter, count);
+        boolean limit = event == null || count >= rule.path("maxCount").asInt(2);
+        if (!limit && !"SILENCE".equals(event)) return false;
+        String output = limit ? rule.path("replyText").asText("") : rule.path("retryText").asText("请问您还在听吗？");
+        context.variables.put("workflow.lastRule", type);
+        ruleDetails.put("event", type);
+        ruleDetails.put("eventLabel", AiWorkflowConversationRules.label(type));
+        ruleDetails.put("count", count);
+        ruleDetails.put("maxCount", rule.path("maxCount").asInt(2));
+        ruleDetails.put("action", limit ? rule.path("action").asText("HANGUP") : "RETRY");
+        logNode(execution, node, new AiWorkflowNodeResult("RULE", null, "公共规则：" + AiWorkflowConversationRules.label(type), null,
+            Map.of("workflow.rule.details", ruleDetails)), text, ruleStartedAt, null);
+        context.playbackNodeId = node.path("id").asText();
+        context.playbackConfig = new LinkedHashMap<>(Map.of("nodeBargeInMode", "DISABLED"));
+        if (limit) {
+            if (context.disclosureNodeId != null) context.variables.put("workflow.disclosure." + context.disclosureNodeId, "CANCELLED_BY_RULE");
+            context.disclosureNodeId = null;
+            context.disclosureText = null;
+            context.resumeSameNode = false;
+            clearPendingAction(context);
+        }
+        if (limit && (output.isBlank() || "TEST".equals(execution.getChannelType()))) {
+            if (!output.isBlank()) context.outputMessages.add(output);
+            completeDirectAction(execution, context, rule.path("action").asText("HANGUP"), rule.path("queueCode").asText(""));
+        } else {
+            context.pendingActionType = "SPEAK";
+            context.pendingActionText = output;
+            context.outputMessages.add(output);
+            if (limit) { context.afterTtsActionType = rule.path("action").asText("HANGUP"); context.afterTtsActionTarget = rule.path("queueCode").asText(""); }
+            execution.setStatus("WAITING_TTS");
+            createWait(execution, node, "TTS", 120);
+        }
+        return true;
     }
 
     private boolean isVoiceChannel(String channelType) {
@@ -497,6 +679,44 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         log.setAttemptNo(1);
         log.setInputSummary(trim(currentInput, 1000));
         log.setOutputSummary(trim(result == null ? null : result.output(), 2000));
+        if (result != null && "DIALOGUE_STEP".equals(node.path("type").asText())) {
+            Map<String, Object> details = new LinkedHashMap<>();
+            String prefix = "workflow.dialogue." + node.path("id").asText() + ".";
+            for (String field : List.of("aiCalled", "decision", "confidence", "evidence", "optionCode", "reason", "matchReason", "timings", "missingFields", "limitReached")) {
+                if (result.variableUpdates().containsKey(prefix + field)) {
+                    Object value = result.variableUpdates().get(prefix + field);
+                    details.put(field, value instanceof String text ? trim(text, 200) : value);
+                }
+            }
+            var config = node.path("config");
+            if (result.branchValue() != null) details.put("branchLabel", trim(org.dromara.ai.workflow.handler.DialogueStepNodeHandler.branchLabel(config, result.branchValue()), 60));
+            if (details.get("optionCode") instanceof String code && !code.isBlank()) details.put("optionLabel", trim(org.dromara.ai.workflow.handler.DialogueStepNodeHandler.branchLabel(config, "OPTION_" + code), 60));
+            if (result.variableUpdates().get(prefix + "matchedBranches") instanceof List<?> matches) {
+                details.put("matchedLabels", matches.stream().limit(10).map(value -> trim(org.dromara.ai.workflow.handler.DialogueStepNodeHandler.branchLabel(config, String.valueOf(value)), 30)).toList());
+            }
+            try {
+                String output = trim(result.output() == null ? "" : result.output(), 600);
+                String payload = OBJECT_MAPPER.writeValueAsString(Map.of("output", output, "details", details));
+                if (payload.length() > 1980) {
+                    details.put("detailsTruncated", true);
+                    details.remove("missingFields");
+                    details.remove("evidence");
+                    payload = OBJECT_MAPPER.writeValueAsString(Map.of("output", trim(output, 200), "details", details));
+                }
+                if (payload.length() > 1980) {
+                    details.remove("matchedLabels");
+                    details.put("detailsTruncated", true);
+                    payload = OBJECT_MAPPER.writeValueAsString(Map.of("output", "", "details", details));
+                }
+                if (payload.length() <= 1980) log.setOutputSummary("DIALOGUE_TRACE:" + payload);
+            } catch (Exception ignored) { /* Keep ordinary output if trace encoding fails. */ }
+        }
+        if (result != null && result.variableUpdates().get("workflow.rule.details") instanceof Map<?, ?> details) {
+            try {
+                String payload = OBJECT_MAPPER.writeValueAsString(Map.of("output", result.output(), "details", details));
+                if (payload.length() <= 1980) log.setOutputSummary("RULE_TRACE:" + payload);
+            } catch (Exception ignored) { /* Keep the plain rule output if encoding fails. */ }
+        }
         log.setExecutionStatus(exception == null ? result.status() : "FAILED");
         log.setBranchValue(result == null ? null : result.branchValue());
         if (exception != null) {
@@ -647,6 +867,20 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         result.setBranchValue(value.getBranchValue());
         result.setInputSummary(value.getInputSummary());
         result.setOutputSummary(value.getOutputSummary());
+        if (value.getOutputSummary() != null && value.getOutputSummary().startsWith("RULE_TRACE:")) {
+            try {
+                JsonNode payload = OBJECT_MAPPER.readTree(value.getOutputSummary().substring("RULE_TRACE:".length()));
+                result.setOutputSummary(payload.path("output").asText());
+                result.setRuleDetails(OBJECT_MAPPER.convertValue(payload.path("details"), Map.class));
+            } catch (Exception ignored) { /* Older traces remain plain text. */ }
+        }
+        if ("DIALOGUE_STEP".equals(value.getNodeType()) && value.getOutputSummary() != null && value.getOutputSummary().startsWith("DIALOGUE_TRACE:")) {
+            try {
+                JsonNode payload = OBJECT_MAPPER.readTree(value.getOutputSummary().substring("DIALOGUE_TRACE:".length()));
+                result.setOutputSummary(payload.path("output").asText());
+                result.setDialogueDetails(OBJECT_MAPPER.convertValue(payload.path("details"), Map.class));
+            } catch (Exception ignored) { /* Older or truncated traces remain readable as plain text. */ }
+        }
         result.setDurationMs(value.getDurationMs());
         result.setStartedAt(value.getStartedAt());
         return result;
@@ -668,6 +902,9 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         private String pendingActionText;
         private String pendingActionTarget;
         private boolean resumeSameNode;
+        private String disclosureNodeId;
+        private String disclosureText;
+        private int disclosureInterruptions;
         private String afterTtsActionType;
         private String afterTtsActionTarget;
     }

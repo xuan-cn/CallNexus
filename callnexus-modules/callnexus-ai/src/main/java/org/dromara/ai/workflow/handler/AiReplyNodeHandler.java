@@ -49,7 +49,9 @@ public class AiReplyNodeHandler implements AiWorkflowNodeHandler {
         Long conversationId = longValue(context.variables().get("ai.conversationId"));
         AiChatTurnResult turn = "MODEL_REPLY".equals(nodeType)
             ? agentService.chatOnceModel(context.aiAgentId(), conversationId, prompt)
-            : agentService.chatOnce(context.aiAgentId(), conversationId, prompt);
+            : context.node().path("config").path("knowledgeOnly").asBoolean(false)
+                ? agentService.chatOnceKnowledgeOnly(context.aiAgentId(), conversationId, prompt)
+                : agentService.chatOnce(context.aiAgentId(), conversationId, prompt);
         Map<String, Object> updates = new LinkedHashMap<>();
         if (turn.conversationId() != null) {
             updates.put("ai.conversationId", turn.conversationId());

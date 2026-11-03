@@ -87,7 +87,7 @@ class AiWorkflowLoopRuntimeServiceTest {
             new TemplateReplyNodeHandler(new AiWorkflowTemplateResolver())
         ));
         AiWorkflowRuntimeServiceImpl service = new AiWorkflowRuntimeServiceImpl(
-            workflowMapper, versionMapper, executionMapper, nodeLogMapper, waitMapper, bindingMapper, registry);
+            workflowMapper, versionMapper, executionMapper, nodeLogMapper, waitMapper, bindingMapper, registry, WorkflowRuleTestSupport.matcher());
 
         AiWorkflowTestExecutionResponse current = service.startTest(1L, new AiWorkflowTestStartRequest());
         assertThat(current.getStatus()).isEqualTo("WAITING_INPUT");

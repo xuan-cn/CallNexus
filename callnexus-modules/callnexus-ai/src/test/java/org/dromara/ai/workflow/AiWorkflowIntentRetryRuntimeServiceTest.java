@@ -102,7 +102,7 @@ class AiWorkflowIntentRetryRuntimeServiceTest {
             new FlowControlNodeHandler(), intentHandler
         ));
         AiWorkflowRuntimeServiceImpl service = new AiWorkflowRuntimeServiceImpl(
-            workflowMapper, versionMapper, executionMapper, nodeLogMapper, waitMapper, bindingMapper, registry);
+            workflowMapper, versionMapper, executionMapper, nodeLogMapper, waitMapper, bindingMapper, registry, WorkflowRuleTestSupport.matcher());
 
         AiWorkflowTestExecutionResponse current = service.startTest(1L, new AiWorkflowTestStartRequest());
         current = input(service, current, "turn-1", "不清楚");

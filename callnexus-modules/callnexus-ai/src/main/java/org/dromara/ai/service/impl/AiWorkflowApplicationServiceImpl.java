@@ -50,7 +50,7 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     private static final Set<String> SCENE_TYPES = Set.of("VOICE_INBOUND", "VOICE_OUTBOUND", "ONLINE_CHAT", "COMMON");
     private static final Set<String> BINDING_SCENES = Set.of("VOICE_INBOUND", "VOICE_OUTBOUND", "ONLINE_CHAT");
     private static final Set<String> NODE_TYPES = Set.of(
-        "START", "END", "WAIT_INPUT", "SET_VARIABLE", "CONDITION", "LOOP_LIMIT", "TEMPLATE_REPLY",
+        "START", "END", "WAIT_INPUT", "SET_VARIABLE", "CONDITION", "LOOP_LIMIT", "TEMPLATE_REPLY", "DIALOGUE_STEP",
         "KNOWLEDGE_QUERY", "MODEL_REPLY", "INTENT_ROUTE", "SLOT_EXTRACT", "CONFIRM",
         "CUSTOMER_QUERY", "CUSTOMER_UPDATE", "FOLLOW_UP_CREATE", "TICKET_DRAFT_CREATE",
         "TICKET_CREATE", "AUTO_OUTBOUND_WRITEBACK", "DO_NOT_CALL_ADD", "HTTP_REQUEST",
@@ -308,15 +308,19 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             return result;
         }
         Set<String> customVariableKeys = new HashSet<>();
+        Set<String> customTextVariableKeys = new HashSet<>();
         JsonNode variablesNode = root.path("variables");
         if (variablesNode.isArray()) {
             variablesNode.forEach(variable -> {
                 String key = variable.path("key").asText("").trim();
                 if (!key.isEmpty()) customVariableKeys.add(key);
+                if (!key.isEmpty() && "STRING".equals(variable.path("type").asText("STRING"))) customTextVariableKeys.add(key);
             });
         }
         Map<String, JsonNode> nodes = new HashMap<>();
         JsonNode commonIntentFallback = root.path("settings").path("intentFallback");
+        try { org.dromara.ai.workflow.AiWorkflowConversationRules.validate(root.path("settings").path("conversationRules")); }
+        catch (ServiceException exception) { result.getErrors().add(exception.getMessage()); }
         if (commonIntentFallback.isObject()) {
             validateIntentFallbackConfig("流程公共兜底策略", commonIntentFallback, result);
         }
@@ -330,22 +334,37 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             if ("START".equals(type)) startIds.add(id);
             JsonNode config = "INTENT_ROUTE".equals(type)
                 ? effectiveIntentConfig(node.path("config"), commonIntentFallback) : node.path("config");
+            int nodeErrorStart = result.getErrors().size();
             validateNodeConfig(id, type, config, customVariableKeys, result);
+            if ("DIALOGUE_STEP".equals(type) && config.path("collectedFields").isArray()) {
+                for (var field : config.path("collectedFields")) {
+                    if (!customTextVariableKeys.contains(field.path("key").asText(""))) {
+                        result.getErrors().add("对话步骤收集字段的声明类型必须是文本：" + id);
+                    }
+                }
+            }
+            for (String message : result.getErrors().subList(nodeErrorStart, result.getErrors().size())) {
+                result.getIssues().add(new AiWorkflowValidationResponse.Issue(message, id, null,
+                    message.contains("业务答案") ? "answerOptions" : "config", null));
+            }
         }
         if (startIds.size() != 1) result.getErrors().add("流程必须且只能包含一个开始节点");
         Map<String, Set<String>> outgoing = new HashMap<>();
         Map<String, Set<String>> conditions = new HashMap<>();
         for (JsonNode edge : edgesNode) {
+            int edgeErrorStart = result.getErrors().size();
             String source = edge.path("source").asText("");
             String target = edge.path("target").asText("");
             if (!nodes.containsKey(source) || !nodes.containsKey(target)) {
-                result.getErrors().add("连线引用了不存在的节点：" + source + " -> " + target);
+                String message = "连线引用了不存在的节点：" + source + " -> " + target;
+                result.getErrors().add(message);
+                result.getIssues().add(new AiWorkflowValidationResponse.Issue(message, source, edge.path("id").asText(""), "target", edge.path("condition").asText("")));
                 continue;
             }
             outgoing.computeIfAbsent(source, key -> new HashSet<>()).add(target);
             String sourceType = nodes.get(source).path("type").asText();
             String condition = edge.path("condition").asText("").trim();
-            if (("CONDITION".equals(sourceType) || "INTENT_ROUTE".equals(sourceType) || "LOOP_LIMIT".equals(sourceType))
+            if (("CONDITION".equals(sourceType) || "INTENT_ROUTE".equals(sourceType) || "LOOP_LIMIT".equals(sourceType) || "DIALOGUE_STEP".equals(sourceType))
                 && condition.isEmpty()) {
                 result.getErrors().add("判断节点的连线必须配置分支条件：" + source);
             }
@@ -355,6 +374,14 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             if ("LOOP_LIMIT".equals(sourceType) && !condition.isEmpty() && !Set.of("CONTINUE", "LIMIT").contains(condition)) {
                 result.getErrors().add("次数限制分支只能选择“继续循环”或“达到上限”：" + source);
             }
+            boolean dialogueOptionsValid = true;
+            if ("DIALOGUE_STEP".equals(sourceType)) {
+                try { org.dromara.ai.workflow.handler.DialogueStepNodeHandler.options(nodes.get(source).path("config")); }
+                catch (ServiceException exception) { dialogueOptionsValid = false; }
+            }
+            if ("DIALOGUE_STEP".equals(sourceType) && dialogueOptionsValid && !dialogueBranches(nodes.get(source).path("config")).contains(condition)) {
+                result.getErrors().add("对话步骤分支不在已配置的步骤出口中：" + source);
+            }
             if ("INTENT_ROUTE".equals(sourceType) && !condition.isEmpty()
                 && !Set.of("FALLBACK", "CONTINUE").contains(condition)
                 && !configuredIntentCodes(effectiveIntentConfig(nodes.get(source).path("config"), commonIntentFallback)).contains(condition)) {
@@ -363,9 +390,15 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             if (!condition.isEmpty() && !conditions.computeIfAbsent(source, key -> new HashSet<>()).add(condition)) {
                 result.getErrors().add("同一节点存在重复分支条件：" + source + " / " + condition);
             }
+            for (String message : result.getErrors().subList(edgeErrorStart, result.getErrors().size())) {
+                result.getIssues().add(new AiWorkflowValidationResponse.Issue(message, source, edge.path("id").asText(""), "condition", condition));
+            }
         }
         for (Map.Entry<String, JsonNode> entry : nodes.entrySet()) {
             String type = entry.getValue().path("type").asText();
+            if ("DIALOGUE_STEP".equals(type) && !conditions.getOrDefault(entry.getKey(), Set.of()).containsAll(dialogueBranches(entry.getValue().path("config")))) {
+                result.getErrors().add("对话步骤必须配置全部业务选项或确认完成、明确拒绝、澄清上限出口：" + entry.getKey());
+            }
             if (!TERMINAL_TYPES.contains(type) && outgoing.getOrDefault(entry.getKey(), Set.of()).isEmpty()) {
                 result.getErrors().add("非终止节点没有后续连线：" + entry.getKey());
             }
@@ -412,8 +445,61 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
         return result;
     }
 
+    private Set<String> dialogueBranches(JsonNode config) {
+        try { return org.dromara.ai.workflow.handler.DialogueStepNodeHandler.branches(config); }
+        catch (ServiceException exception) { return Set.of("DECLINED", "LIMIT"); }
+    }
+
     private void validateNodeConfig(String nodeId, String type, JsonNode config, Set<String> customVariableKeys,
                                     AiWorkflowValidationResponse result) {
+        if (Set.of("DIALOGUE_STEP", "TEMPLATE_REPLY").contains(type)) {
+            try {
+                String mode = org.dromara.ai.workflow.AiWorkflowAnswerPolicy.mode(config, "TEMPLATE_REPLY".equals(type));
+                if ("DIALOGUE_STEP".equals(type) && !"OFF".equals(mode) && !config.path("aiUnderstandingEnabled").asBoolean(false)) result.getErrors().add("对话步骤开启插问回答需要开启 AI 辅助理解：" + nodeId);
+            } catch (ServiceException exception) { result.getErrors().add(exception.getMessage() + "：" + nodeId); }
+        }
+        if (!Set.of("INHERIT", "DISABLED", "OVERRIDE").contains(config.path("conversationRuleMode").asText("INHERIT"))) result.getErrors().add("公共规则继承方式无效：" + nodeId);
+        if ("OVERRIDE".equals(config.path("conversationRuleMode").asText())) {
+            try { org.dromara.ai.workflow.AiWorkflowConversationRules.validate(config.path("conversationRules")); }
+            catch (ServiceException exception) { result.getErrors().add(exception.getMessage() + "：" + nodeId); }
+        }
+        if (config.path("requiredDisclosure").asBoolean(false)) {
+            if (!"TEMPLATE_REPLY".equals(type) || config.path("text").asText("").isBlank()) result.getErrors().add("必要告知仅支持非空的固定模板回复：" + nodeId);
+            if (!Set.of("DISABLED", "REPLAY_AFTER_REPLY").contains(config.path("disclosureBargeInMode").asText("DISABLED"))) result.getErrors().add("必要告知打断策略无效：" + nodeId);
+            if (config.path("disclosureMaxInterruptions").asInt(2) < 1 || config.path("disclosureMaxInterruptions").asInt(2) > 5) result.getErrors().add("必要告知最多打断次数应为 1 到 5：" + nodeId);
+        }
+        if ("DIALOGUE_STEP".equals(type)) {
+            try { org.dromara.ai.workflow.handler.DialogueStepNodeHandler.options(config); }
+            catch (ServiceException exception) { result.getErrors().add(exception.getMessage() + "：" + nodeId); }
+            if (config.has("collectedFields")) {
+                var fields = config.path("collectedFields");
+                if (!fields.isArray() || fields.size() > 10) result.getErrors().add("对话步骤最多选择 10 个流程文本字段：" + nodeId);
+                for (var field : fields) {
+                    String fieldKey = field.path("key").asText("");
+                    if (!fieldKey.startsWith("workflow.custom_") || !customVariableKeys.contains(fieldKey) || !"STRING".equals(field.path("type").asText("STRING"))) {
+                        result.getErrors().add("对话步骤收集字段必须是已声明的流程文本变量：" + nodeId + " / " + fieldKey);
+                    }
+                }
+                if (fields.size() > 0 && !config.path("aiUnderstandingEnabled").asBoolean(false)) result.getErrors().add("对话步骤收集字段需要开启 AI 辅助理解：" + nodeId);
+            }
+            for (String key : List.of("goal", "text", "retryText")) {
+                if (config.path(key).asText("").isBlank()) result.getErrors().add("对话步骤缺少目标或提问/澄清话术：" + nodeId + " / " + key);
+            }
+            var accepted = org.dromara.ai.workflow.handler.DialogueStepNodeHandler.answers(config.path("acceptedAnswers").asText(""));
+            var declined = org.dromara.ai.workflow.handler.DialogueStepNodeHandler.answers(config.path("declinedAnswers").asText(""));
+            boolean acceptedDefined = "INTENT".equals(config.path("acceptedMatchMode").asText("EXACT"))
+                ? !config.path("acceptedIntentCodes").isEmpty() : !accepted.isEmpty();
+            if (!acceptedDefined && config.path("answerOptions").isEmpty()) result.getErrors().add("对话步骤必须填写明确通过的回答或业务答案选项：" + nodeId);
+            if (config.path("answerOptions").isEmpty() && "EXACT".equals(config.path("acceptedMatchMode").asText("EXACT")) && "EXACT".equals(config.path("declinedMatchMode").asText("EXACT")) && accepted.stream().anyMatch(declined::contains)) result.getErrors().add("对话步骤确认与拒绝回答不能重复：" + nodeId);
+            if (config.path("maxRetries").asInt(2) < 1 || config.path("maxRetries").asInt(2) > 10) result.getErrors().add("对话步骤澄清次数应为 1 到 10：" + nodeId);
+        }
+        String playbackFailureAction = config.path("playbackFailureAction").asText("HANGUP");
+        if (!Set.of("HANGUP", "TRANSFER_QUEUE").contains(playbackFailureAction)) {
+            result.getErrors().add("停播失败处置只能选择转技能组或挂断：" + nodeId);
+        }
+        if ("TRANSFER_QUEUE".equals(playbackFailureAction) && config.path("playbackFailureQueueCode").asText("").isBlank()) {
+            result.getErrors().add("停播失败转人工未选择技能组：" + nodeId);
+        }
         if ("TEMPLATE_REPLY".equals(type) && config.path("text").asText("").isBlank()) {
             result.getErrors().add("模板回复节点未填写回复内容：" + nodeId);
         }

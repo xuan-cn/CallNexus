@@ -50,3 +50,8 @@ nbdist/
 !*/build/*.xml
 
 .flattened-pom.xml
+
+# Private local runtime settings; examples can be committed.
+.env
+.env.*
+!.env.*.example

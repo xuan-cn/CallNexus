@@ -93,7 +93,7 @@ class AiWorkflowRuntimeServiceTest {
             new ConditionNodeHandler()
         ));
         AiWorkflowRuntimeServiceImpl service = new AiWorkflowRuntimeServiceImpl(
-            workflowMapper, versionMapper, executionMapper, nodeLogMapper, waitMapper, bindingMapper, registry);
+            workflowMapper, versionMapper, executionMapper, nodeLogMapper, waitMapper, bindingMapper, registry, WorkflowRuleTestSupport.matcher());
 
         AiWorkflowTestStartRequest startRequest = new AiWorkflowTestStartRequest();
         startRequest.setVariables(Map.of("customer.salutation", "张先生"));

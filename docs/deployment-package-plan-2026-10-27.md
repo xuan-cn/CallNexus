@@ -242,3 +242,45 @@ RC3 保留原 SQL，另生成 `database/reviewed/` 模板，移除 1 条登录�
 RC4 修正首次启动权限：B 的 MySQL entrypoint 降权到 mysql 后无法读取 root 所有的生成目录。现先加载镜像，再动态查询镜像内 mysql UID/GID，将生成目录归该用户所有、权限 700，SQL 文件权限 400；不使用 777，不关闭 SELinux，不删除数据卷。已在 A 的独立临时目录用相同镜像的非 root 用户复现失败并验证修复，未启动测试 mysqld，未挂载生产数据。B 仍由用户按步骤调整权限和验证初始化。
 
 RC5 更正 SQL 比较范围：之前只比较 CREATE TABLE 片段，完整原 SQL 的末尾实际已包含与当前 JAR 相同的 V160 ALTER。RC3/RC4 的第二个脚本重复执行该修复，导致 B 报 1091 后重启，health 为 healthy 不能证明脚本均成功。构建器现对完整语句做规范化比较，主脚本已有同一修复时，第二个文件只输出注释，不重复 DDL。保留原文件；B 当前库先只读检查 active_result_code 和 uk_cc_outbound_retry_rule_active，不清库重建。
+
+## 11. 最新验收与最终交付要求
+
+用户已在 B 查询确认 207 张表、active_result_code STORED GENERATED 列，以及 uk_cc_outbound_retry_rule_active 唯一索引的三列 tenant_id/task_id/active_result_code；root@localhost、root@%、callnexus@% 存在。后续用户确认 Navicat 已连通，可将 MySQL 内网工具连接标为已验证。B 的 firewalld 只读检查时未运行，不能称作已配置单电脑来源白名单。
+
+RC6 已加入 MYSQL_BIND_ADDRESSES，默认仍为回环，B 可在 .env 配置回环加目标机私网地址，不把目标 IP 写死在 Compose。测试环境凭据按用户要求统一配置，发行模板仍由环境变量控制，不在默认安装包或长期记忆中写入共享密码。
+
+用户明确要求：所有本轮修复进入最终完整可用部署包，.env 必须有中文注释。现已给 .env.example 增加中文分组/逐项用途/单位/安全说明；init 生成的 .env 保留这些注释。新增 comment-env 操作可在备份和逐值比较后给已有文件补注释，保留全部原值及扩展键，不重新生成密钥。
+
+剩余验收按顺序推进：Redis 密码鉴权、MinIO 存活及对象操作、Qdrant、Java/调度与 Web 登录、节点/ESL/media-agent、分机注册/真实通话、ASR/TTS、打断控场、流程推进、录音上传回放。以上尚未全部通过，不能把候选包称作已完成全链路验收的正式安装包。最终交付需包含离线镜像、程序、中文环境说明、审阅后的初始化 SQL、安装/诊断/升级边界与校验清单，排除运行日志和业务数据。
+
+## 12. MinIO 默认空桶
+
+用户要求默认创建截图中的 9 个桶：callnexus-agent-prompt、callnexus-call-recordings、callnexus-ivr-prompts、callnexus-knowledge-document、callnexus-queue-wait-music、callnexus-ringback-tones、callnexus-system、callnexus-user-music、callnexus-voicemail-recording。只创建空桶，不迁移原文件，不默认开放匿名权限。
+
+RC8 增加 minio/buckets.txt 和 Python 标准库 S3 SigV4 初始化器 scripts/init_minio.py。现有镜像没有 mc，因此不新增 mc 镜像或部署时下载。安装器先启动基础服务、等待 MinIO 就绪并建桶，再启动剩余服务；已有环境可单独运行建桶脚本，不改 .env 或控制台监听。可选 MINIO_INTERNAL_ENDPOINT 和 MINIO_REGION 有默认值，旧 .env 仍可使用。
+
+已在 A 上新建隔离 MinIO 测试容器验证真实签名鉴权、首次 9 桶、默认私有、重复执行不新建、不删除已有测试对象/访问策略、错误密码拒绝。测试仅绑定随机回环端口，不挂载生产数据，容器及匿名测试数据随测试清理。B 的实际执行待用户验证。创建桶不等于配置数据库中的 OSS 记录，该项仍需后续验证。
+
+## 13. 后台启动与 OSS 配置边界
+
+用户已确认 B 建桶执行无问题，下一阶段启动 Qdrant、调度、Java 与 Nginx，验证后台登录。OSS 通过系统页面配置即可，不额外改业务代码，不自动导回旧 OSS 记录或覆盖页面配置；登录后测试上传、预签名下载、录音与知识库用途。
+
+同步审计补齐 MinIO 控制台监听：B 之前手工改为服务器 IP 可访问，候选包现使用 MINIO_CONSOLE_BIND_IP 环境变量，init 默认填目标机私网 IP，旧 .env 缺项时回退 FS_BIND_IP；9001 不作为公网管理入口。该变更合入 RC9 候选包，B 当前服务不自动改动。
+
+历史候选包和旧补丁不会自动更新 B，后续正式交付需统一使用最新包，并保留现有 .env、账户密码和数据卷。最终全链路验收仍未完成，不能仅凭基础服务或候选包校验成功宣称正式安装包已经完全可用。
+
+## 14. 2026-10-28 验收与最终包收尾
+
+用户确认后台登录、MinIO 等验证通过，最终反馈“目前没什么问题了，需要验证的都验证过了”。按用户反馈记录 B 功能验收完成，不追溯修改历史阶段的未验收记录，也不将其称为独立自动化或压测报告。
+
+本次识别失败日志明确返回“AI 实时 ASR 节点鉴权失败”。后台认证复用已启用 FreeSWITCH 节点的编码与媒体代理令牌，并要求同一租户且媒体代理启用；不需要单独虚构 cnx-unimrcp 身份。最终 Compose 让 UniMRCP 默认回退 CALLNEXUS_NODE_CODE / CALLNEXUS_NODE_TOKEN，新 .env 不再生成另一组不被后台认可的值。旧 UNIMRCP_NODE_* 值优先级保留，升级须人工同步，不能偷偷覆盖现有密钥。
+
+后续 R2：用户指定用其新构建的 callnexus-admin/target/callnexus-admin.jar 和 CallNexus-UI/dist 替换发行产物。已按该要求将两者设为默认版本，原构建目录不改；发行副本只清理配置凭据、将两处前端 RSA 改为安装占位符，逐项核对后端非配置内容未变化。旧 final ZIP 保留，另生成 final-r2；不再分发旧的可选 upgrade/ 副本。B 之前的验收不自动覆盖新代码，需复验登录和电话，未修改 A/B 正在运行的服务。
+
+后续 R3：新增 scripts/prepare_install.py，交互选择内网/云公网、绑定与宣告IP、SIP域、Web端口、数据库/MinIO账户、4项基础服务密码及ESL密码、管理工具访问方式。密码隐藏输入和二次确认，确认前不写文件；已有env默认拒绝，显式安装前编辑也必须无本项目容器和卷，并备份且保留内部密钥。生成后自动render，不启动服务、不删数据、不改防火墙或SSH密码。install --start也加入遗留项目资源拒绝保护。
+
+新增完整 DEPLOYMENT-GUIDE.md 与 SCRIPTS-REFERENCE.md，覆盖内网/云部署、端口/证书边界、每个scripts脚本的用途/调用/时机/副作用、SQL权限和V160、后台节点认证方向、ESL修改后的render与重建、RSA缓存排障。文档与脚本同步进入R3完整安装包，另提供小型准备工具与文档包；R2的应用/前端/镜像保持不变。
+
+源码已整理 dev/prod 环境变量读取，保留开发默认连接和前后端配套密钥，生产环境核心凭据无开发兜底。JDK 17 下 44 模块 Maven prod package 成功（跳过测试）；3 项 Spring YAML 隔离配置测试通过。新源码 JAR 仅作为 upgrade/ 下的可选升级验证包，不替换默认已验收基线，不宣称新业务代码已经在 B 验收。
+
+最终包只分发清理后的初始化模板、校验信息和预留目录；本地原始 database/init/001-schema.sql.sql 原位保留、不删除、不随 ZIP 输出。SQL 准备支持无原始导出文件的发行模式；若用户另放原始或自定义 SQL，仍要求审阅校验，不直接混用。发行文档补齐安装、节点配置方向、升级回滚和备份边界，真实目标 .env、运行日志、录音和对象不进入发行包。本轮不修改 A、B 现有服务。

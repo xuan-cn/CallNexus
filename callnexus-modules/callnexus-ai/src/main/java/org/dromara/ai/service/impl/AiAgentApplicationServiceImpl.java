@@ -224,6 +224,11 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
 
     private void streamChat(Long agentId, Long userId, AiChatRequest request,
                             BiConsumer<String, Object> eventConsumer, boolean knowledgeEnabled) {
+        streamChat(agentId, userId, request, eventConsumer, knowledgeEnabled, false);
+    }
+
+    private void streamChat(Long agentId, Long userId, AiChatRequest request,
+                            BiConsumer<String, Object> eventConsumer, boolean knowledgeEnabled, boolean knowledgeOnly) {
         AiAgent agent = requireEnabledAgent(agentId);
         AiConversation conversation = prepareConversation(agent, userId, request);
         eventConsumer.accept("conversation", Map.of("conversationId", conversation.getId()));
@@ -236,7 +241,21 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
                 : new Retrieval("MODEL", null, List.of(), true, null, null,
                     null, null, "KNOWLEDGE_DISABLED");
             long retrievalCompleted = System.currentTimeMillis();
-            eventConsumer.accept("retrieval", retrieval.summary());
+            boolean skipModelFallback = knowledgeOnly && (retrieval.fallback() || retrieval.hits().isEmpty());
+            Map<String, Object> retrievalSummary = retrieval.summary();
+            if (skipModelFallback) {
+                retrievalSummary.put("sourceType", "STRICT");
+                retrievalSummary.put("fallback", false);
+                retrievalSummary.put("modelFallbackSkipped", true);
+            }
+            eventConsumer.accept("retrieval", retrievalSummary);
+            if (skipModelFallback) {
+                completeMessage(assistantMessage, "", "STRICT");
+                eventConsumer.accept("completed", Map.of("messageId", assistantMessage.getId(), "sourceType", "STRICT"));
+                log.info("AI 仅知识回答未命中，跳过 Chat 模型兜底，agentId={}，conversationId={}，reason={}，retrievalMs={}",
+                    agentId, conversation.getId(), retrieval.reason(), retrievalCompleted - started);
+                return;
+            }
             if (retrieval.directAnswer() != null) {
                 eventConsumer.accept("delta", Map.of("content", retrieval.directAnswer()));
                 completeMessage(assistantMessage, retrieval.directAnswer(), retrieval.sourceType());
@@ -303,7 +322,16 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
         return chatOnce(agentId, conversationId, message, false);
     }
 
+    @Override
+    public AiChatTurnResult chatOnceKnowledgeOnly(Long agentId, Long conversationId, String message) {
+        return chatOnce(agentId, conversationId, message, true, true);
+    }
+
     private AiChatTurnResult chatOnce(Long agentId, Long conversationId, String message, boolean knowledgeEnabled) {
+        return chatOnce(agentId, conversationId, message, knowledgeEnabled, false);
+    }
+
+    private AiChatTurnResult chatOnce(Long agentId, Long conversationId, String message, boolean knowledgeEnabled, boolean knowledgeOnly) {
         AiChatRequest request = new AiChatRequest();
         request.setConversationId(conversationId);
         request.setMessage(message);
@@ -329,11 +357,11 @@ public class AiAgentApplicationServiceImpl implements AiAgentApplicationService 
             } else if ("error".equals(event)) {
                 failure.set(String.valueOf(values.get("message")));
             }
-        }, knowledgeEnabled);
+        }, knowledgeEnabled, knowledgeOnly);
         if (StringUtils.isNotBlank(failure.get())) {
             throw new ServiceException(failure.get());
         }
-        if (answer.isEmpty()) {
+        if (answer.isEmpty() && !(knowledgeOnly && "STRICT".equals(sourceType.get()) && Boolean.FALSE.equals(retrievalSummary.get().get("hit")))) {
             throw new ServiceException("AI 助手未返回可播报内容");
         }
         return new AiChatTurnResult(resolvedConversationId.get(), answer.toString(), sourceType.get(), retrievalSummary.get());

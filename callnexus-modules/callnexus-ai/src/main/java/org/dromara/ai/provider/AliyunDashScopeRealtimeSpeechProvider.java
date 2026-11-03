@@ -64,6 +64,7 @@ public class AliyunDashScopeRealtimeSpeechProvider
 
     @Override
     public AsrTranscribeResult transcribe(AiSpeechProvider provider, AsrTranscribeRequest request) {
+        long prepareStarted = System.nanoTime();
         if (request.audioBytes() == null || request.audioBytes().length == 0) {
             throw new ServiceException("百炼 ASR 测试音频不能为空");
         }
@@ -88,19 +89,30 @@ public class AliyunDashScopeRealtimeSpeechProvider
         }
         HttpRequest httpRequest = requestBuilder.build();
         HttpResponse<String> response;
+        long httpStarted = System.nanoTime();
+        long prepareMs = (httpStarted - prepareStarted) / 1_000_000L;
         try {
             response = client.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new ServiceException("百炼 ASR HTTP 调用被中断");
         } catch (Exception exception) {
+            log.warn("百炼 ASR HTTP 失败，providerCode={}，model={}，prepareMs={}，httpMs={}，audioBytes={}", provider.getProviderCode(), model, prepareMs, (System.nanoTime() - httpStarted) / 1_000_000L, request.audioBytes().length);
             throw new ServiceException("百炼 ASR HTTP 调用失败：" + rootMessage(exception));
         }
+        long httpMs = (System.nanoTime() - httpStarted) / 1_000_000L;
+        log.info("百炼 ASR HTTP 返回，providerCode={}，model={}，callUuid={}，audioBytes={}，prepareMs={}，httpRoundTripMs={}，status={}（HTTP往返包含网络与服务商处理，非纯模型耗时）",
+            provider.getProviderCode(), model, request.metadata() == null ? null : request.metadata().get("callUuid"), request.audioBytes().length, prepareMs, httpMs, response.statusCode());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new ServiceException("百炼 ASR HTTP 调用失败，HTTP状态码=" + response.statusCode()
                 + "，响应=" + StringUtils.blankToDefault(response.body(), ""));
         }
-        return qwenAudioAsr ? parseQwenAudioAsrResponse(response.body()) : parseFileAsrResponse(response.body());
+        long parseStarted = System.nanoTime();
+        try {
+            return qwenAudioAsr ? parseQwenAudioAsrResponse(response.body()) : parseFileAsrResponse(response.body());
+        } finally {
+            log.info("百炼 ASR 结果解析耗时，providerCode={}，parseMs={}", provider.getProviderCode(), (System.nanoTime() - parseStarted) / 1_000_000L);
+        }
     }
 
     @Override

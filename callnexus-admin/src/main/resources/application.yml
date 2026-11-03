@@ -109,7 +109,7 @@ sa-token:
   # 在多人登录同一账号时，是否共用一个token (为true时所有登录共用一个token, 为false时每次登录新建一个token)
   is-share: false
   # jwt秘钥
-  jwt-secret-key: abcdefghijklmnopqrstuvwxyz
+  jwt-secret-key: ${CNX_JWT_SECRET:abcdefghijklmnopqrstuvwxyz}
 
 # security配置
 security:
@@ -189,10 +189,10 @@ api-decrypt:
   headerFlag: encrypt-key
   # 响应加密公钥 非对称算法的公私钥 如：SM2，RSA 使用者请自行更换
   # 对应前端解密私钥 MIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6AgEAAkEAmc3CuPiGL/LcIIm7zryCEIbl1SPzBkr75E2VMtxegyZ1lYRD+7TZGAPkvIsBcaMs6Nsy0L78n2qh+lIZMpLH8wIDAQABAkEAk82Mhz0tlv6IVCyIcw/s3f0E+WLmtPFyR9/WtV3Y5aaejUkU60JpX4m5xNR2VaqOLTZAYjW8Wy0aXr3zYIhhQQIhAMfqR9oFdYw1J9SsNc+CrhugAvKTi0+BF6VoL6psWhvbAiEAxPPNTmrkmrXwdm/pQQu3UOQmc2vCZ5tiKpW10CgJi8kCIFGkL6utxw93Ncj4exE/gPLvKcT+1Emnoox+O9kRXss5AiAMtYLJDaLEzPrAWcZeeSgSIzbL+ecokmFKSDDcRske6QIgSMkHedwND1olF8vlKsJUGK3BcdtM8w4Xq7BpSBwsloE=
-  publicKey: MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAJnNwrj4hi/y3CCJu868ghCG5dUj8wZK++RNlTLcXoMmdZWEQ/u02RgD5LyLAXGjLOjbMtC+/J9qofpSGTKSx/MCAwEAAQ==
+  publicKey: ${CNX_API_RESPONSE_PUBLIC_KEY:MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAJnNwrj4hi/y3CCJu868ghCG5dUj8wZK++RNlTLcXoMmdZWEQ/u02RgD5LyLAXGjLOjbMtC+/J9qofpSGTKSx/MCAwEAAQ==}
   # 请求解密私钥 非对称算法的公私钥 如：SM2，RSA 使用者请自行更换
   # 对应前端加密公钥 MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBAKoR8mX0rGKLqzcWmOzbfj64K8ZIgOdHnzkXSOVOZbFu/TJhZ7rFAN+eaGkl3C4buccQd/EjEsj9ir7ijT7h96MCAwEAAQ==
-  privateKey: MIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6AgEAAkEAqhHyZfSsYourNxaY7Nt+PrgrxkiA50efORdI5U5lsW79MmFnusUA355oaSXcLhu5xxB38SMSyP2KvuKNPuH3owIDAQABAkAfoiLyL+Z4lf4Myxk6xUDgLaWGximj20CUf+5BKKnlrK+Ed8gAkM0HqoTt2UZwA5E2MzS4EI2gjfQhz5X28uqxAiEA3wNFxfrCZlSZHb0gn2zDpWowcSxQAgiCstxGUoOqlW8CIQDDOerGKH5OmCJ4Z21v+F25WaHYPxCFMvwxpcw99EcvDQIgIdhDTIqD2jfYjPTY8Jj3EDGPbH2HHuffvflECt3Ek60CIQCFRlCkHpi7hthhYhovyloRYsM+IS9h/0BzlEAuO0ktMQIgSPT3aFAgJYwKpqRYKlLDVcflZFCKY7u3UP8iWi1Qw0Y=
+  privateKey: ${CNX_API_REQUEST_PRIVATE_KEY:MIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6AgEAAkEAqhHyZfSsYourNxaY7Nt+PrgrxkiA50efORdI5U5lsW79MmFnusUA355oaSXcLhu5xxB38SMSyP2KvuKNPuH3owIDAQABAkAfoiLyL+Z4lf4Myxk6xUDgLaWGximj20CUf+5BKKnlrK+Ed8gAkM0HqoTt2UZwA5E2MzS4EI2gjfQhz5X28uqxAiEA3wNFxfrCZlSZHb0gn2zDpWowcSxQAgiCstxGUoOqlW8CIQDDOerGKH5OmCJ4Z21v+F25WaHYPxCFMvwxpcw99EcvDQIgIdhDTIqD2jfYjPTY8Jj3EDGPbH2HHuffvflECt3Ek60CIQCFRlCkHpi7hthhYhovyloRYsM+IS9h/0BzlEAuO0ktMQIgSPT3aFAgJYwKpqRYKlLDVcflZFCKY7u3UP8iWi1Qw0Y=}
 
 springdoc:
   api-docs:
@@ -281,7 +281,7 @@ callnexus:
 ai:
   knowledge-oss-config-key: ${CALLNEXUS_AI_KNOWLEDGE_OSS_CONFIG_KEY:knowledge-document}
   qdrant-url: ${CALLNEXUS_AI_QDRANT_URL:http://192.168.0.176:6333}
-  qdrant-api-key: ${CALLNEXUS_AI_QDRANT_API_KEY:}
+  qdrant-api-key: ${QDRANT_API_KEY:${CALLNEXUS_AI_QDRANT_API_KEY:}}
   index-worker-concurrency: ${CALLNEXUS_AI_INDEX_WORKER_CONCURRENCY:2}
   index-lease-minutes: ${CALLNEXUS_AI_INDEX_LEASE_MINUTES:30}
   max-document-size-mb: ${CALLNEXUS_AI_MAX_DOCUMENT_SIZE_MB:50}
@@ -289,7 +289,7 @@ ai:
   chat-stream-timeout-seconds: ${CALLNEXUS_AI_CHAT_STREAM_TIMEOUT_SECONDS:120}
   realtime-enabled: ${CALLNEXUS_AI_REALTIME_ENABLED:true}
   realtime-websocket-url: ${CALLNEXUS_AI_REALTIME_WEBSOCKET_URL:ws://127.0.0.1:8080/api/internal/ai/realtime/audio}
-  realtime-token-secret: ${CALLNEXUS_AI_REALTIME_TOKEN_SECRET:cnx_fs_dir_8f3d9c2b7a1e4f6a9c0d5b2ee}
+  realtime-token-secret: ${CNX_REALTIME_TOKEN_SECRET:${CALLNEXUS_AI_REALTIME_TOKEN_SECRET:cnx_fs_dir_8f3d9c2b7a1e4f6a9c0d5b2ee}}
   realtime-token-ttl-seconds: ${CALLNEXUS_AI_REALTIME_TOKEN_TTL_SECONDS:300}
   realtime-worker-threads: ${CALLNEXUS_AI_REALTIME_WORKER_THREADS:8}
   # 实时通话意图识别总预算，包含线程排队、精确匹配、Embedding 与向量检索。
@@ -319,6 +319,9 @@ ai:
     max-consecutive-empty-recognitions: ${CALLNEXUS_AI_UNIMRCP_MAX_CONSECUTIVE_EMPTY_RECOGNITIONS:3}
     hangup-on-recognition-idle: ${CALLNEXUS_AI_UNIMRCP_HANGUP_ON_RECOGNITION_IDLE:true}
     intent-hangup-delay-ms: ${CALLNEXUS_AI_UNIMRCP_INTENT_HANGUP_DELAY_MS:1000}
+    # 停播首次尝试和两次重试仍失败后的默认处置：HANGUP / TRANSFER_QUEUE；节点可覆盖。
+    playback-failure-action: ${CALLNEXUS_AI_PLAYBACK_FAILURE_ACTION:HANGUP}
+    playback-failure-queue-code: ${CALLNEXUS_AI_PLAYBACK_FAILURE_QUEUE_CODE:}
     result-header-candidates: ${CALLNEXUS_AI_UNIMRCP_RESULT_HEADER_CANDIDATES:variable_detect_speech_result,variable_speech_result,Detect-Speech-Result,Speech-Result}
 
 --- # warm-flow工作流配置

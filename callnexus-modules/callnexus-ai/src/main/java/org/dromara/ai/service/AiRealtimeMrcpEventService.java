@@ -367,6 +367,26 @@ public class AiRealtimeMrcpEventService {
             return;
         }
         if (detectedSpeech && StringUtils.isBlank(result)) {
+            if (runtime.workflowActive.get() && isExplicitNoInput(headers) && !runtime.waitingSpeakComplete.get()) {
+                if (!runtime.claimRecognitionEvent(recognitionEventKey(headers)) || !runtime.recognizing.compareAndSet(true, false)) return;
+                long generation = runtime.turnGeneration.get();
+                long inputSequence = runtime.acceptedInputSequence.get();
+                executor.execute(() -> TenantHelper.dynamic(runtime.tenantId, () -> {
+                    if (!isInputTaskCurrent(runtime, generation) || runtime.acceptedInputSequence.get() != inputSequence
+                        || !ensureChannelAlive(runtime, "CHANNEL_GONE_BEFORE_SILENCE_RULE")) return;
+                    try {
+                        var action = workflowRuntimeService.voiceSignal(runtime.workflowExecutionId,
+                            StringUtils.defaultIfBlank(recognitionEventKey(headers), UUID.randomUUID().toString()), "SILENCE");
+                        if (isInputTaskCurrent(runtime, generation)) {
+                            if (action == null) { runtime.recognizing.set(true); handleEmptyRecognition(runtime); }
+                            else handleWorkflowAction(runtime, action);
+                        }
+                    } catch (Exception exception) {
+                        if (isInputTaskCurrent(runtime, generation)) fail(runtime, "工作流沉默规则处理失败", exception);
+                    }
+                }));
+                return;
+            }
             if (runtime.controlResumeInProgress.get()) {
                 runtime.recognizing.set(false);
                 log.debug("AI UniMRCP 控场期间忽略空识别结果，sessionId={}，businessCallId={}",
@@ -418,13 +438,16 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void processAcceptedRecognition(RuntimeSession runtime, String text, long recognitionAcceptedNanos) {
+        runtime.acceptedInputSequence.incrementAndGet();
+        long acceptedGeneration = runtime.turnGeneration.get();
         log.info("AI UniMRCP 识别到用户语音，sessionId={}，businessCallId={}，text={}",
             runtime.entity.getId(), runtime.businessCallId, text);
         executor.execute(() -> TenantHelper.dynamic(runtime.tenantId, () -> {
+            if (!isInputTaskCurrent(runtime, acceptedGeneration)) return;
             if (runtime.workflowActive.get()) {
-                processWorkflowInput(runtime, text);
+                processWorkflowInput(runtime, text, acceptedGeneration);
             } else {
-                processTurn(runtime, text, recognitionAcceptedNanos);
+                processTurn(runtime, text, recognitionAcceptedNanos, acceptedGeneration);
             }
         }));
     }
@@ -500,6 +523,14 @@ public class AiRealtimeMrcpEventService {
             return;
         }
         scheduleRecognizeRetry(runtime);
+    }
+
+    static boolean isExplicitNoInput(Map<String, String> headers) {
+        for (String name : List.of("Completion-Cause", "MRCP-Completion-Cause", "Speech-Completion-Cause")) {
+            String cause = header(headers, name);
+            if (cause != null && (cause.trim().matches("002(?:\\s.*)?") || "no-input-timeout".equalsIgnoreCase(cause.trim()))) return true;
+        }
+        return false;
     }
 
     private void scheduleRecognizeRetry(RuntimeSession runtime) {
@@ -682,13 +713,13 @@ public class AiRealtimeMrcpEventService {
         }
     }
 
-    private void processTurn(RuntimeSession runtime, String text, long recognitionAcceptedNanos) {
-        if (runtime.closed.get() || "ENDING".equals(runtime.entity.getSessionState())
-            || "TRANSFERRING".equals(runtime.entity.getSessionState())) {
-            return;
-        }
+    private void processTurn(RuntimeSession runtime, String text, long recognitionAcceptedNanos, long acceptedGeneration) {
         long processStartedNanos = System.nanoTime();
-        long generation = runtime.turnGeneration.incrementAndGet();
+        long generation;
+        synchronized (runtime.playbackTransitionLock) {
+            if (!isInputTaskCurrent(runtime, acceptedGeneration)) return;
+            generation = runtime.turnGeneration.incrementAndGet();
+        }
         AiRealtimeCallTurn turn = new AiRealtimeCallTurn();
         turn.setRealtimeSessionId(runtime.entity.getId());
         turn.setSequenceNo(runtime.sequence.incrementAndGet());
@@ -696,15 +727,26 @@ public class AiRealtimeMrcpEventService {
         turn.setTurnState("THINKING");
         turn.setRecognizedAt(LocalDateTime.now());
         turnMapper.insert(turn);
+        boolean attached;
+        synchronized (runtime.playbackTransitionLock) {
+            attached = isInputTaskCurrent(runtime, generation);
+            if (attached) {
+                runtime.segmenter = new SentenceSegmenter();
+                synchronized (runtime.pendingSpeakSegments) {
+                    runtime.pendingSpeakSegments.clear();
+                }
+                runtime.speakSegmentSeq.set(0);
+                runtime.currentTurn.set(turn);
+            }
+        }
+        if (!attached) {
+            turn.setTurnState("CANCELLED");
+            turn.setFailureReason("轮次创建期间会话结束或状态失效");
+            turnMapper.updateById(turn);
+            return;
+        }
         updateState(runtime, "THINKING", null);
         long prepareCostMs = elapsedMillis(processStartedNanos);
-
-        runtime.segmenter = new SentenceSegmenter();
-        synchronized (runtime.pendingSpeakSegments) {
-            runtime.pendingSpeakSegments.clear();
-        }
-        runtime.speakSegmentSeq.set(0);
-        runtime.currentTurn.set(turn);
 
         if (handlePendingIntentConfirmation(runtime, turn, text)
             || recognizeAndHandleIntent(runtime, turn, text)) {
@@ -833,24 +875,11 @@ public class AiRealtimeMrcpEventService {
                 cancelTurnAfterHangup(runtime, turn);
                 return;
             }
-            runtime.llmStreaming.set(false);
-            synchronized (runtime.pendingSpeakSegments) {
-                runtime.pendingSpeakSegments.clear();
-            }
-            ScheduledFuture<?> pending = runtime.pendingSpeakTimer.getAndSet(null);
-            if (pending != null) {
-                pending.cancel(false);
-            }
-            runtime.waitingSpeakComplete.set(false);
-            runtime.activeSpeak.set(null);
-            turn.setTurnState("FAILED");
-            turn.setFailureReason(limit(exception.getMessage()));
-            turnMapper.updateById(turn);
-            runtime.turnInProgress.set(false);
-            runtime.currentTurn.compareAndSet(turn, null);
+            FailedPlayback failed = detachFailedPlayback(runtime, generation, turn);
+            if (failed == null) return;
             log.error("AI UniMRCP 轮次处理失败，sessionId={}，turn={}，text={}，error={}，chatCostMs={}",
                 runtime.entity.getId(), turn.getSequenceNo(), text, exception.getMessage(), elapsedMillis(chatNanos), exception);
-            resumeListening(runtime);
+            recoverFailedPlayback(runtime, failed, exception.getMessage());
         }
     }
 
@@ -1048,31 +1077,22 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void waitForPreplayedOpening(RuntimeSession runtime, String openingText) {
+        if (runtime.closed.get() || runtime.preplayedOpeningReleased.get()) return;
         updateState(runtime, "SPEAKING", null);
-        runtime.activeSpeak.compareAndSet(null,
-            new ActiveSpeak("opening", 1, openingText, System.nanoTime(), runtime.turnGeneration.get(), true, false));
-        if (runtime.preplayedOpeningCompleted.get() || !runtime.waitingSpeakComplete.get()) {
-            runtime.activeSpeak.set(null);
-            listenAfterOpening(runtime);
+        ActiveSpeak opening;
+        synchronized (runtime.playbackTransitionLock) {
+            if (runtime.closed.get() || runtime.preplayedOpeningReleased.get() || runtime.activeSpeak.get() != null) return;
+            opening = new ActiveSpeak("opening", 1, openingText, System.nanoTime(), runtime.turnGeneration.get(), true, false);
+            runtime.preplayedOpeningSpeak.set(opening);
+            runtime.activeSpeak.set(opening);
+            runtime.waitingSpeakComplete.set(true);
+        }
+        if (runtime.preplayedOpeningCompleted.get()) {
+            completeSpeak(runtime, opening, "PREPLAYED_EVENT");
             return;
         }
         long delay = speakCompletionTimeout(runtime, openingText);
-        ScheduledFuture<?> old = runtime.pendingSpeakTimer.getAndSet(null);
-        if (old != null) {
-            old.cancel(false);
-        }
-        ScheduledFuture<?> handle = scheduler.schedule(() -> TenantHelper.dynamic(runtime.tenantId, () -> {
-            if (!runtime.waitingSpeakComplete.compareAndSet(true, false)) {
-                return;
-            }
-            if (!ensureChannelAlive(runtime, "CHANNEL_GONE_BEFORE_OPENING_TIMEOUT")) {
-                return;
-            }
-            log.warn("AI UniMRCP 长时间未收到首句播报完成事件，按安全超时启动识别，sessionId={}，businessCallId={}，customerLegUuid={}，timeoutMs={}",
-                runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, delay);
-            listenAfterOpening(runtime);
-        }), Instant.now().plusMillis(delay));
-        runtime.pendingSpeakTimer.set(handle);
+        scheduleSpeakTimeout(runtime, opening, delay, "PREPLAYED");
         log.info("AI UniMRCP 首句已由 dialplan 播放，等待播报完成后启动识别，sessionId={}，businessCallId={}，customerLegUuid={}，delayMs={}",
             runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, delay);
     }
@@ -1177,7 +1197,7 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void speak(RuntimeSession runtime, String text, AiRealtimeCallTurn turn, boolean opening, boolean control) {
-        if (runtime.closed.get()) {
+        if (!isInputTaskCurrent(runtime, runtime.turnGeneration.get())) {
             return;
         }
         if (!ensureChannelAlive(runtime, "CHANNEL_GONE_BEFORE_SPEAK")) {
@@ -1205,8 +1225,12 @@ public class AiRealtimeMrcpEventService {
         boolean turnEnd = isTurnEnd(runtime, turn);
         ActiveSpeak activeSpeak = new ActiveSpeak(turnId, seq, text, System.nanoTime(),
             runtime.turnGeneration.get(), opening, control);
-        runtime.activeSpeak.set(activeSpeak);
-        runtime.audioReadySpeak.set(null);
+        synchronized (runtime.playbackTransitionLock) {
+            if (!isInputTaskCurrent(runtime, activeSpeak.generation())) return;
+            runtime.activeSpeak.set(activeSpeak);
+            runtime.audioReadySpeak.set(null);
+            runtime.waitingSpeakComplete.set(true);
+        }
         log.info("AI UniMRCP 准备提交播报，sessionId={}，businessCallId={}，customerLegUuid={}，textLength={}，voice={}，turnId={}，seq={}，turnEnd={}，stateCostMs={}",
             runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, text.length(), runtime.ttsVoice,
             turnId, seq, turnEnd, stateCostMs);
@@ -1221,6 +1245,13 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void scheduleSpeakTimeout(RuntimeSession runtime, ActiveSpeak activeSpeak, long delay, String phase) {
+        synchronized (runtime.playbackTransitionLock) {
+            if (runtime.closed.get() || runtime.activeSpeak.get() != activeSpeak) return;
+            scheduleSpeakTimeoutLocked(runtime, activeSpeak, delay, phase);
+        }
+    }
+
+    private void scheduleSpeakTimeoutLocked(RuntimeSession runtime, ActiveSpeak activeSpeak, long delay, String phase) {
         ScheduledFuture<?> old = runtime.pendingSpeakTimer.getAndSet(null);
         if (old != null) {
             old.cancel(false);
@@ -1235,7 +1266,7 @@ public class AiRealtimeMrcpEventService {
             if (!ensureChannelAlive(runtime, "CHANNEL_GONE_BEFORE_SPEAK_TIMEOUT")) {
                 return;
             }
-            if (shouldFallbackBeforeCompleting(runtime.voiceTransport,
+            if (!"PREPLAYED".equals(phase) && shouldFallbackBeforeCompleting(runtime.voiceTransport,
                 runtime.audioReadySpeak.get() == activeSpeak)) {
                 log.warn("AI UniMRCP 实时 TTS 等待超时且未收到首段音频，当前通话降级 HTTP 并重播，sessionId={}，businessCallId={}，customerLegUuid={}，phase={}，timeoutMs={}",
                     runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, phase, delay);
@@ -1287,11 +1318,6 @@ public class AiRealtimeMrcpEventService {
                                  String eventTurnId, Integer eventSeq, Long eventGeneration) {
         if (runtime.openingPreplayed && !runtime.conversationReady.get()) {
             runtime.preplayedOpeningCompleted.set(true);
-            runtime.waitingSpeakComplete.set(false);
-            ScheduledFuture<?> pending = runtime.pendingSpeakTimer.getAndSet(null);
-            if (pending != null) {
-                pending.cancel(false);
-            }
             log.info("AI UniMRCP 首句播报已完成，会话仍在初始化，等待会话创建后启动识别，sessionId={}，businessCallId={}，customerLegUuid={}",
                 runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid);
             return;
@@ -1309,7 +1335,7 @@ public class AiRealtimeMrcpEventService {
                 eventTurnId, eventSeq, eventGeneration, applicationData);
             return;
         }
-        if (shouldFallbackBeforeCompleting(runtime.voiceTransport,
+        if (runtime.preplayedOpeningSpeak.get() != activeSpeak && shouldFallbackBeforeCompleting(runtime.voiceTransport,
             runtime.audioReadySpeak.get() == activeSpeak)) {
             recoverPrematureWsCompletion(runtime, activeSpeak);
             return;
@@ -1413,14 +1439,8 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void recoverPrematureWsCompletion(RuntimeSession runtime, ActiveSpeak expected) {
-        if (!runtime.activeSpeak.compareAndSet(expected, null)) {
+        if (!claimPlaybackTransition(runtime, expected, false)) {
             return;
-        }
-        runtime.audioReadySpeak.compareAndSet(expected, null);
-        runtime.waitingSpeakComplete.set(false);
-        ScheduledFuture<?> pending = runtime.pendingSpeakTimer.getAndSet(null);
-        if (pending != null) {
-            pending.cancel(false);
         }
         if (!runtime.httpFallbackActivated.compareAndSet(false, true)) {
             fail(runtime, "实时 TTS 未产生可播放音频且 HTTP 降级已执行，未启动下一轮识别", null);
@@ -1439,14 +1459,10 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void recoverTimedOutSpeak(RuntimeSession runtime, ActiveSpeak expected, long timeoutMs, String phase) {
-        if (!runtime.activeSpeak.compareAndSet(expected, null)) {
+        if (!claimPlaybackTransition(runtime, expected, true)) {
             return;
         }
-        runtime.audioReadySpeak.compareAndSet(expected, null);
-        runtime.waitingSpeakComplete.set(false);
         runtime.recognizing.set(false);
-        runtime.pendingSpeakTimer.set(null);
-        runtime.turnGeneration.compareAndSet(expected.generation(), expected.generation() + 1L);
         runtime.llmStreaming.set(false);
         runtime.workflowStreamingReply.set(false);
         runtime.postPlaybackAction.set(null);
@@ -1455,7 +1471,7 @@ public class AiRealtimeMrcpEventService {
         }
         int cancelledConnections = cancelSpeakConnections(runtime, expected);
         try {
-            gateway().stopPlayback(runtime.nodeId, runtime.customerLegUuid);
+            if (!stopPlaybackSafely(runtime)) return;
         } catch (Exception exception) {
             log.warn("AI UniMRCP 播报超时后停止残留播放失败，sessionId={}，businessCallId={}，error={}",
                 runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
@@ -1487,38 +1503,25 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void completePreplayedOpeningOnPark(RuntimeSession runtime) {
-        runtime.waitingSpeakComplete.set(false);
-        ScheduledFuture<?> pending = runtime.pendingSpeakTimer.getAndSet(null);
-        if (pending != null) {
-            pending.cancel(false);
+        ActiveSpeak opening;
+        synchronized (runtime.playbackTransitionLock) {
+            if (runtime.closed.get() || runtime.preplayedOpeningReleased.get()) return;
+            runtime.preplayedOpeningCompleted.set(true);
+            opening = runtime.preplayedOpeningSpeak.get();
+            if (!runtime.conversationReady.get() || opening == null || runtime.activeSpeak.get() != opening) return;
         }
-        if (!runtime.conversationReady.get()) {
-            log.info("AI UniMRCP 已进入 park，开场白播放结束，会话仍在初始化，sessionId={}，businessCallId={}，customerLegUuid={}",
-                runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid);
-            return;
-        }
-        ActiveSpeak activeSpeak = runtime.activeSpeak.get();
-        if (activeSpeak != null && activeSpeak.opening()) {
-            completeSpeak(runtime, activeSpeak, "PARK");
-            return;
-        }
-        listenAfterOpening(runtime);
-        log.info("AI UniMRCP 已按 park 事件启动首轮识别，sessionId={}，businessCallId={}，customerLegUuid={}",
-            runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid);
+        completeSpeak(runtime, opening, "PARK");
     }
 
     private void completeSpeak(RuntimeSession runtime, ActiveSpeak expected, String source) {
-        if (runtime.closed.get()) {
+        if (!canContinuePlayback(runtime.closed.get(), expected.generation(), runtime.turnGeneration.get())) {
             return;
         }
-        if (!runtime.activeSpeak.compareAndSet(expected, null)) {
+        if (!claimPlaybackTransition(runtime, expected, false)) {
             return;
         }
-        runtime.audioReadySpeak.compareAndSet(expected, null);
-        runtime.waitingSpeakComplete.set(false);
-        ScheduledFuture<?> pendingTimer = runtime.pendingSpeakTimer.getAndSet(null);
-        if (pendingTimer != null) {
-            pendingTimer.cancel(false);
+        if (!canContinuePlayback(runtime.closed.get(), expected.generation(), runtime.turnGeneration.get())) {
+            return;
         }
         log.info("AI UniMRCP 播报段完成，sessionId={}，businessCallId={}，customerLegUuid={}，turnId={}，seq={}，source={}",
             runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid,
@@ -1541,7 +1544,7 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void continueAfterSpeak(RuntimeSession runtime, ActiveSpeak expected) {
-        if (runtime.closed.get()) return;
+        if (!isInputTaskCurrent(runtime, expected.generation())) return;
         if (runtime.workflowActive.get() && runtime.workflowSpeak.compareAndSet(true, false)) {
             try {
                 runtime.workflowStreamingReply.set(false);
@@ -1646,7 +1649,7 @@ public class AiRealtimeMrcpEventService {
             return false;
         }
         return actualApplicationData.endsWith("|" + expectedText)
-            || actualApplicationData.contains(expectedText);
+            || actualApplicationData.equals(expectedText);
     }
 
     static boolean shouldAcceptSpeakCompletion(ActiveSpeak active, String eventTurnId, Integer eventSeq,
@@ -1770,7 +1773,9 @@ public class AiRealtimeMrcpEventService {
                 return true;
             }
             switch (action.actionType()) {
-                case "STOP_PLAYBACK" -> gateway().stopPlayback(runtime.nodeId, runtime.customerLegUuid);
+                case "STOP_PLAYBACK" -> {
+                    if (!stopPlaybackSafely(runtime)) return true;
+                }
                 case "TRANSFER_EXTENSION" -> {
                     updateState(runtime, "TRANSFERRING", null);
                     notifyTicketTransfer(runtime);
@@ -1890,18 +1895,18 @@ public class AiRealtimeMrcpEventService {
 
     private void end(RuntimeSession runtime, String reason) {
         markCallEnded(runtime.customerLegUuid);
-        sessions.remove(key(runtime.tenantId, runtime.customerLegUuid));
-        releaseOwnership(runtime.customerLegUuid);
-        if (!runtime.closed.compareAndSet(false, true)) {
-            return;
+        synchronized (runtime.playbackTransitionLock) {
+            if (!runtime.closed.compareAndSet(false, true)) return;
+            runtime.turnGeneration.incrementAndGet();
+            runtime.activeSpeak.set(null);
+            runtime.waitingSpeakComplete.set(false);
         }
+        sessions.remove(key(runtime.tenantId, runtime.customerLegUuid), runtime);
+        releaseOwnership(runtime.customerLegUuid);
         runtime.recognizing.set(false);
         runtime.openingRecognitionActive.set(false);
-        runtime.turnGeneration.incrementAndGet();
         runtime.turnInProgress.set(false);
         runtime.llmStreaming.set(false);
-        runtime.activeSpeak.set(null);
-        runtime.waitingSpeakComplete.set(false);
         runtime.workflowSpeak.set(false);
         runtime.pendingConfirmation.set(null);
         runtime.postPlaybackAction.set(null);
@@ -2041,6 +2046,10 @@ public class AiRealtimeMrcpEventService {
 
     static NodeBargeInPolicy resolveNodeBargeInPolicy(Map<String, Object> config, NodeBargeInPolicy inherited) {
         Map<String, Object> node = config == null ? Map.of() : config;
+        if (Boolean.TRUE.equals(node.get("requiredDisclosure"))) {
+            boolean allow = "REPLAY_AFTER_REPLY".equals(node.get("disclosureBargeInMode"));
+            return new NodeBargeInPolicy(allow, allow, allow ? "INTERRUPT" : "DISABLED", inherited.text(), inherited.maxCount(), inherited.cooldownMs());
+        }
         String mode = String.valueOf(node.getOrDefault("nodeBargeInMode", "INHERIT"));
         if (!Set.of("DISABLED", "INTERRUPT", "CONTROL_RESUME").contains(mode)) {
             return inherited;
@@ -2093,25 +2102,20 @@ public class AiRealtimeMrcpEventService {
             return true;
         }
         try {
-            if (!runtime.activeSpeak.compareAndSet(active, null)
+            if (!claimPlaybackTransition(runtime, active, true)
                 || !runtime.controlResumeInProgress.compareAndSet(false, true)) {
                 return true;
             }
             controlCount.incrementAndGet();
             lastControlTime.set(now);
             synchronized (runtime.pendingSpeakSegments) {
-                discardReplacedSpeech(runtime.pendingSpeakSegments, runtime.turnGeneration);
+                runtime.pendingSpeakSegments.clear();
             }
             runtime.llmStreaming.set(false);
             runtime.workflowStreamingReply.set(false);
-            runtime.waitingSpeakComplete.set(false);
-            ScheduledFuture<?> pending = runtime.pendingSpeakTimer.getAndSet(null);
-            if (pending != null) {
-                pending.cancel(false);
-            }
             int cancelledTtsConnections = cancelSpeakConnections(runtime, active);
             try {
-                gateway().stopPlayback(runtime.nodeId, runtime.customerLegUuid);
+                if (!stopPlaybackSafely(runtime)) return true;
             } catch (Exception exception) {
                 log.warn("AI UniMRCP 控场时停止 FreeSWITCH 播放失败，继续插入控场话术，sessionId={}，businessCallId={}，error={}",
                     runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
@@ -2120,15 +2124,17 @@ public class AiRealtimeMrcpEventService {
             runtime.lastAssistantText = controlText;
             appendRealtimeTranscriptSegmentAsync(runtime, SPEAKER_AI, SOURCE_AI_GENERATED,
                 controlText, LocalDateTime.now(), runtime.agentId);
+            long controlGeneration = active.generation() + 1L;
+            AiRealtimeCallTurn controlTurn = runtime.currentTurn.get();
             try {
-                speak(runtime, controlText, runtime.currentTurn.get(), false, true);
+                speak(runtime, controlText, controlTurn, false, true);
             } catch (Exception exception) {
-                runtime.controlResumeInProgress.set(false);
-                runtime.waitingSpeakComplete.set(false);
-                runtime.activeSpeak.set(null);
-                log.warn("AI UniMRCP 控场话术播放失败，跳过已替换话术并继续流程，sessionId={}，businessCallId={}，error={}",
+                FailedPlayback failed = detachFailedPlayback(runtime, controlGeneration, controlTurn);
+                if (failed == null) return true;
+                log.warn("AI UniMRCP 控场话术播放失败，保留当前流程步骤并恢复收音，sessionId={}，businessCallId={}，error={}",
                     runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
-                continueAfterSpeak(runtime, active);
+                recoverFailedPlayback(runtime, failed, "控场播报提交失败：" + exception.getMessage());
+                return true;
             }
             log.info("AI UniMRCP 控场话术已替换当前播报，不再重播原文，sessionId={}，businessCallId={}，turnId={}，seq={}，reason={}，count={}，cancelledTtsConnections={}",
                 runtime.entity.getId(), runtime.businessCallId, active.turnId(), active.seq(), reason,
@@ -2168,12 +2174,11 @@ public class AiRealtimeMrcpEventService {
             return;
         }
         try {
-            ActiveSpeak active = runtime.activeSpeak.getAndSet(null);
-            if (active == null || !bargeInAllowed(runtime, active)) {
+            ActiveSpeak active = runtime.activeSpeak.get();
+            if (active == null || !bargeInAllowed(runtime, active)
+                || !claimPlaybackTransition(runtime, active, true)) {
                 return;
             }
-            runtime.turnGeneration.incrementAndGet();
-            runtime.waitingSpeakComplete.set(false);
             runtime.workflowSpeak.set(false);
             runtime.workflowStreamingReply.set(false);
             runtime.llmStreaming.set(false);
@@ -2181,13 +2186,9 @@ public class AiRealtimeMrcpEventService {
             synchronized (runtime.pendingSpeakSegments) {
                 runtime.pendingSpeakSegments.clear();
             }
-            ScheduledFuture<?> pending = runtime.pendingSpeakTimer.getAndSet(null);
-            if (pending != null) {
-                pending.cancel(false);
-            }
             int cancelledTtsConnections = cancelSpeakConnections(runtime, active);
             try {
-                gateway().stopPlayback(runtime.nodeId, runtime.customerLegUuid);
+                if (!stopPlaybackSafely(runtime)) return;
             } catch (Exception exception) {
                 log.warn("AI UniMRCP 打断时停止 FreeSWITCH 播放失败，sessionId={}，businessCallId={}，error={}",
                     runtime.entity.getId(), runtime.businessCallId, exception.getMessage());
@@ -2204,6 +2205,67 @@ public class AiRealtimeMrcpEventService {
         }
     }
 
+    private record FailedPlayback(ActiveSpeak active, AiRealtimeCallTurn turn, long generation) { }
+
+    private static FailedPlayback detachFailedPlayback(RuntimeSession runtime, long generation, AiRealtimeCallTurn expectedTurn) {
+        synchronized (runtime.playbackTransitionLock) {
+            if (!canContinuePlayback(runtime.closed.get(), generation, runtime.turnGeneration.get())
+                || runtime.currentTurn.get() != expectedTurn) return null;
+            ActiveSpeak active = runtime.activeSpeak.getAndSet(null);
+            runtime.currentTurn.set(null);
+            runtime.audioReadySpeak.set(null);
+            runtime.waitingSpeakComplete.set(false);
+            runtime.controlResumeInProgress.set(false);
+            runtime.llmStreaming.set(false);
+            runtime.workflowSpeak.set(false);
+            runtime.workflowStreamingReply.set(false);
+            runtime.postPlaybackAction.set(null);
+            // Keep incoming recognition deferred until old playback has actually been stopped.
+            runtime.turnInProgress.set(true);
+            synchronized (runtime.pendingSpeakSegments) {
+                runtime.pendingSpeakSegments.clear();
+            }
+            ScheduledFuture<?> timer = runtime.pendingSpeakTimer.getAndSet(null);
+            if (timer != null) timer.cancel(false);
+            return new FailedPlayback(active, expectedTurn, runtime.turnGeneration.incrementAndGet());
+        }
+    }
+
+    private void recoverFailedPlayback(RuntimeSession runtime, FailedPlayback failed, String reason) {
+        try {
+            if (failed.active() != null && !runtime.closed.get()) {
+                try {
+                    cancelSpeakConnections(runtime, failed.active());
+                } catch (Exception exception) {
+                    log.warn("AI UniMRCP 异常轮次取消 TTS 失败，sessionId={}，error={}", runtime.entity.getId(), exception.getMessage());
+                }
+                try {
+                    if (!stopPlaybackSafely(runtime)) return;
+                } catch (Exception exception) {
+                    log.warn("AI UniMRCP 异常轮次停止播放失败，sessionId={}，error={}", runtime.entity.getId(), exception.getMessage());
+                }
+            }
+            if (failed.turn() != null) {
+                failed.turn().setTurnState("FAILED");
+                failed.turn().setPlaybackEndedAt(LocalDateTime.now());
+                failed.turn().setFailureReason(limit(reason));
+                try {
+                    turnMapper.updateById(failed.turn());
+                } catch (Exception exception) {
+                    log.warn("AI UniMRCP 异常轮次记录写入失败，仍尝试恢复收音，sessionId={}，error={}", runtime.entity.getId(), exception.getMessage());
+                }
+            }
+        } finally {
+            boolean resume;
+            synchronized (runtime.playbackTransitionLock) {
+                resume = !runtime.playbackFailureHandling.get()
+                    && canContinuePlayback(runtime.closed.get(), failed.generation(), runtime.turnGeneration.get());
+                if (resume) runtime.turnInProgress.set(false);
+            }
+            if (resume) resumeListening(runtime);
+        }
+    }
+
     private void markTurnInterrupted(AiRealtimeCallTurn turn, String reason) {
         if (turn == null || "INTERRUPTED".equals(turn.getTurnState()) || "COMPLETED".equals(turn.getTurnState())) {
             return;
@@ -2212,6 +2274,87 @@ public class AiRealtimeMrcpEventService {
         turn.setPlaybackEndedAt(LocalDateTime.now());
         turn.setFailureReason(limit("用户打断：" + reason));
         turnMapper.updateById(turn);
+    }
+
+    private boolean stopPlaybackSafely(RuntimeSession runtime) {
+        if (runtime.playbackFailureHandling.get()) return false;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            if (runtime.closed.get()) return false;
+            try {
+                if (!gateway().callExists(runtime.nodeId, runtime.customerLegUuid)) {
+                    end(runtime, "CHANNEL_GONE_DURING_STOP");
+                    return false;
+                }
+                gateway().stopPlayback(runtime.nodeId, runtime.customerLegUuid);
+                return true;
+            } catch (Exception exception) {
+                log.warn("AI UniMRCP 停播检查或命令失败，sessionId={}，attempt={}，error={}",
+                    runtime.entity.getId(), attempt, exception.getMessage());
+            }
+        }
+        if (runtime.closed.get()) return false;
+        try {
+            if (!gateway().callExists(runtime.nodeId, runtime.customerLegUuid)) {
+                end(runtime, "CHANNEL_GONE_AFTER_STOP_RETRY");
+                return false;
+            }
+        } catch (Exception exception) {
+            fail(runtime, "停播失败且无法确认客户通道存活，未执行转接或挂断", exception);
+            return false;
+        }
+        if (!runtime.playbackFailureHandling.compareAndSet(false, true)) return false;
+        try {
+            String action = runtime.playbackFailureConfig.getOrDefault("playbackFailureAction",
+                properties.getUnimrcp().getPlaybackFailureAction()).toString();
+            String queue = String.valueOf(runtime.playbackFailureConfig.getOrDefault("playbackFailureQueueCode",
+                StringUtils.defaultString(properties.getUnimrcp().getPlaybackFailureQueueCode())));
+            if ("TRANSFER_QUEUE".equals(action) && StringUtils.isNotBlank(queue)) {
+                executeWorkflowTransfer(runtime, "TRANSFER_QUEUE", queue);
+            } else if ("HANGUP".equals(action)) {
+                gateway().hangup(runtime.nodeId, runtime.customerLegUuid);
+                end(runtime, "PLAYBACK_STOP_FAILED_HANGUP");
+            } else {
+                fail(runtime, "停播失败处置配置无效，未执行转接或挂断", null);
+            }
+        } catch (Exception exception) {
+            fail(runtime, "停播失败后的处置执行失败：" + exception.getMessage(), exception);
+        }
+        return false;
+    }
+
+    // A rejected or stale interruption must not detach a newer/non-interruptible playback.
+    static boolean claimInterruptibleSpeak(AtomicReference<ActiveSpeak> playback, ActiveSpeak expected,
+                                          boolean allowed) {
+        return allowed && expected != null && playback.compareAndSet(expected, null);
+    }
+
+    static boolean canContinuePlayback(boolean closed, long playbackGeneration, long currentGeneration) {
+        return !closed && playbackGeneration == currentGeneration;
+    }
+
+    private static boolean isInputTaskCurrent(RuntimeSession runtime, long generation) {
+        return canContinuePlayback(runtime.closed.get(), generation, runtime.turnGeneration.get())
+            && !runtime.playbackFailureHandling.get()
+            && !Set.of("ENDING", "ENDED", "TRANSFERRING", "FAILED").contains(
+                StringUtils.defaultString(runtime.entity.getSessionState()));
+    }
+
+    // Only in-memory playback ownership is serialized here; never call providers or ESL under this lock.
+    private static boolean claimPlaybackTransition(RuntimeSession runtime, ActiveSpeak expected, boolean invalidate) {
+        synchronized (runtime.playbackTransitionLock) {
+            if (expected == null
+                || !canContinuePlayback(runtime.closed.get(), expected.generation(), runtime.turnGeneration.get())
+                || !claimInterruptibleSpeak(runtime.activeSpeak, expected, true)) return false;
+            runtime.audioReadySpeak.compareAndSet(expected, null);
+            if (runtime.preplayedOpeningSpeak.compareAndSet(expected, null)) {
+                runtime.preplayedOpeningReleased.set(true);
+            }
+            runtime.waitingSpeakComplete.set(false);
+            ScheduledFuture<?> timer = runtime.pendingSpeakTimer.getAndSet(null);
+            if (timer != null) timer.cancel(false);
+            if (invalidate) runtime.turnGeneration.incrementAndGet();
+            return true;
+        }
     }
 
     private boolean ensureChannelAlive(RuntimeSession runtime, String endReason) {
@@ -2300,24 +2443,27 @@ public class AiRealtimeMrcpEventService {
         }
     }
 
-    private void processWorkflowInput(RuntimeSession runtime, String text) {
-        if (runtime.closed.get() || StringUtils.isBlank(runtime.workflowExecutionId)) {
+    private void processWorkflowInput(RuntimeSession runtime, String text, long acceptedGeneration) {
+        if (!isInputTaskCurrent(runtime, acceptedGeneration) || StringUtils.isBlank(runtime.workflowExecutionId)) {
             return;
         }
         try {
             AiWorkflowVoiceExecutionResponse result = workflowRuntimeService.voiceInput(
                 runtime.workflowExecutionId, UUID.randomUUID().toString(), text);
+            if (!isInputTaskCurrent(runtime, acceptedGeneration)) return;
             handleWorkflowAction(runtime, result);
         } catch (Exception exception) {
+            if (!isInputTaskCurrent(runtime, acceptedGeneration)) return;
             runtime.turnInProgress.set(false);
             fail(runtime, "AI 语音工作流处理输入失败：" + exception.getMessage(), exception);
         }
     }
 
     private void handleWorkflowAction(RuntimeSession runtime, AiWorkflowVoiceExecutionResponse result) {
-        if (runtime.closed.get()) return;
+        if (runtime.closed.get() || runtime.playbackFailureHandling.get()) return;
         String actionType = StringUtils.blankToDefault(result.getActionType(), result.getStatus());
         if (Set.of("SPEAK", "STREAM_AI").contains(actionType)) {
+            runtime.playbackFailureConfig = result.getPlaybackConfig() == null ? Map.of() : new LinkedHashMap<>(result.getPlaybackConfig());
             NodeBargeInPolicy inherited = defaultBargeIn(runtime);
             NodeBargeInPolicy resolved = resolveNodeBargeInPolicy(result.getPlaybackConfig(), inherited);
             runtime.nodeBargeInPolicy = resolved == inherited ? null : resolved;
@@ -2327,6 +2473,7 @@ public class AiRealtimeMrcpEventService {
                 runtime.entity.getId(), result.getPlaybackNodeId(), resolved.strategy(), resolved.enabled());
         } else if (!"WAIT_INPUT".equals(actionType)) {
             runtime.nodeBargeInPolicy = null;
+            runtime.playbackFailureConfig = Map.of();
         }
         switch (actionType) {
             case "STREAM_AI" -> streamWorkflowReply(runtime, result);
@@ -3001,6 +3148,9 @@ public class AiRealtimeMrcpEventService {
     }
 
     private static final class RuntimeSession {
+        private final Object playbackTransitionLock = new Object();
+        private final AtomicBoolean playbackFailureHandling = new AtomicBoolean();
+        private volatile Map<String, Object> playbackFailureConfig = Map.of();
         private final String tenantId;
         private final Long nodeId;
         private final Long agentId;
@@ -3027,11 +3177,14 @@ public class AiRealtimeMrcpEventService {
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean conversationReady = new AtomicBoolean();
         private final AtomicBoolean preplayedOpeningCompleted = new AtomicBoolean();
+        private final AtomicBoolean preplayedOpeningReleased = new AtomicBoolean();
+        private final AtomicReference<ActiveSpeak> preplayedOpeningSpeak = new AtomicReference<>();
         private final AtomicBoolean turnInProgress = new AtomicBoolean();
         private final AtomicBoolean waitingSpeakComplete = new AtomicBoolean();
         private final AtomicBoolean recognizing = new AtomicBoolean();
         private final AtomicBoolean openingRecognitionActive = new AtomicBoolean();
         private final AtomicBoolean interrupting = new AtomicBoolean();
+        private final AtomicLong acceptedInputSequence = new AtomicLong();
         private final AtomicBoolean controlResumeInProgress = new AtomicBoolean();
         private final AtomicInteger controlBargeInCount = new AtomicInteger();
         private final AtomicLong lastControlBargeInNanos = new AtomicLong();
@@ -3109,7 +3262,11 @@ public class AiRealtimeMrcpEventService {
         }
 
         private boolean acceptRecognition() {
-            return turnInProgress.compareAndSet(false, true);
+            synchronized (playbackTransitionLock) {
+                return isInputTaskCurrent(this, turnGeneration.get())
+                    && !controlResumeInProgress.get()
+                    && turnInProgress.compareAndSet(false, true);
+            }
         }
 
         private synchronized boolean claimRecognitionEvent(String eventId) {

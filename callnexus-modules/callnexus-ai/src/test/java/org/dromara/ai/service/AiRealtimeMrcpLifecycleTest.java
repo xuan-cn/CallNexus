@@ -5,6 +5,7 @@ import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.common.core.utils.SpringUtils;
 import org.dromara.resource.node.service.FreeSwitchNodeQueryService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Tag;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
@@ -17,6 +18,7 @@ import java.util.Map;
 
 import static org.mockito.Mockito.*;
 
+@Tag("dev")
 class AiRealtimeMrcpLifecycleTest {
     @Mock
     private AiKnowledgeProperties properties;

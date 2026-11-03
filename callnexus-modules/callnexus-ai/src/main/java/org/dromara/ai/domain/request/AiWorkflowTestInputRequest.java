@@ -7,5 +7,6 @@ import lombok.Data;
 @Data
 public class AiWorkflowTestInputRequest {
     @NotBlank @Size(max = 128) private String inputId;
-    @NotBlank @Size(max = 2000) private String text;
+    @Size(max = 2000) private String text;
+    @jakarta.validation.constraints.Pattern(regexp = "SILENCE|INTERRUPT|PLAYBACK_COMPLETED") private String signal;
 }

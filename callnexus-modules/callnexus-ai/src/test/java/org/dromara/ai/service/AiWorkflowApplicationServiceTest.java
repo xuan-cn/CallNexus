@@ -48,6 +48,87 @@ class AiWorkflowApplicationServiceTest {
     }
 
     @Test
+    void dialogueFieldsMustReferenceDeclaredTextVariables() {
+        String graph = """
+            {"schemaVersion":"1.0","variables":[{"key":"workflow.custom_hospital","type":"%s"}],"nodes":[
+              {"id":"start","type":"START","config":{}},
+              {"id":"ask","type":"DIALOGUE_STEP","config":{"goal":"收集医院","text":"在哪家医院？","retryText":"请补充医院",
+                "acceptedAnswers":"是的","declinedAnswers":"不是","aiUnderstandingEnabled":true,
+                "collectedFields":[{"key":"workflow.custom_hospital","label":"医院","type":"STRING"}]}},
+              {"id":"end","type":"END","config":{}}
+            ],"edges":[
+              {"source":"start","target":"ask"},
+              {"source":"ask","target":"end","condition":"COMPLETE"},
+              {"source":"ask","target":"end","condition":"DECLINED"},
+              {"source":"ask","target":"end","condition":"LIMIT"}
+            ]}
+            """;
+        mockDraft(graph.formatted("NUMBER"));
+        assertThat(service.validateDraft(1L).getErrors()).anyMatch(item -> item.contains("声明类型必须是文本"));
+        mockDraft(graph.formatted("STRING"));
+        assertThat(service.validateDraft(1L).getErrors()).isEmpty();
+    }
+
+    @Test
+    void validatesIntentAnswerConfigurationWithoutExactExamples() {
+        String graph = """
+            {"schemaVersion":"1.0","nodes":[
+              {"id":"start","type":"START","config":{}},
+              {"id":"ask","type":"DIALOGUE_STEP","config":{"goal":"确认需求","text":"需要办理吗？","retryText":"请确认",
+                "acceptedMatchMode":"INTENT","acceptedIntentCodes":["CONFIRM"]}},
+              {"id":"end","type":"END","config":{}}
+            ],"edges":[
+              {"source":"start","target":"ask"},
+              {"source":"ask","target":"end","condition":"COMPLETE"},
+              {"source":"ask","target":"end","condition":"DECLINED"},
+              {"source":"ask","target":"end","condition":"LIMIT"}
+            ]}
+            """;
+        mockDraft(graph);
+        assertThat(service.validateDraft(1L).getErrors()).isEmpty();
+        mockDraft(graph.replace("[\"CONFIRM\"]", "[]"));
+        assertThat(service.validateDraft(1L).getErrors()).anyMatch(item -> item.contains("至少选择一个意图"));
+        mockDraft(graph.replace("\"acceptedMatchMode\":\"INTENT\"", "\"acceptedMatchMode\":\"EXACT\""));
+        assertThat(service.validateDraft(1L).getErrors()).anyMatch(item -> item.contains("明确通过"));
+    }
+
+    @Test
+    void validatesBusinessOptionBranchesAndRejectsMissingOrUnknownExits() {
+        String graph = """
+            {"schemaVersion":"1.0","nodes":[
+              {"id":"start","type":"START","config":{}},
+              {"id":"ask","type":"DIALOGUE_STEP","config":{"goal":"确认身份","text":"本人还是家属？","retryText":"请确认身份",
+                "answerOptions":[{"code":"SELF","label":"本人","answers":"本人"},{"code":"FAMILY","label":"家属","answers":"家属"}]}},
+              {"id":"end","type":"END","config":{}}
+            ],"edges":[
+              {"source":"start","target":"ask"},
+              {"source":"ask","target":"end","condition":"OPTION_SELF"},
+              {"id":"family-edge","source":"ask","target":"end","condition":"OPTION_FAMILY"},
+              {"source":"ask","target":"end","condition":"DECLINED"},
+              {"source":"ask","target":"end","condition":"LIMIT"}
+            ]}
+            """;
+        mockDraft(graph);
+        assertThat(service.validateDraft(1L).getErrors()).isEmpty();
+        mockDraft(graph.replace("OPTION_FAMILY", "OPTION_OTHER"));
+        assertThat(service.validateDraft(1L).getErrors()).anyMatch(item -> item.contains("全部业务选项"));
+        assertThat(service.validateDraft(1L).getErrors()).anyMatch(item -> item.contains("不在已配置"));
+        assertThat(service.validateDraft(1L).getIssues()).anySatisfy(issue -> {
+            assertThat(issue.edgeId()).isEqualTo("family-edge");
+            assertThat(issue.nodeId()).isEqualTo("ask");
+            assertThat(issue.condition()).isEqualTo("OPTION_OTHER");
+        });
+        mockDraft(graph.replace("\"家属\"}", "\"本人\"}"));
+        assertThat(service.validateDraft(1L).getErrors()).anyMatch(item -> item.contains("重复"));
+        assertThat(service.validateDraft(1L).getErrors()).noneMatch(item -> item.contains("不在已配置"));
+        assertThat(service.validateDraft(1L).getIssues()).anySatisfy(issue -> {
+            assertThat(issue.nodeId()).isEqualTo("ask");
+            assertThat(issue.field()).isEqualTo("answerOptions");
+            assertThat(issue.edgeId()).isNull();
+        });
+    }
+
+    @Test
     void rejectsMissingBranchConditionsAndCycles() {
         mockDraft("""
             {"schemaVersion":"1.0","nodes":[

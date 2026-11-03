@@ -41,16 +41,19 @@ public class AiRealtimeAsrInternalService {
                                             String contentType, String language, String callUuid,
                                             Long agentId, Long flowId, byte[] audio) {
         validateRequest(nodeCode, nodeToken, tenantId, audio);
+        long authStarted = System.nanoTime();
         Long nodeId = nodeQueryService.resolveEnabledNodeIdByAgentToken(tenantId, nodeCode, nodeToken);
         if (nodeId == null) {
             throw new ServiceException("AI 实时 ASR 节点鉴权失败");
         }
+        log.info("AI ASR 节点校验耗时，nodeId={}，callUuid={}，authMs={}", nodeId, callUuid, (System.nanoTime() - authStarted) / 1_000_000L);
         return TenantHelper.dynamic(tenantId,
             () -> transcribeInTenant(nodeId, contentType, language, callUuid, agentId, flowId, audio));
     }
 
     private AiRealtimeAsrResponse transcribeInTenant(Long nodeId, String contentType, String language,
                                                      String callUuid, Long agentId, Long flowId, byte[] audio) {
+        long localStarted = System.nanoTime();
         AiSpeechProvider provider = defaultRealtimeAsrProvider();
         AudioFormat audioFormat = parseContentType(contentType);
         String resolvedLanguage = StringUtils.isBlank(language) ? DEFAULT_LANGUAGE : language;
@@ -69,6 +72,8 @@ public class AiRealtimeAsrInternalService {
         }
 
         long startNanos = System.nanoTime();
+        log.info("AI ASR 调用前准备，nodeId={}，callUuid={}，providerCode={}，localPrepareMs={}，pcmDurationMs={}", nodeId, callUuid, provider.getProviderCode(),
+            (startNanos - localStarted) / 1_000_000L, "pcm".equals(audioFormat.format()) ? audio.length * 1000L / (audioFormat.sampleRate() * 2L) : null);
         AsrTranscribeResult result;
         try {
             result = asrProviderRegistry.get(provider.getProviderType()).transcribe(provider,

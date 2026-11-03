@@ -47,6 +47,8 @@ public class AiKnowledgeProperties {
         private Integer maxConsecutiveEmptyRecognitions = 3;
         private Boolean hangupOnRecognitionIdle = true;
         private Long intentHangupDelayMs = 1000L;
+        private String playbackFailureAction = "HANGUP";
+        private String playbackFailureQueueCode;
         private String resultHeaderCandidates = "variable_detect_speech_result,variable_speech_result,Detect-Speech-Result,Speech-Result";
     }
 }

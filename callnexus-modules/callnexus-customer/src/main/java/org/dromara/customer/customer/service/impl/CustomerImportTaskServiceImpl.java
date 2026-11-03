@@ -38,9 +38,18 @@ public class CustomerImportTaskServiceImpl implements CustomerImportTaskService 
     @Override
     public TableDataInfo<CustomerImportTaskResponse> page(CustomerImportTaskQuery query, PageQuery pageQuery) {
         CustomerImportTaskQuery safe = query == null ? new CustomerImportTaskQuery() : query;
+        if (safe.getCreatedDateFrom() != null && safe.getCreatedDateTo() != null
+            && safe.getCreatedDateTo().isBefore(safe.getCreatedDateFrom())) {
+            throw new ServiceException("创建日期的结束日期不能早于开始日期");
+        }
         LambdaQueryWrapper<CustomerImportTask> wrapper = new LambdaQueryWrapper<CustomerImportTask>()
             .like(hasText(safe.getTaskName()), CustomerImportTask::getTaskName, trim(safe.getTaskName()))
             .eq(hasText(safe.getStatus()), CustomerImportTask::getStatus, trim(safe.getStatus()))
+            .ge(safe.getCreatedDateFrom() != null, CustomerImportTask::getCreateTime,
+                safe.getCreatedDateFrom() == null ? null : safe.getCreatedDateFrom().atStartOfDay())
+            // Exclusive next-day boundary includes the entire end date, even with fractional seconds.
+            .lt(safe.getCreatedDateTo() != null, CustomerImportTask::getCreateTime,
+                safe.getCreatedDateTo() == null ? null : safe.getCreatedDateTo().plusDays(1).atStartOfDay())
             .orderByDesc(CustomerImportTask::getCreateTime);
         Page<CustomerImportTask> page = taskMapper.selectPage(pageQuery.build(), wrapper);
         return new TableDataInfo<>(page.getRecords().stream().map(this::toResponse).toList(), page.getTotal());

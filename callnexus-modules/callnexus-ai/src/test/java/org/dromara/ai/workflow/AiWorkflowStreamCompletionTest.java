@@ -46,7 +46,7 @@ class AiWorkflowStreamCompletionTest {
         AiWorkflowRuntimeServiceImpl service = new AiWorkflowRuntimeServiceImpl(
             mock(AiWorkflowMapper.class), mock(AiWorkflowVersionMapper.class), executionMapper,
             mock(AiWorkflowNodeLogMapper.class), mock(AiWorkflowWaitMapper.class),
-            mock(AiAgentWorkflowBindingMapper.class), new AiWorkflowNodeHandlerRegistry(List.of()));
+            mock(AiAgentWorkflowBindingMapper.class), new AiWorkflowNodeHandlerRegistry(List.of()), WorkflowRuleTestSupport.matcher());
 
         service.voiceStreamCompleted("voice-stream-1", new AiChatTurnResult(
             99L, "可以在线购买。", "MODEL", Map.of(

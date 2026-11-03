@@ -15,6 +15,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Tag("dev")
 class AiRealtimeMrcpEventServiceTest {
+    @Test
+    void requiredDisclosureOverridesOrdinaryBargeInAndNeverUsesControlResume() {
+        var inherited = new AiRealtimeMrcpEventService.NodeBargeInPolicy(true, true, "CONTROL_RESUME", "听我说完", 2, 5000);
+        assertFalse(AiRealtimeMrcpEventService.resolveNodeBargeInPolicy(Map.of("requiredDisclosure", true), inherited).enabled());
+        var allowed = AiRealtimeMrcpEventService.resolveNodeBargeInPolicy(Map.of("requiredDisclosure", true, "disclosureBargeInMode", "REPLAY_AFTER_REPLY"), inherited);
+        assertTrue(allowed.enabled()); assertEquals("INTERRUPT", allowed.strategy());
+    }
+    @Test
+    void recognizerClosedOrEmptyTextIsNotProofOfSilence() {
+        assertFalse(AiRealtimeMrcpEventService.isExplicitNoInput(Map.of("Speech-Type", "closed")));
+        assertFalse(AiRealtimeMrcpEventService.isExplicitNoInput(Map.of("Completion-Cause", "004 error")));
+        assertTrue(AiRealtimeMrcpEventService.isExplicitNoInput(Map.of("Completion-Cause", "002 no-input-timeout")));
+    }
 
     @Test
     void shouldUseCompletedApplicationInsteadOfConcurrentRecognitionChannelVariables() {
