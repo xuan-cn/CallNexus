@@ -241,14 +241,14 @@ public class PhoneNumberApplicationServiceImpl implements PhoneNumberApplication
 
     private void ensureNodeExists(Long nodeId) {
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
-        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
+        if (node == null) throw new ServiceException("话务服务节点不存在");
     }
 
     private void ensureGatewayAvailable(Long nodeId, Long gatewayId) {
         if (gatewayId == null) return;
         FreeSwitchGateway gateway = gatewayMapper.selectById(gatewayId);
         if (gateway == null || !nodeId.equals(gateway.getNodeId())) {
-            throw new ServiceException("FreeSWITCH 网关不存在");
+            throw new ServiceException("话务服务网关不存在");
         }
     }
 

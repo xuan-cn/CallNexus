@@ -7,7 +7,7 @@ import lombok.Data;
 
 @Data
 public class UpdateInboundDidEntryRequest {
-    @NotNull(message = "请选择 FreeSWITCH 节点")
+    @NotNull(message = "请选择话务服务节点")
     private Long nodeId;
     @NotNull(message = "请选择网关")
     private Long gatewayId;

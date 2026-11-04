@@ -36,7 +36,7 @@ public class VoiceMailInternalController {
                           @RequestHeader(value = TOKEN_HEADER, required = false) String headerToken,
                           @RequestParam(value = "token", required = false) String queryToken,
                           @RequestPart("file") MultipartFile file) {
-        if (!validToken(headerToken, queryToken)) return R.fail("FreeSWITCH 内部接口令牌无效");
+        if (!validToken(headerToken, queryToken)) return R.fail("话务服务内部接口令牌无效");
         service.upload(tenantId, voicemailBoxId, businessCallId, callerNumber, calledNumber, durationMs, file);
         return R.ok();
     }

@@ -213,7 +213,7 @@ public class CallQueueService implements CallQueueQueryService {
         }
         FreeSwitchNodeGroup nodeGroup = nodeGroupMapper.selectById(request.getNodeGroupId());
         if (nodeGroup == null || !Boolean.TRUE.equals(nodeGroup.getEnabled())) {
-            throw new ServiceException("FreeSWITCH 节点组不存在或已停用");
+            throw new ServiceException("话务服务节点组不存在或已停用");
         }
         if (request.getWaitMediaId() != null) {
             validatePublishedMedia(request.getWaitMediaId(), "QUEUE_WAIT_MUSIC", "队列等待音不存在、未发布或分类不是队列等待音乐");
@@ -431,7 +431,7 @@ public class CallQueueService implements CallQueueQueryService {
                 throw new ServiceException("目标队列不存在或已停用");
             }
             if (!nodeIds(targetQueue.getNodeGroupId()).contains(nodeId)) {
-                throw new ServiceException("目标队列未覆盖当前 FreeSWITCH 节点");
+                throw new ServiceException("目标队列未覆盖当前话务服务节点");
             }
             return targetQueue.getQueueCode();
         } catch (NumberFormatException exception) {
@@ -476,7 +476,7 @@ public class CallQueueService implements CallQueueQueryService {
                 queue.getMaxWaitSeconds(), agents));
         }
         if (configs.isEmpty()) {
-            throw new ServiceException("队列关联的 FreeSWITCH 节点组没有成员节点");
+            throw new ServiceException("队列关联的话务服务节点组没有成员节点");
         }
         return configs;
     }
@@ -518,7 +518,7 @@ public class CallQueueService implements CallQueueQueryService {
                 nodeId
             );
             if (path == null || path.isBlank()) {
-                throw new ServiceException("坐席 " + agentId + " 的工号提示音尚未生成，或尚未同步到 FreeSWITCH 节点 " + nodeId);
+                throw new ServiceException("坐席 " + agentId + " 的工号提示音尚未生成，或尚未同步到话务服务节点 " + nodeId);
             }
             return path;
         }

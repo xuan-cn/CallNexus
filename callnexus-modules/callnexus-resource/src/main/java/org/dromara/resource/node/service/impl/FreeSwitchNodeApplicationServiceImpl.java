@@ -56,7 +56,7 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
     @Override
     public FreeSwitchNodeResponse get(Long id) {
         FreeSwitchNode node = mapper.selectById(id);
-        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
+        if (node == null) throw new ServiceException("话务服务节点不存在");
         return toResponse(node);
     }
 
@@ -64,11 +64,11 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
     public FreeSwitchNodeConnectionResponse getEnabledConnection(Long nodeId) {
         FreeSwitchNode node = mapper.selectById(nodeId);
         if (node == null || !Boolean.TRUE.equals(node.getEnabled())) {
-            throw new ServiceException("FreeSWITCH 节点不存在或已停用");
+            throw new ServiceException("话务服务节点不存在或已停用");
         }
         if (node.getEslHost() == null || node.getEslHost().isBlank()
             || node.getEslPort() == null || node.getEslPassword() == null || node.getEslPassword().isBlank()) {
-            throw new ServiceException("FreeSWITCH 节点 ESL 未配置");
+            throw new ServiceException("话务服务节点 ESL 未配置");
         }
         return toConnectionResponse(node);
     }
@@ -121,7 +121,7 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
                 .filter(node -> matchesNode(node, remoteAddress, switchIpv4, hostname))
                 .toList();
             if (automaticMatches.size() > 1) {
-                throw new ServiceException("FreeSWITCH 主机信息匹配到多个启用节点，请检查节点 ESL 主机和节点编码");
+                throw new ServiceException("话务服务主机信息匹配到多个启用节点，请检查节点 ESL 主机和节点编码");
             }
             if (automaticMatches.size() == 1) {
                 return automaticMatches.get(0).getId();
@@ -177,7 +177,7 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
     public void update(Long id, UpdateFreeSwitchNodeRequest request) {
         ensureNodeCodeUnique(request.getNodeCode(), id);
         FreeSwitchNode node = mapper.selectById(id);
-        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
+        if (node == null) throw new ServiceException("话务服务节点不存在");
         apply(node, request.getNodeCode(), request.getNodeName(), request.getSipDomain(), request.getWssUrl(), request.getEslHost(), request.getEslPort());
         applySipProfile(node, request.getSipProfileName(), request.getSipIp(), request.getRtpIp(), request.getAutoNatEnabled(),
             request.getExtSipIp(), request.getExtRtpIp());
@@ -186,28 +186,28 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
         node.setAgentEnabled(request.getAgentEnabled());
         node.setMediaRootPath(request.getMediaRootPath());
         node.setVersion(request.getVersion());
-        if (mapper.updateById(node) != 1) throw new ServiceException("FreeSWITCH 节点已被其他用户修改，请刷新后重试");
+        if (mapper.updateById(node) != 1) throw new ServiceException("话务服务节点已被其他用户修改，请刷新后重试");
     }
 
     @Override
     public void delete(Long id) {
         if (sipAccountMapper.exists(new LambdaQueryWrapper<SipAccount>().eq(SipAccount::getNodeId, id))) {
-            throw new ServiceException("FreeSWITCH 节点正在被使用，无法删除");
+            throw new ServiceException("话务服务节点正在被使用，无法删除");
         }
         if (gatewayMapper.exists(new LambdaQueryWrapper<FreeSwitchGateway>().eq(FreeSwitchGateway::getNodeId, id))) {
-            throw new ServiceException("FreeSWITCH 节点正在被使用，无法删除");
+            throw new ServiceException("话务服务节点正在被使用，无法删除");
         }
         if (groupMemberMapper.exists(new LambdaQueryWrapper<FreeSwitchNodeGroupMember>().eq(FreeSwitchNodeGroupMember::getNodeId, id))) {
-            throw new ServiceException("FreeSWITCH 节点已加入节点分组，无法删除");
+            throw new ServiceException("话务服务节点已加入节点分组，无法删除");
         }
-        if (mapper.deleteById(id) != 1) throw new ServiceException("FreeSWITCH 节点不存在");
+        if (mapper.deleteById(id) != 1) throw new ServiceException("话务服务节点不存在");
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String resetAgentToken(Long id) {
         FreeSwitchNode node = mapper.selectById(id);
-        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
+        if (node == null) throw new ServiceException("话务服务节点不存在");
         String token = UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", "");
         try {
             node.setAgentTokenHash(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
@@ -223,7 +223,7 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
     @Override
     public FreeSwitchNodeSipProfilePreviewResponse previewSipProfile(Long id) {
         FreeSwitchNode node = mapper.selectById(id);
-        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
+        if (node == null) throw new ServiceException("话务服务节点不存在");
         String profileName = defaultString(node.getSipProfileName(), "external");
         String sipIp = defaultString(node.getSipIp(), "$${local_ip_v4}");
         String rtpIp = defaultString(node.getRtpIp(), "$${local_ip_v4}");
@@ -257,7 +257,7 @@ public class FreeSwitchNodeApplicationServiceImpl implements FreeSwitchNodeAppli
             .eq(FreeSwitchNode::getTenantId, LoginHelper.getTenantId())
             .eq(FreeSwitchNode::getNodeCode, nodeCode)
             .ne(excludedId != null, FreeSwitchNode::getId, excludedId));
-        if (exists) throw new ServiceException("FreeSWITCH 节点编码已存在");
+        if (exists) throw new ServiceException("话务服务节点编码已存在");
     }
 
     private void apply(FreeSwitchNode node, String code, String name, String sipDomain, String wssUrl, String eslHost, Integer eslPort) {

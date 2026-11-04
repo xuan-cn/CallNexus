@@ -17,6 +17,7 @@ public class AiIntent extends TenantEntity {
     private String intentName;
     private String intentType;
     private String description;
+    private String matchRulesJson;
     private String actionType;
     private String actionConfigJson;
     private String responseTemplate;

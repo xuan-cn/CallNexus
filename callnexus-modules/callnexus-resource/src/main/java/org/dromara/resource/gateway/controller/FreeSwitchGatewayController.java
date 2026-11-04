@@ -11,6 +11,10 @@ import org.dromara.resource.gateway.domain.request.FreeSwitchGatewayPageQuery;
 import org.dromara.resource.gateway.domain.request.UpdateFreeSwitchGatewayRequest;
 import org.dromara.resource.gateway.domain.response.FreeSwitchGatewayResponse;
 import org.dromara.resource.gateway.service.FreeSwitchGatewayApplicationService;
+import org.dromara.resource.gateway.service.FreeSwitchGatewayStatusService;
+import org.dromara.resource.gateway.domain.response.FreeSwitchGatewayRuntimeResponse;
+import org.springframework.web.bind.annotation.RequestParam;
+import java.util.List;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -25,6 +29,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class FreeSwitchGatewayController {
     private final FreeSwitchGatewayApplicationService applicationService;
+    private final FreeSwitchGatewayStatusService statusService;
+
+    @GetMapping("/runtime-status")
+    @SaCheckPermission("callcenter:freeswitch-gateway:list")
+    public R<List<FreeSwitchGatewayRuntimeResponse>> runtimeStatus(@RequestParam List<Long> ids) {
+        return R.ok(statusService.query(ids));
+    }
 
     @GetMapping
     @SaCheckPermission("callcenter:freeswitch-gateway:list")

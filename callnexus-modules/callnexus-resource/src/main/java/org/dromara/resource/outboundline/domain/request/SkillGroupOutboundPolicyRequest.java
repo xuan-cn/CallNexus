@@ -5,7 +5,7 @@ import lombok.Data;
 
 @Data
 public class SkillGroupOutboundPolicyRequest {
-    @NotNull(message = "FreeSWITCH节点不能为空")
+    @NotNull(message = "话务服务节点不能为空")
     private Long nodeId;
     @NotNull(message = "技能组不能为空")
     private Long skillGroupId;

@@ -9,6 +9,7 @@ import org.dromara.outbound.domain.*;
 import org.dromara.outbound.domain.request.OutboundBlacklistRequest;
 import org.dromara.outbound.domain.response.OutboundBlacklistImportResponse;
 import org.dromara.outbound.domain.response.OutboundBlacklistResponse;
+import org.dromara.outbound.domain.response.OutboundBlacklistTaskOptionResponse;
 import org.dromara.outbound.domain.vo.OutboundBlacklistImportErrorVo;
 import org.dromara.outbound.domain.vo.OutboundBlacklistImportVo;
 import org.dromara.outbound.mapper.*;
@@ -43,6 +44,15 @@ public class OutboundBlacklistService {
         return blacklistMapper.selectList(new LambdaQueryWrapper<OutboundBlacklist>()
                 .orderByDesc(OutboundBlacklist::getCreateTime))
             .stream().map(this::response).toList();
+    }
+
+    public List<OutboundBlacklistTaskOptionResponse> taskOptions() {
+        return taskMapper.selectList(new LambdaQueryWrapper<OutboundTask>()
+                .select(OutboundTask::getId, OutboundTask::getTaskCode, OutboundTask::getTaskName)
+                .eq(OutboundTask::getTaskType, "AUTO")
+                .orderByDesc(OutboundTask::getCreateTime))
+            .stream().map(task -> new OutboundBlacklistTaskOptionResponse(task.getId(), task.getTaskCode(), task.getTaskName()))
+            .toList();
     }
 
     public OutboundBlacklistResponse get(Long id) {

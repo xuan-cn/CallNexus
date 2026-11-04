@@ -160,7 +160,7 @@ public class CallQueueConfigurationContributor implements FreeSwitchCallCenterCo
             case "ROUND_ROBIN" -> "round-robin";
             case "TOP_DOWN" -> "top-down";
             case "RING_ALL" -> "ring-all";
-            default -> throw new ServiceException("不支持的 FreeSWITCH 队列分配策略");
+            default -> throw new ServiceException("不支持的话务服务队列分配策略");
         };
     }
 }

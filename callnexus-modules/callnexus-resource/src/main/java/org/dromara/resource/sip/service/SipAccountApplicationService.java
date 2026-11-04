@@ -11,6 +11,7 @@ import org.dromara.resource.sip.domain.response.SipAccountResponse;
 public interface SipAccountApplicationService extends SipAccountQueryService {
     TableDataInfo<SipAccountResponse> page(SipAccountPageQuery query, PageQuery pageQuery);
     SipAccountResponse get(Long id);
+    String getPassword(Long id);
     Long create(CreateSipAccountRequest request);
     Integer batchCreate(BatchCreateSipAccountRequest request);
     void update(Long id, UpdateSipAccountRequest request);

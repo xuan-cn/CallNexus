@@ -675,7 +675,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         if (liveCallId(endpoint, activeCall, callId) == null) {
             RedisUtils.deleteObject(activeCallKey(agent.getAgentId()));
-            throw new ServiceException("当前通话已在 FreeSWITCH 侧结束");
+            throw new ServiceException("当前通话已在话务服务侧结束");
         }
         return activeCall;
     }

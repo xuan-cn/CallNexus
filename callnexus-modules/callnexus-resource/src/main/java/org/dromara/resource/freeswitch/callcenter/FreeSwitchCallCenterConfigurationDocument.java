@@ -51,10 +51,10 @@ public class FreeSwitchCallCenterConfigurationDocument {
 
     private void add(Map<String, String> target, String type, String name, String xml) {
         if (name == null || name.isBlank() || xml == null || xml.isBlank()) {
-            throw new ServiceException("FreeSWITCH callcenter " + type + " 配置名称和内容不能为空");
+            throw new ServiceException("话务服务 callcenter " + type + " 配置名称和内容不能为空");
         }
         if (target.putIfAbsent(name, xml.strip()) != null) {
-            throw new ServiceException("FreeSWITCH callcenter " + type + " 配置重复：" + name);
+            throw new ServiceException("话务服务 callcenter " + type + " 配置重复：" + name);
         }
     }
 }

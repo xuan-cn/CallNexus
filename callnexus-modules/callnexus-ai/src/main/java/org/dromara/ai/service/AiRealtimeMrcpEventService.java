@@ -2517,7 +2517,7 @@ public class AiRealtimeMrcpEventService {
         }
         AiGeneratedMediaQueryService.SyncedMedia media = generatedMediaQueryService.findSyncedMedia(mediaId, runtime.nodeId);
         if (media == null || StringUtils.isBlank(media.path())) {
-            throw new ServiceException("声音媒体未发布到当前 FreeSWITCH 节点或同步尚未成功");
+            throw new ServiceException("声音媒体未发布到当前话务服务节点或同步尚未成功");
         }
         ScheduledFuture<?> old = runtime.pendingSpeakTimer.getAndSet(null);
         if (old != null) old.cancel(false);
@@ -2810,7 +2810,7 @@ public class AiRealtimeMrcpEventService {
 
     private AiRealtimeTelephonyGateway gateway() {
         return telephonyGatewayProvider.getIfAvailable(() -> {
-            throw new IllegalStateException("AI UniMRCP FreeSWITCH 网关未加载");
+            throw new IllegalStateException("AI UniMRCP 话务服务网关未加载");
         });
     }
 

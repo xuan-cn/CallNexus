@@ -137,7 +137,7 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
         Set<String> registeredExtensions = commandGateway.listRegisteredExtensions(endpoint);
         if (!SipRegistrationMatcher.isRegistered(registeredExtensions,
             operator.getExtension(), operator.getAuthUsername())) {
-            throw new ServiceException("当前调度分机未在 FreeSWITCH 注册");
+            throw new ServiceException("当前调度分机未在话务服务注册");
         }
         if (isExtensionBusy(operator.getNodeId(), operator.getExtension())) {
             throw new ServiceException("当前调度分机已有活动通话，不能发起新的调度呼叫");
@@ -598,7 +598,7 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
         for (String extension : extensions) {
             SipAccountRealtimeResponse account = sipAccountQueryService.findEnabledByNodeAndExtension(nodeId, extension);
             if (account == null) {
-                throw new ServiceException("目标分机不存在、已停用或不属于当前 FreeSWITCH 节点：" + extension);
+                throw new ServiceException("目标分机不存在、已停用或不属于当前话务服务节点：" + extension);
             }
             if (!SipRegistrationMatcher.isRegistered(registeredExtensions,
                 account.getExtension(), account.getAuthUsername())) {
@@ -673,7 +673,7 @@ public class DispatchCallTaskServiceImpl implements DispatchCallTaskService {
                     .toString();
                 log.warn("广播声音媒体无可用节点文件，mediaId={}，nodeId={}，latestVersionNo={}，publishStatus={}，nodeSyncs={}",
                     mediaAssetId, nodeId, media.getLatestVersionNo(), media.getPublishStatus(), nodeSyncSummary);
-                return new ServiceException("广播声音媒体最新发布版本尚未同步到当前 FreeSWITCH 节点");
+                return new ServiceException("广播声音媒体最新发布版本尚未同步到当前话务服务节点");
             });
         return new BroadcastMedia(media.getId(), media.getAssetName(), sync.getTargetPath());
     }

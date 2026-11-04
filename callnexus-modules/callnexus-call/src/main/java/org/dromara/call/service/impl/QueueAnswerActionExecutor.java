@@ -103,7 +103,7 @@ public class QueueAnswerActionExecutor {
                                CallCenterResourceQueryService.QueueInfo queue, String action) {
         if (ACTION_PLAY_MEDIA.equals(action)) {
             if (queue == null || StringUtils.isBlank(queue.answerMediaPath())) {
-                throw new IllegalStateException("队列接通提示音尚未同步到当前 FreeSWITCH 节点");
+                throw new IllegalStateException("队列接通提示音尚未同步到当前话务服务节点");
             }
             telephonyCommandGateway.broadcastPlayback(endpoint, customerLegUuid, queue.answerMediaPath(), "aleg");
             return;
@@ -122,7 +122,7 @@ public class QueueAnswerActionExecutor {
                 nodeId
             );
             if (StringUtils.isBlank(promptPath)) {
-                throw new IllegalStateException("坐席工号提示音尚未生成或未同步到当前 FreeSWITCH 节点");
+                throw new IllegalStateException("坐席工号提示音尚未生成或未同步到当前话务服务节点");
             }
             telephonyCommandGateway.broadcastPlayback(endpoint, customerLegUuid, promptPath, "aleg");
         }

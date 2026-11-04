@@ -80,7 +80,7 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
             }
         }
         if (accepted == 0) {
-            throw new ServiceException("FreeSWITCH 中已找不到该通话的活动电话腿");
+            throw new ServiceException("话务服务中已找不到该通话的活动电话腿");
         }
         log.info("调度强制挂断整通电话完成，businessCallId={}，sessionId={}，nodeId={}，acceptedLegCount={}",
             businessCallId, session.getId(), session.getNodeId(), accepted);
@@ -114,7 +114,7 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
         }
         CallLeg customerLeg = customerLegs.get(0);
         if (!commandGateway.callExists(endpoint, customerLeg.getLegUuid())) {
-            throw new ServiceException("客户电话腿已在 FreeSWITCH 中结束，无法强制转接");
+            throw new ServiceException("客户电话腿已在话务服务中结束，无法强制转接");
         }
         commandGateway.setCallVariable(endpoint, customerLeg.getLegUuid(), "callnexus_satisfaction_skip", "true");
         commandGateway.setCallVariable(endpoint, customerLeg.getLegUuid(), "hangup_after_bridge", "true");
@@ -191,7 +191,7 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
             throw new ServiceException("当前调度分机已有活动通话，不能执行调度通话控制");
         }
         if (!session.getNodeId().equals(supervisor.getNodeId())) {
-            throw new ServiceException("调度员分机与目标通话不在同一 FreeSWITCH 节点");
+            throw new ServiceException("调度员分机与目标通话不在同一话务服务节点");
         }
         if (supervisor.getExtension().equals(targetExtension)) {
             throw new ServiceException("不能对当前调度员自己的分机执行调度通话控制");
@@ -208,11 +208,11 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
         CallLeg targetLeg = targetLegs.get(0);
         EslEndpoint endpoint = endpoint(session.getNodeId());
         if (!commandGateway.callExists(endpoint, targetLeg.getLegUuid())) {
-            throw new ServiceException("目标分机电话腿已在 FreeSWITCH 中结束");
+            throw new ServiceException("目标分机电话腿已在话务服务中结束");
         }
         if (!SipRegistrationMatcher.isRegistered(commandGateway.listRegisteredExtensions(endpoint),
             supervisor.getExtension(), supervisor.getAuthUsername())) {
-            throw new ServiceException("当前调度员分机未在 FreeSWITCH 注册");
+            throw new ServiceException("当前调度员分机未在话务服务注册");
         }
         String supervisionLegUuid = UUID.randomUUID().toString();
         switch (mode) {
@@ -236,7 +236,7 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
         DispatchOperatorExtensionResponse supervisor = requireAgentSupervisor(supervisorAgentId, false, false);
         CallSession session = requireActiveSession(businessCallId);
         if (!session.getNodeId().equals(supervisor.getNodeId())) {
-            throw new ServiceException("监督坐席分机与目标通话不在同一 FreeSWITCH 节点");
+            throw new ServiceException("监督坐席分机与目标通话不在同一话务服务节点");
         }
         List<CallLeg> supervisionLegs = activeLegs(session.getId()).stream()
             .filter(leg -> mode.name().equals(leg.getLegRole()))
@@ -256,7 +256,7 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
             accepted++;
         }
         if (accepted == 0) {
-            throw new ServiceException("FreeSWITCH 中已找不到活动的" + mode.label + "电话腿");
+            throw new ServiceException("话务服务中已找不到活动的" + mode.label + "电话腿");
         }
         log.info("调度{}停止命令已提交，businessCallId={}，sessionId={}，nodeId={}，supervisorAgentId={}，supervisorExtension={}，acceptedLegCount={}",
             mode.label, businessCallId, session.getId(), session.getNodeId(), supervisorAgentId,
@@ -303,7 +303,7 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
             throw new ServiceException("当前调度员已有活动通话，不能执行强接");
         }
         if (!session.getNodeId().equals(supervisor.getNodeId())) {
-            throw new ServiceException("调度员分机与目标振铃通话不在同一 FreeSWITCH 节点");
+            throw new ServiceException("调度员分机与目标振铃通话不在同一话务服务节点");
         }
         if (supervisor.getExtension().equals(targetExtension)) {
             throw new ServiceException("不能强接当前调度员自己的振铃分机");
@@ -323,14 +323,14 @@ public class DispatchCallControlServiceImpl implements DispatchCallControlServic
         CallLeg sourceLeg = resolvePickupSourceLeg(activeLegs, ringingLeg);
         EslEndpoint endpoint = endpoint(session.getNodeId());
         if (!commandGateway.callExists(endpoint, ringingLeg.getLegUuid())) {
-            throw new ServiceException("目标振铃电话腿已在 FreeSWITCH 中结束");
+            throw new ServiceException("目标振铃电话腿已在话务服务中结束");
         }
         if (!commandGateway.callExists(endpoint, sourceLeg.getLegUuid())) {
-            throw new ServiceException("原始呼叫电话腿已在 FreeSWITCH 中结束，无法强接");
+            throw new ServiceException("原始呼叫电话腿已在话务服务中结束，无法强接");
         }
         if (!SipRegistrationMatcher.isRegistered(commandGateway.listRegisteredExtensions(endpoint),
             supervisor.getExtension(), supervisor.getAuthUsername())) {
-            throw new ServiceException("当前调度员分机未在 FreeSWITCH 注册");
+            throw new ServiceException("当前调度员分机未在话务服务注册");
         }
         String pickupLegUuid = UUID.randomUUID().toString();
         commandGateway.originatePickup(endpoint, businessCallId, pickupLegUuid, supervisor.getExtension(),

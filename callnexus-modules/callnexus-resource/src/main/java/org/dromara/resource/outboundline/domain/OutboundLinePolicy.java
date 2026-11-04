@@ -1,6 +1,8 @@
 package org.dromara.resource.outboundline.domain;
 
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.annotation.Version;
@@ -22,6 +24,7 @@ public class OutboundLinePolicy extends TenantEntity {
     private Boolean addLocalAreaCode;
     private Boolean addMissingAreaCodeZero;
     private Boolean stripChinaCountryCode;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String outboundPrefix;
     private Boolean defaultPolicy;
     private Boolean enabled;

@@ -318,7 +318,7 @@ public class SipRegistrationSecurityManagementServiceImpl implements SipRegistra
 
     private void validatePolicy(SipSecurityPolicySaveRequest request) {
         if (request.getNodeId() < 0) throw new ServiceException("节点ID不能小于0");
-        if (request.getNodeId() > 0 && nodeMapper.selectById(request.getNodeId()) == null) throw new ServiceException("FreeSWITCH节点不存在");
+        if (request.getNodeId() > 0 && nodeMapper.selectById(request.getNodeId()) == null) throw new ServiceException("话务服务节点不存在");
         if (request.getSecondBlockSeconds() < request.getFirstBlockSeconds()
             || request.getRepeatedBlockSeconds() < request.getSecondBlockSeconds()) {
             throw new ServiceException("阶梯封禁时间必须依次递增");

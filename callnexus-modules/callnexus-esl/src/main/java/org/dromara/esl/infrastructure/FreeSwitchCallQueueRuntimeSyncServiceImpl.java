@@ -226,14 +226,14 @@ public class FreeSwitchCallQueueRuntimeSyncServiceImpl implements CallQueueRunti
 
     private String safeCode(String value) {
         if (value == null || !value.matches("^[A-Za-z0-9_-]{1,64}$")) {
-            throw new ServiceException("FreeSWITCH 队列或坐席编码不合法");
+            throw new ServiceException("话务服务队列或坐席编码不合法");
         }
         return value;
     }
 
     private String safeDomain(String value) {
         if (value == null || !value.matches("^[A-Za-z0-9.-]{1,255}$")) {
-            throw new ServiceException("FreeSWITCH SIP 域不合法");
+            throw new ServiceException("话务服务 SIP 域不合法");
         }
         return value;
     }

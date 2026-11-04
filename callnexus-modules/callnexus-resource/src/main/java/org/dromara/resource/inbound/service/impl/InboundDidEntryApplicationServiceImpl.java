@@ -169,7 +169,7 @@ public class InboundDidEntryApplicationServiceImpl implements InboundDidEntryApp
 
     private void validateReference(Long nodeId, Long gatewayId, Long phoneNumberId, String entryType, String routeType, String routeTargetId) {
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
-        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
+        if (node == null) throw new ServiceException("话务服务节点不存在");
         FreeSwitchGateway gateway = gatewayMapper.selectById(gatewayId);
         if (gateway == null || !nodeId.equals(gateway.getNodeId())) throw new ServiceException("网关不存在或不属于当前节点");
         if (phoneNumberId != null) {

@@ -33,7 +33,7 @@ public class VoiceMailNodeCompiler implements IvrNodeCompiler {
             .distinct()
             .toList();
         if (nodeIds.isEmpty()) {
-            throw new ServiceException("IVR 流程所属节点组未配置 FreeSWITCH 节点");
+            throw new ServiceException("IVR 流程所属节点组未配置话务服务节点");
         }
         for (Long nodeId : nodeIds) {
             if (!voiceMailBoxQueryService.isAvailable(context.flow().getTenantId(), boxId, nodeId)) {
@@ -49,7 +49,7 @@ public class VoiceMailNodeCompiler implements IvrNodeCompiler {
         VoiceMailDialplanResponse box = voiceMailBoxQueryService.findAvailableBox(
             context.flow().getTenantId(), boxId, context.freeSwitchNodeId());
         if (box == null) {
-            throw new ServiceException("当前 FreeSWITCH 节点无法使用目标语音留言箱");
+            throw new ServiceException("当前话务服务节点无法使用目标语音留言箱");
         }
         context.renderSupport().appendNodeStart(context.xml(), context.flow().getId(), context.node());
         context.xml().append("      <action application=\"set\" data=\"callnexus_ivr_voicemail_box_id=")

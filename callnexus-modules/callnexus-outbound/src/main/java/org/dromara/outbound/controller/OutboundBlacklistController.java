@@ -1,6 +1,7 @@
 package org.dromara.outbound.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import cn.dev33.satoken.annotation.SaMode;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -8,6 +9,7 @@ import org.dromara.common.core.domain.R;
 import org.dromara.outbound.domain.request.OutboundBlacklistRequest;
 import org.dromara.outbound.domain.response.OutboundBlacklistImportResponse;
 import org.dromara.outbound.domain.response.OutboundBlacklistResponse;
+import org.dromara.outbound.domain.response.OutboundBlacklistTaskOptionResponse;
 import org.dromara.outbound.service.OutboundBlacklistService;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -31,6 +33,13 @@ public class OutboundBlacklistController {
     @SaCheckPermission("callcenter:outbound-blacklist:query")
     public R<OutboundBlacklistResponse> get(@PathVariable Long id) {
         return R.ok(service.get(id));
+    }
+
+    @GetMapping("/task-options")
+    @SaCheckPermission(value = {"callcenter:outbound-blacklist:create", "callcenter:outbound-blacklist:update",
+        "callcenter:outbound-blacklist:import"}, mode = SaMode.OR)
+    public R<List<OutboundBlacklistTaskOptionResponse>> taskOptions() {
+        return R.ok(service.taskOptions());
     }
 
     @PostMapping

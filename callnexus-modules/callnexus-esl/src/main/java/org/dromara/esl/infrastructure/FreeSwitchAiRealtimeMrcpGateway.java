@@ -123,7 +123,7 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
         }
         String destination = ivrDialplanQueryService.resolvePublishedStartDestination(tenantId, targetFlowId, nodeId);
         if (StringUtils.isBlank(destination)) {
-            throw new ServiceException("目标 IVR 流程未发布、未启用或不适用于当前 FreeSWITCH 节点");
+            throw new ServiceException("目标 IVR 流程未发布、未启用或不适用于当前话务服务节点");
         }
         EslEndpoint endpoint = endpoint(nodeId);
         prepareForTransfer(endpoint, customerLegUuid);

@@ -13,6 +13,14 @@
     <dependencies>
         <dependency>
             <groupId>org.dromara</groupId>
+            <artifactId>callnexus-common-sms</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.dromara</groupId>
+            <artifactId>callnexus-common-encrypt</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.dromara</groupId>
             <artifactId>callnexus-common-web</artifactId>
         </dependency>
         <dependency>

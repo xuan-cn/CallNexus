@@ -262,7 +262,7 @@ public class AiRealtimeSessionManager {
                 }
             }
         } catch (Exception exception) {
-            throw new ServiceException("向 FreeSWITCH 返回 AI 音频失败：" + exception.getMessage());
+            throw new ServiceException("向话务服务返回 AI 音频失败：" + exception.getMessage());
         }
     }
 

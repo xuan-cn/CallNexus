@@ -60,7 +60,7 @@ public class FreeSwitchGatewayRuntimeSyncServiceImpl implements FreeSwitchGatewa
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             log.warn("等待 FreeSWITCH 删除旧网关时线程被中断，gatewayCode={}", gatewayCode);
-            throw new ServiceException("FreeSWITCH 网关同步已中断");
+            throw new ServiceException("话务服务网关同步已中断");
         }
     }
 
@@ -75,7 +75,7 @@ public class FreeSwitchGatewayRuntimeSyncServiceImpl implements FreeSwitchGatewa
 
     private String safeGatewayCode(String gatewayCode) {
         if (gatewayCode == null || !gatewayCode.matches("^[A-Za-z0-9_-]{2,32}$")) {
-            throw new ServiceException("FreeSWITCH 网关编码不合法");
+            throw new ServiceException("话务服务网关编码不合法");
         }
         return gatewayCode;
     }

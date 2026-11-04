@@ -33,7 +33,7 @@ public class QueueNodeCompiler implements IvrNodeCompiler {
             .distinct()
             .toList();
         if (nodeIds.isEmpty()) {
-            throw new ServiceException("IVR 流程所属节点组未配置 FreeSWITCH 节点");
+            throw new ServiceException("IVR 流程所属节点组未配置话务服务节点");
         }
         for (Long nodeId : nodeIds) {
             if (callQueueQueryService.findAvailableQueue(context.flow().getTenantId(), queueId, nodeId) == null) {
@@ -49,7 +49,7 @@ public class QueueNodeCompiler implements IvrNodeCompiler {
         CallQueueDialplanResponse queue = callQueueQueryService.findAvailableQueue(
             context.flow().getTenantId(), queueId, context.freeSwitchNodeId());
         if (queue == null) {
-            throw new ServiceException("当前 FreeSWITCH 节点无法使用目标呼叫队列");
+            throw new ServiceException("当前话务服务节点无法使用目标呼叫队列");
         }
         context.renderSupport().appendNodeStart(context.xml(), context.flow().getId(), context.node());
         context.xml().append("      <action application=\"set\" data=\"callnexus_ivr_queue_id=")

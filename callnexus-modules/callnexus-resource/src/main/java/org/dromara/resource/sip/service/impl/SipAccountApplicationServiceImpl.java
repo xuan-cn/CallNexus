@@ -62,6 +62,13 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     }
 
     @Override
+    public String getPassword(Long id) {
+        SipAccount account = mapper.selectById(id);
+        if (account == null) throw new ServiceException("SIP 分机不存在");
+        return account.getAuthPassword();
+    }
+
+    @Override
     public SipAccountResponse findEnabledById(Long id) {
         if (id == null) return null;
         SipAccount account = mapper.selectOne(new LambdaQueryWrapper<SipAccount>()
@@ -375,9 +382,9 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     }
 
     private FreeSwitchNode requireEnabledNode(Long nodeId) {
-        if (nodeId == null) throw new ServiceException("SIP 分机未绑定 FreeSWITCH 节点");
+        if (nodeId == null) throw new ServiceException("SIP 分机未绑定话务服务节点");
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
-        if (node == null || !Boolean.TRUE.equals(node.getEnabled())) throw new ServiceException("FreeSWITCH 节点不存在或已停用");
+        if (node == null || !Boolean.TRUE.equals(node.getEnabled())) throw new ServiceException("话务服务节点不存在或已停用");
         return node;
     }
 

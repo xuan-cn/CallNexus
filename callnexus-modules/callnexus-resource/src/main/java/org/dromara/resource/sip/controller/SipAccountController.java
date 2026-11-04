@@ -2,6 +2,7 @@ package org.dromara.resource.sip.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.mybatis.core.page.PageQuery;
@@ -40,6 +41,20 @@ public class SipAccountController {
     @SaCheckPermission("callcenter:sip-account:create")
     public R<Long> create(@Valid @RequestBody CreateSipAccountRequest request) {
         return R.ok(applicationService.create(request));
+    }
+
+    @GetMapping("/{id}/password")
+    @SaCheckPermission("callcenter:sip-account:update")
+    public R<PasswordResponse> password(@PathVariable Long id, HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        return R.ok(new PasswordResponse(applicationService.getPassword(id)));
+    }
+
+    public record PasswordResponse(String password) {
+        @Override
+        public String toString() {
+            return "PasswordResponse[password=******]";
+        }
     }
 
     @PostMapping("/batch")

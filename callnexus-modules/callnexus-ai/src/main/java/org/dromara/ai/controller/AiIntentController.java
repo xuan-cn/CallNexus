@@ -21,6 +21,22 @@ import java.util.List;
 @RequestMapping("/api/v1/ai/intents")
 @RequiredArgsConstructor
 public class AiIntentController {
+    public record RuleTestRequest(@jakarta.validation.constraints.NotBlank @jakarta.validation.constraints.Size(max = 4096) String text,
+                                  @jakarta.validation.constraints.NotNull List<org.dromara.ai.domain.AiIntentMatchRule> rules) {}
+    public record RuleHit(int index, String polarity, String mode, List<String> words) {}
+
+    @PostMapping("/rules-test")
+    @SaCheckPermission("callcenter:ai-intent:test")
+    public R<List<RuleHit>> testRules(@Valid @RequestBody RuleTestRequest request) {
+        org.dromara.ai.service.IntentRuleMatcher.validate(request.rules());
+        List<RuleHit> hits = new java.util.ArrayList<>();
+        for (int index = 0; index < request.rules().size(); index++) {
+            var rule = request.rules().get(index);
+            var words = org.dromara.ai.service.IntentRuleMatcher.matchedWords(rule, request.text());
+            if (!words.isEmpty()) hits.add(new RuleHit(index + 1, rule.getPolarity(), rule.getMode(), words));
+        }
+        return R.ok(hits);
+    }
     private final AiIntentApplicationService service;
 
     @GetMapping

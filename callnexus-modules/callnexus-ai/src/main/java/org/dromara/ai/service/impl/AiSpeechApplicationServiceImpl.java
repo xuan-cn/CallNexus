@@ -942,7 +942,7 @@ public class AiSpeechApplicationServiceImpl implements AiSpeechApplicationServic
                 .stream().map(FreeSwitchNodeGroup::getId).toList()
             : nodeGroupIds;
         if (groups.isEmpty()) {
-            throw new ServiceException("没有可用 FreeSWITCH 节点组，无法发布生成音频");
+            throw new ServiceException("没有可用话务服务节点组，无法发布生成音频");
         }
         mediaPublicationService.publish(mediaId, groups);
     }

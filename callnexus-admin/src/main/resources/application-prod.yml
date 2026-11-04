@@ -1,30 +1,15 @@
---- # 生产配置：变量由部署目录 .env 经 Compose 注入，不使用开发密钥兜底。
-sa-token:
-  jwt-secret-key: ${CNX_JWT_SECRET}
-api-decrypt:
-  publicKey: ${CNX_API_RESPONSE_PUBLIC_KEY}
-  privateKey: ${CNX_API_REQUEST_PRIVATE_KEY}
-callnexus:
-  freeswitch:
-    directory:
-      secret: ${CALLNEXUS_FREESWITCH_DIRECTORY_SECRET}
-ai:
-  qdrant-url: ${CALLNEXUS_AI_QDRANT_URL}
-  qdrant-api-key: ${QDRANT_API_KEY}
-  realtime-token-secret: ${CNX_REALTIME_TOKEN_SECRET}
-
 --- # 监控中心配置
 spring.boot.admin.client:
   # 增加客户端开关
-  enabled: ${CNX_MONITOR_ENABLED:false}
-  url: ${CNX_MONITOR_URL:http://127.0.0.1:9090/admin}
+  enabled: false
+  url: http://localhost:9090/admin
   instance:
     service-host-type: IP
     metadata:
       username: ${spring.boot.admin.client.username}
       userpassword: ${spring.boot.admin.client.password}
-  username: ${CNX_MONITOR_USER}
-  password: ${CNX_MONITOR_PASSWORD}
+  username: callnexus
+  password: callnexus
 
 --- # snail-job 配置
 snail-job:
@@ -32,16 +17,16 @@ snail-job:
   # 需要在 SnailJob 后台组管理创建对应名称的组,然后创建任务的时候选择对应的组,才能正确分派任务
   group: "callnexus_group"
   # SnailJob 接入验证令牌 详见 script/sql/ry_job.sql `sj_group_config` 表
-  token: ${CNX_SNAIL_TOKEN}
+  token: "SJ_cKqBTPzCsWA3VyuCfFoccmuIEGXjr5KT"
   server:
-    host: ${CNX_LOCAL_IP:127.0.0.1}
+    host: 127.0.0.1
     port: 17888
   # 命名空间UUID 详见 script/sql/ry_job.sql `sj_namespace`表`unique_id`字段
   namespace: ${spring.profiles.active}
   # 随主应用端口漂移
   port: 2${server.port}
   # 客户端ip指定
-  host: ${CNX_LOCAL_IP:127.0.0.1}
+  host:
 
 --- # 数据源配置
 spring:
@@ -50,7 +35,7 @@ spring:
     # 动态数据源文档 https://www.kancloud.cn/tracy5546/dynamic-datasource/content
     dynamic:
       # 性能分析插件(有性能损耗 不建议生产环境使用)
-      p6spy: false
+      p6spy: true
       # 设置默认的数据源或者数据源组,默认值即为 master
       primary: master
       # 严格模式 匹配不到数据源则报错
@@ -62,9 +47,9 @@ spring:
           driverClassName: com.mysql.cj.jdbc.Driver
           # jdbc 所有参数配置参考 https://lionli.blog.csdn.net/article/details/122018562
           # rewriteBatchedStatements=true 批处理优化 大幅提升批量插入更新删除性能(对数据库有性能损耗 使用批量操作应考虑性能问题)
-          url: ${CNX_JDBC_URL}
-          username: ${MYSQL_USER}
-          password: ${MYSQL_PASSWORD}
+          url: jdbc:mysql://127.0.0.1:3306/callhub?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8&autoReconnect=true&rewriteBatchedStatements=true&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true
+          username: root
+          password: root123456
       #        # 从库数据源
       #        slave:
       #          lazy: true
@@ -111,13 +96,13 @@ spring:
 spring.data:
   redis:
     # 地址
-    host: ${REDIS_HOST:127.0.0.1}
+    host: 127.0.0.1
     # 端口，默认为6379
-    port: ${REDIS_PORT:6379}
+    port: 6379
     # 数据库索引
     database: 0
     # redis 密码必须配置
-    password: ${REDIS_PASSWORD}
+    password: cn5615
     # 连接超时时间
     timeout: 10s
     # 是否开启ssl

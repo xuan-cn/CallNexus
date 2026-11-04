@@ -87,7 +87,7 @@ public interface SystemConstants {
      */
     String[] EXCLUDE_PROPERTIES = {
         "password", "oldPassword", "newPassword", "confirmPassword",
-        "authToken", "apiKey", "accessKeySecret", "secretKey", "clientSecret",
+        "authToken", "apiKey", "accessKeyId", "accessKeySecret", "secretKey", "clientSecret",
         "credentialJson", "credentials", "token", "authorization"
     };
 

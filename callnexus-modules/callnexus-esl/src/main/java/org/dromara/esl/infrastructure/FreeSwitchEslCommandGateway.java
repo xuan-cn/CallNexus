@@ -251,7 +251,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         requireCallId(callId);
         requireAudioStreamUrl(websocketUrl);
         if (sampleRate != 8000 && sampleRate != 16000) {
-            throw new ServiceException("FreeSWITCH audio stream sample rate invalid");
+            throw new ServiceException("话务服务音频流采样率不合法");
         }
         sendCommand(endpoint, "api uuid_audio_stream " + callId + " start " + websocketUrl
             + " mono " + (sampleRate / 1000) + "k");
@@ -615,7 +615,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
 
     public void sendRawCommand(EslEndpoint endpoint, String command) {
         if (command == null || command.isBlank()) {
-            throw new ServiceException("FreeSWITCH ESL 命令不能为空");
+            throw new ServiceException("话务服务 ESL 命令不能为空");
         }
         sendCommand(endpoint, command);
     }
@@ -661,7 +661,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
             }
         } catch (IOException exception) {
             log.error("FreeSWITCH ESL command failed, host={}, port={}", endpoint.host(), endpoint.port(), exception);
-            throw new ServiceException("连接 FreeSWITCH ESL 失败");
+            throw new ServiceException("连接话务服务 ESL 失败");
         }
     }
 
@@ -686,10 +686,10 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     private void requireEndpoint(EslEndpoint endpoint) {
         if (endpoint.host() == null || endpoint.host().isBlank() || endpoint.port() <= 0 || endpoint.port() > 65535
             || endpoint.password() == null || endpoint.password().isBlank()) {
-            throw new ServiceException("FreeSWITCH 节点 ESL 未配置");
+            throw new ServiceException("话务服务节点 ESL 未配置");
         }
         if (endpoint.password().contains("\r") || endpoint.password().contains("\n")) {
-            throw new ServiceException("FreeSWITCH ESL 密码错误");
+            throw new ServiceException("话务服务 ESL 密码错误");
         }
     }
 
@@ -716,9 +716,9 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         log.warn("Unexpected FreeSWITCH ESL greeting, host={}, port={}, contentType={}, headers={}, body={}",
             endpoint.host(), endpoint.port(), contentType, greeting.headers(), greeting.body());
         if ("text/disconnect-notice".equalsIgnoreCase(contentType) || "text/rude-rejection".equalsIgnoreCase(contentType)) {
-            throw new ServiceException("FreeSWITCH ESL 鉴权被拒绝");
+            throw new ServiceException("话务服务 ESL 鉴权被拒绝");
         }
-        throw new ServiceException("未收到 FreeSWITCH ESL 鉴权请求");
+        throw new ServiceException("未收到话务服务 ESL 鉴权请求");
     }
 
     private void requireDialValue(String value) {
@@ -730,22 +730,22 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     private void requireSafeSpeechValue(String value, String field) {
         if (value == null || value.isBlank() || value.contains("\r") || value.contains("\n")
             || value.contains(";") || value.contains("&") || value.contains("|")) {
-            throw new ServiceException("FreeSWITCH speech parameter invalid: " + field);
+            throw new ServiceException("话务服务语音参数不合法：" + field);
         }
     }
 
     private void requireAudioStreamUrl(String value) {
         if (value == null || value.isBlank() || value.contains("\r") || value.contains("\n") || value.contains(" ")) {
-            throw new ServiceException("FreeSWITCH audio stream URL invalid");
+            throw new ServiceException("话务服务音频流地址不合法");
         }
         try {
             URI uri = URI.create(value);
             if (!("ws".equalsIgnoreCase(uri.getScheme()) || "wss".equalsIgnoreCase(uri.getScheme()))
                 || uri.getHost() == null) {
-                throw new ServiceException("FreeSWITCH audio stream URL invalid");
+                throw new ServiceException("话务服务音频流地址不合法");
             }
         } catch (IllegalArgumentException exception) {
-            throw new ServiceException("FreeSWITCH audio stream URL invalid");
+            throw new ServiceException("话务服务音频流地址不合法");
         }
     }
 
@@ -827,7 +827,7 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
         }
         if (!isSuccessResponse(response)) {
             log.warn("FreeSWITCH ESL 命令执行失败，command={}，response={}", command, response);
-            throw new ServiceException("FreeSWITCH ESL 命令执行失败，命令=" + safeCommandSummary(command)
+            throw new ServiceException("话务服务 ESL 命令执行失败，命令=" + safeCommandSummary(command)
                 + "，响应=" + errorSummary(response, errorCode));
         }
         log.info("FreeSWITCH ESL 命令执行成功，command={}，response={}", command, response);

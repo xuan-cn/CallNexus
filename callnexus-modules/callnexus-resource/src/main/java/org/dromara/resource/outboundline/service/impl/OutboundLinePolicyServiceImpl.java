@@ -411,7 +411,7 @@ public class OutboundLinePolicyServiceImpl implements OutboundLinePolicyService 
 
     private void ensureNodeExists(Long nodeId) {
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
-        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
+        if (node == null) throw new ServiceException("话务服务节点不存在");
     }
 
     private void ensurePolicyCodeUnique(String policyCode, Long excludeId) {

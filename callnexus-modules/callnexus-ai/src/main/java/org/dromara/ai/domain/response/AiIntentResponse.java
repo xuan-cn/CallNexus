@@ -7,6 +7,7 @@ import java.util.List;
 
 @Data
 public class AiIntentResponse {
+    private List<org.dromara.ai.domain.AiIntentMatchRule> matchRules;
     private Long id;
     private Long groupId;
     private String groupName;

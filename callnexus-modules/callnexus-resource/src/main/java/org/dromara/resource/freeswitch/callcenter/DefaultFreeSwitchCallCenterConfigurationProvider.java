@@ -33,10 +33,10 @@ public class DefaultFreeSwitchCallCenterConfigurationProvider implements FreeSwi
         for (FreeSwitchCallCenterConfigurationContributor contributor : contributors) {
             String code = contributor.contributorCode();
             if (code == null || code.isBlank()) {
-                throw new ServiceException("FreeSWITCH callcenter 配置贡献器编码不能为空");
+                throw new ServiceException("话务服务 callcenter 配置贡献器编码不能为空");
             }
             if (!codes.add(code)) {
-                throw new ServiceException("FreeSWITCH callcenter 配置贡献器编码重复：" + code);
+                throw new ServiceException("话务服务 callcenter 配置贡献器编码重复：" + code);
             }
         }
     }

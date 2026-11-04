@@ -7,7 +7,7 @@ import lombok.Data;
 
 @Data
 public class InboundRouteTestRequest {
-    @NotNull(message = "请选择 FreeSWITCH 节点")
+    @NotNull(message = "请选择话务服务节点")
     private Long nodeId;
     private Long gatewayId;
     @Size(max = 64, message = "主叫号码不能超过 64 个字符")

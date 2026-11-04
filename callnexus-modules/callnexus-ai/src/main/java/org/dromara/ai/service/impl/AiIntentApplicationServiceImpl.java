@@ -17,6 +17,7 @@ import org.dromara.ai.domain.response.AiIntentUtteranceResponse;
 import org.dromara.ai.mapper.*;
 import org.dromara.ai.provider.*;
 import org.dromara.ai.service.AiIntentApplicationService;
+import org.dromara.ai.service.IntentRuleMatcher;
 import org.dromara.ai.knowledge.KnowledgeTextUtils;
 import org.dromara.ai.vector.VectorPoint;
 import org.dromara.ai.vector.VectorSearchHit;
@@ -162,27 +163,48 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         Map<Long, List<AiIntentUtterance>> utteranceCatalog = utterancesByIntent(candidates);
 
         Set<Long> negativeMatches = new HashSet<>();
+        Map<AiIntent, String> deterministicMatches = new LinkedHashMap<>();
+        Map<Long, String> deterministicMethods = new HashMap<>();
+        List<String> excludedReasons = new ArrayList<>();
         for (AiIntent intent : candidates) {
             List<AiIntentUtterance> utterances = utteranceCatalog.getOrDefault(intent.getId(), List.of());
+            List<AiIntentMatchRule> rules = matchRules(intent);
+            String negativeRule = ruleMatch(rules, "NEGATIVE", inputText);
             boolean negative = utterances.stream().anyMatch(item ->
-                "NEGATIVE".equals(item.getUtteranceType()) && normalized.equals(item.getNormalizedText()));
+                "NEGATIVE".equals(item.getUtteranceType()) && normalized.equals(item.getNormalizedText())) || negativeRule != null;
             if (negative) {
                 negativeMatches.add(intent.getId());
+                excludedReasons.add(intent.getIntentName() + "：" + (negativeRule == null ? "反例整句匹配" : negativeRule));
                 continue;
             }
             boolean positive = utterances.stream().anyMatch(item ->
                 "POSITIVE".equals(item.getUtteranceType()) && normalized.equals(item.getNormalizedText()));
             if (positive) {
-                return persist(request, inputText, normalized, matched(intent, BigDecimal.ONE, "EXACT",
-                    "与正例话术精确匹配", null), started, null);
+                deterministicMatches.put(intent, "与正例话术精确匹配");
+                deterministicMethods.put(intent.getId(), "EXACT");
+            } else {
+                String positiveRule = ruleMatch(rules, "POSITIVE", inputText);
+                if (positiveRule != null) {
+                    deterministicMatches.put(intent, positiveRule);
+                    deterministicMethods.put(intent.getId(), "RULE");
+                }
             }
+        }
+        if (deterministicMatches.size() > 1) {
+            return persist(request, inputText, normalized, unmatched("RULE_CONFLICT", "同时命中多个意图，请调整规则或继续澄清："
+                + deterministicMatches.keySet().stream().map(AiIntent::getIntentName).collect(Collectors.joining("、"))), started, null);
+        }
+        if (deterministicMatches.size() == 1) {
+            var match = deterministicMatches.entrySet().iterator().next();
+            return persist(request, inputText, normalized, matched(match.getKey(), BigDecimal.ONE,
+                deterministicMethods.get(match.getKey().getId()), match.getValue(), null), started, null);
         }
 
         List<AiIntent> vectorCandidates = candidates.stream()
             .filter(item -> !negativeMatches.contains(item.getId())).toList();
         if (vectorCandidates.isEmpty()) {
             return persist(request, inputText, normalized,
-                unmatched("NONE", "文本命中反例话术，已排除全部候选意图"), started, null);
+                unmatched("NONE", "文本命中反例，已排除全部候选意图：" + String.join("；", excludedReasons)), started, null);
         }
         Long embeddingModelId = null;
         try {
@@ -577,6 +599,8 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
     }
 
     private void fill(AiIntent intent, AiIntentRequest request) {
+        IntentRuleMatcher.validate(request.getMatchRules());
+        intent.setMatchRulesJson(JsonUtils.toJsonString(request.getMatchRules() == null ? List.of() : request.getMatchRules()));
         String type = upper(request.getIntentType());
         String action = upper(request.getActionType());
         if (!INTENT_TYPES.contains(type)) throw new ServiceException("未知的意图类型：" + type);
@@ -704,6 +728,7 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         value.setIntentName(intent.getIntentName());
         value.setIntentType(intent.getIntentType());
         value.setDescription(intent.getDescription());
+        value.setMatchRules(matchRules(intent));
         value.setActionType(intent.getActionType());
         value.setActionConfigJson(intent.getActionConfigJson());
         value.setResponseTemplate(intent.getResponseTemplate());
@@ -742,6 +767,30 @@ public class AiIntentApplicationServiceImpl implements AiIntentApplicationServic
         if (value == null) return "";
         return value.trim().toLowerCase(Locale.ROOT)
             .replaceAll("[\\p{Punct}\\p{IsPunctuation}\\s]+", "");
+    }
+
+    private List<AiIntentMatchRule> matchRules(AiIntent intent) {
+        return StringUtils.isBlank(intent.getMatchRulesJson()) ? List.of()
+            : JsonUtils.parseArray(intent.getMatchRulesJson(), AiIntentMatchRule.class);
+    }
+
+    private String ruleMatch(List<AiIntentMatchRule> rules, String polarity, String text) {
+        for (int index = 0; index < rules.size(); index++) {
+            AiIntentMatchRule rule = rules.get(index);
+            if (!polarity.equals(rule.getPolarity())) continue;
+            List<String> words = IntentRuleMatcher.matchedWords(rule, text);
+            String mode = switch (rule.getMode()) {
+                case "EXACT" -> "整句一致";
+                case "ANY" -> "包含任意词";
+                case "ALL" -> "同时包含多组词";
+                case "PREFIX" -> "开头是";
+                case "SUFFIX" -> "结尾是";
+                default -> rule.getMode();
+            };
+            if (!words.isEmpty()) return ("NEGATIVE".equals(polarity) ? "反例" : "正例") + "规则 " + (index + 1)
+                + "（" + mode + "），命中词：" + String.join("、", words);
+        }
+        return null;
     }
 
     private String sha256(String value) {

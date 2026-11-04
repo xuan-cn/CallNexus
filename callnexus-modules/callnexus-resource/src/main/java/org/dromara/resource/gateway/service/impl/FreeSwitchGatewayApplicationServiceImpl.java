@@ -58,7 +58,7 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
     @Override
     public FreeSwitchGatewayResponse get(Long id) {
         FreeSwitchGateway gateway = mapper.selectById(id);
-        if (gateway == null) throw new ServiceException("FreeSWITCH 网关不存在");
+        if (gateway == null) throw new ServiceException("话务服务网关不存在");
         return toResponse(gateway);
     }
 
@@ -92,7 +92,7 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         ensureNodeExists(request.getNodeId());
         ensureGatewayCodeUnique(request.getGatewayCode(), id);
         FreeSwitchGateway gateway = mapper.selectById(id);
-        if (gateway == null) throw new ServiceException("FreeSWITCH 网关不存在");
+        if (gateway == null) throw new ServiceException("话务服务网关不存在");
         String effectivePassword = request.getPassword() == null || request.getPassword().isBlank() ? gateway.getPassword() : request.getPassword();
         validateAccessMode(request.getAccessMode(), request.getProxy(), request.getUsername(), effectivePassword,
             request.getRegisteredIdentity());
@@ -112,7 +112,7 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
         if (request.getPassword() != null && !request.getPassword().isBlank()) gateway.setPassword(request.getPassword());
         gateway.setEnabled(request.getEnabled());
         gateway.setVersion(request.getVersion());
-        if (mapper.updateById(gateway) != 1) throw new ServiceException("FreeSWITCH 网关已被其他用户修改，请刷新后重试");
+        if (mapper.updateById(gateway) != 1) throw new ServiceException("话务服务网关已被其他用户修改，请刷新后重试");
         afterCommit(() -> syncAfterUpdate(oldNodeId, oldGatewayCode, oldEnabled, oldAccessMode, gateway));
     }
 
@@ -120,8 +120,8 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
         FreeSwitchGateway gateway = mapper.selectById(id);
-        if (gateway == null) throw new ServiceException("FreeSWITCH 网关不存在");
-        if (mapper.deleteById(id) != 1) throw new ServiceException("FreeSWITCH 网关不存在");
+        if (gateway == null) throw new ServiceException("话务服务网关不存在");
+        if (mapper.deleteById(id) != 1) throw new ServiceException("话务服务网关不存在");
         afterCommit(() -> syncAfterDelete(gateway));
     }
 
@@ -200,7 +200,7 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
 
     private void ensureNodeExists(Long nodeId) {
         FreeSwitchNode node = nodeMapper.selectById(nodeId);
-        if (node == null) throw new ServiceException("FreeSWITCH 节点不存在");
+        if (node == null) throw new ServiceException("话务服务节点不存在");
     }
 
     private void ensureGatewayCodeUnique(String gatewayCode, Long excludedId) {
@@ -208,7 +208,7 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
             .eq(FreeSwitchGateway::getTenantId, LoginHelper.getTenantId())
             .eq(FreeSwitchGateway::getGatewayCode, gatewayCode)
             .ne(excludedId != null, FreeSwitchGateway::getId, excludedId));
-        if (exists) throw new ServiceException("FreeSWITCH 网关编码已存在");
+        if (exists) throw new ServiceException("话务服务网关编码已存在");
     }
 
     private void ensureRegisteredDeviceUnique(Long nodeId, String accessMode, String registeredIdentity,
@@ -343,22 +343,22 @@ public class FreeSwitchGatewayApplicationServiceImpl implements FreeSwitchGatewa
     private void validateAccessMode(String accessMode, String proxy, String username, String password, String registeredIdentity) {
         if ("DEVICE_REGISTER".equals(accessMode)) {
             if (registeredIdentity == null || registeredIdentity.isBlank()) {
-                throw new ServiceException("FreeSWITCH 接收注册模式必须填写对端注册账号");
+                throw new ServiceException("话务服务接收注册模式必须填写对端注册账号");
             }
             if (username == null || username.isBlank()) {
-                throw new ServiceException("FreeSWITCH 接收注册模式必须填写认证用户");
+                throw new ServiceException("话务服务接收注册模式必须填写认证用户");
             }
             if (password == null || password.isBlank()) {
-                throw new ServiceException("FreeSWITCH 接收注册模式必须填写认证密码");
+                throw new ServiceException("话务服务接收注册模式必须填写认证密码");
             }
             return;
         }
         if (proxy == null || proxy.isBlank()) {
-            throw new ServiceException("IP 中继或 FreeSWITCH 主动注册模式必须填写 SIP 服务器");
+            throw new ServiceException("IP 中继或话务服务主动注册模式必须填写 SIP 服务器");
         }
         if ("OUTBOUND_REGISTER".equals(accessMode)
             && (username == null || username.isBlank() || password == null || password.isBlank())) {
-            throw new ServiceException("FreeSWITCH 主动注册模式必须填写认证用户和认证密码");
+            throw new ServiceException("话务服务主动注册模式必须填写认证用户和认证密码");
         }
     }
 

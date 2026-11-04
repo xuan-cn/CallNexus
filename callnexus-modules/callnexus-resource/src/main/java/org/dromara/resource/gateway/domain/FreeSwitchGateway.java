@@ -1,6 +1,8 @@
 package org.dromara.resource.gateway.domain;
 
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.annotation.Version;
@@ -34,6 +36,7 @@ public class FreeSwitchGateway extends TenantEntity {
     private Boolean addLocalAreaCode;
     private Boolean addMissingAreaCodeZero;
     private Boolean stripChinaCountryCode;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String outboundPrefix;
     private Integer ping;
     private Integer expireSeconds;

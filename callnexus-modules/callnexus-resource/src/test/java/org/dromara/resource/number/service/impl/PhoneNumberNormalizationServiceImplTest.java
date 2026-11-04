@@ -34,6 +34,15 @@ class PhoneNumberNormalizationServiceImplTest {
     }
 
     @Test
+    void blankPrefixDoesNotChangeDialNumber() {
+        for (String prefix : new String[]{null, "", "  "}) {
+            PhoneNumberNormalizeRequest request = request("13800138000");
+            request.setOutboundPrefix(prefix);
+            assertEquals("13800138000", service.normalizeInternal(request).getDialNumber());
+        }
+    }
+
+    @Test
     void keepsMissingAreaCodeZeroWhenRuleDisabled() {
         PhoneNumberNormalizeRequest request = request("45188886666");
         request.setAddMissingAreaCodeZero(false);

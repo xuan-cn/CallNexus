@@ -12,6 +12,11 @@
     <description>CallNexus 外呼名单、任务、调度和预测外呼</description>
     <dependencies>
         <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-resource</artifactId>
         </dependency>

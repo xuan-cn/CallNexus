@@ -221,7 +221,7 @@ public class FreeSwitchAclApplicationServiceImpl implements FreeSwitchAclApplica
         nodeQueryService.getEnabledConnection(request.getNodeId());
         String aclCode = request.getAclCode().trim();
         if (RESERVED_ACL_CODES.contains(aclCode.toLowerCase())) {
-            throw new ServiceException("ACL 编码不能使用 FreeSWITCH 内置列表名称：" + aclCode);
+            throw new ServiceException("ACL 编码不能使用话务服务内置列表名称：" + aclCode);
         }
         long duplicates = aclMapper.selectCount(new LambdaQueryWrapper<FreeSwitchAcl>()
             .eq(FreeSwitchAcl::getNodeId, request.getNodeId())
@@ -299,7 +299,7 @@ public class FreeSwitchAclApplicationServiceImpl implements FreeSwitchAclApplica
     private FreeSwitchAclRuntimeSyncService requireRuntimeSync() {
         FreeSwitchAclRuntimeSyncService service = runtimeSyncServiceProvider.getIfAvailable();
         if (service == null) {
-            throw new ServiceException("FreeSWITCH ACL 运行时同步服务不可用");
+            throw new ServiceException("话务服务 ACL 运行时同步服务不可用");
         }
         return service;
     }
