@@ -16,6 +16,7 @@ public interface AiWorkflowRuntimeService {
     Optional<AiWorkflowVoiceExecutionResponse> startVoice(Long agentId, String businessCallId, String sceneType,
                                                           Map<String, Object> variables);
     AiWorkflowVoiceExecutionResponse voiceInput(String executionId, String inputId, String text);
+    AiWorkflowVoiceExecutionResponse voiceDigits(String executionId, String waitingToken, String digits);
     AiWorkflowVoiceExecutionResponse voiceSignal(String executionId, String inputId, String signal);
     void voiceStreamCompleted(String executionId, AiChatTurnResult result);
     AiWorkflowVoiceExecutionResponse voiceTtsCompleted(String executionId);

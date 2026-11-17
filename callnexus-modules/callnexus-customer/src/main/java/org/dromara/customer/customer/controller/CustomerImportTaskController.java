@@ -92,6 +92,12 @@ public class CustomerImportTaskController {
         importService.downloadTemplate(response);
     }
 
+    @PostMapping("/{taskId}/template")
+    @SaCheckPermission("callcenter:customer-import-task:upload")
+    public void taskTemplate(@PathVariable Long taskId, HttpServletResponse response) {
+        importService.downloadTaskTemplate(taskId, response);
+    }
+
     @PostMapping(value = "/{taskId}/analyze", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @SaCheckPermission("callcenter:customer-import-task:upload")
     public R<CustomerImportAnalysisResponse> analyze(@PathVariable Long taskId, @RequestPart("file") MultipartFile file) {

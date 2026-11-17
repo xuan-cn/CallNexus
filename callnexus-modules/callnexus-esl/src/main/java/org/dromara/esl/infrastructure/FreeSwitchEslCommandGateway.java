@@ -152,6 +152,45 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     }
 
     @Override
+    public void setHoldAudioMuted(EslEndpoint endpoint, String callId, boolean muted, boolean microphoneMuted) {
+        requireCallId(callId);
+        if (!muted && !microphoneMuted) {
+            unmute(endpoint, callId);
+            return;
+        }
+        sendCommand(endpoint, "api uuid_audio " + callId + " start read mute " + (muted ? "1" : "-4"));
+        sendCommand(endpoint, "api uuid_audio " + callId + " start write mute " + (muted ? "1" : "0"));
+    }
+
+    @Override
+    public String getDefaultHoldMusic(EslEndpoint endpoint, String callId) {
+        requireCallId(callId);
+        String value = executeCommand(endpoint, "api uuid_getvar " + callId + " hold_music").body();
+        return value == null || value.isBlank() || "_undef_".equals(value.trim()) ? "local_stream://moh" : value.trim();
+    }
+
+    @Override
+    public void startHoldPlayback(EslEndpoint endpoint, String callId, String mediaPath) {
+        requireCallId(callId);
+        requireHoldMediaPath(mediaPath);
+        // Mix into the already muted bridge; loop until the specific media hook is removed.
+        sendCommand(endpoint, "api uuid_displace " + callId + " start " + mediaPath + " 0 ml");
+    }
+
+    @Override
+    public void stopHoldPlayback(EslEndpoint endpoint, String callId, String mediaPath) {
+        requireCallId(callId);
+        requireHoldMediaPath(mediaPath);
+        sendCommand(endpoint, "api uuid_displace " + callId + " stop " + mediaPath);
+    }
+
+    private void requireHoldMediaPath(String mediaPath) {
+        if (mediaPath == null || !mediaPath.matches("(?:/|local_stream://)[A-Za-z0-9._/-]+")) {
+            throw new ServiceException("保持提示音文件路径不合法");
+        }
+    }
+
+    @Override
     public void sendDtmf(EslEndpoint endpoint, String callId, String digits) {
         requireCallId(callId);
         requireDtmfDigits(digits);
@@ -221,6 +260,13 @@ public class FreeSwitchEslCommandGateway implements TelephonyCommandGateway {
     public void setCallVariable(EslEndpoint endpoint, String callId, String name, String value) {
         requireCallId(callId);
         requireDialValue(name);
+        if ("temp_hold_music".equals(name)) {
+            if (value == null || (!value.isEmpty() && !value.matches("^/[A-Za-z0-9._/-]+$"))) {
+                throw new ServiceException("保持提示音文件路径不合法");
+            }
+            sendCommand(endpoint, "api uuid_setvar " + callId + " " + name + (value.isEmpty() ? "" : " " + value));
+            return;
+        }
         requireDialValue(value);
         sendCommand(endpoint, "api uuid_setvar " + callId + " " + name + " " + value);
         log.info("FreeSWITCH 通话变量已设置，callId={}，name={}，value={}", callId, name, value);

@@ -12,6 +12,8 @@ import org.springframework.web.multipart.MultipartFile;
 public interface CustomerImportService {
     void downloadTemplate(HttpServletResponse response);
 
+    void downloadTaskTemplate(Long taskId, HttpServletResponse response);
+
     CustomerImportAnalysisResponse analyze(Long taskId, MultipartFile file);
 
     CustomerImportBatchResponse startImport(Long taskId, MultipartFile file);

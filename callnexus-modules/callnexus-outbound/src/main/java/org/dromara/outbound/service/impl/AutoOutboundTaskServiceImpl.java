@@ -1,5 +1,8 @@
 package org.dromara.outbound.service.impl;
 
+import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.outbound.mapper.TicketCallbackPolicyMapper;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -86,6 +89,7 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     private final FreeSwitchNodeQueryService nodeQueryService;
     private final PhoneNumberApplicationService phoneNumberService;
     private final OutboundLinePolicyService outboundLinePolicyService;
+    private final TicketCallbackPolicyMapper callbackPolicies;
 
     @Override
     public List<AutoOutboundTaskResponse> list() {
@@ -139,9 +143,13 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     @Transactional(rollbackFor = Exception.class)
     public void update(Long id, AutoOutboundTaskRequest request) {
         validate(request);
-        OutboundTask task = requireTask(id);
+        OutboundTask task = requireTask(id, true);
         if (!EDITABLE_STATUSES.contains(task.getStatus())) {
             throw new ServiceException("运行中的自动外呼任务不能修改，请先暂停或停止任务");
+        }
+        if (callbackPolicies.countAutomaticPolicies(TenantHelper.getTenantId(), id) > 0
+            && (!"AGENTLESS_AI".equals(request.getDialMode()) || request.getTargetId() == null)) {
+            throw new ServiceException("该任务用于工单自动回访，不能改成非 AI 外呼任务");
         }
         apply(task, request);
         task.setVersion(request.getVersion());
@@ -158,7 +166,8 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
-        OutboundTask task = requireTask(id);
+        OutboundTask task = requireTask(id, true);
+        requireNoTicketCallbacks(id);
         if ("RUNNING".equals(task.getStatus())) {
             throw new ServiceException("执行中的自动外呼任务不能删除");
         }
@@ -232,6 +241,7 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     @Transactional(rollbackFor = Exception.class)
     public void rerun(Long id) {
         OutboundTask task = requireTask(id);
+        requireNoTicketCallbacks(id);
         if (!Set.of("COMPLETED", "STOPPED").contains(task.getStatus())) {
             throw new ServiceException("只有已完成或已停止的任务可以重新执行");
         }
@@ -280,6 +290,7 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int retryFailedMembers(Long id) {
+        requireNoTicketCallbacks(id);
         OutboundTask task = requireTask(id);
         LambdaQueryWrapper<OutboundMember> failedMembers = new LambdaQueryWrapper<OutboundMember>()
             .eq(OutboundMember::getTaskId, id)
@@ -338,6 +349,8 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long addSource(Long taskId, AutoOutboundSourceRequest request) {
+        requireTask(taskId, true);
+        requireNoTicketCallbacks(taskId);
         requireEditableTask(taskId);
         CustomerImportTaskResponse importTask = customerImportTaskService.get(request.getImportTaskId());
         if (!"ENABLED".equals(importTask.getStatus())) {
@@ -378,6 +391,7 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public AutoOutboundMaterializeResponse materialize(Long taskId) {
+        requireNoTicketCallbacks(taskId);
         requireEditableTask(taskId);
         List<OutboundTaskSource> sources = sourceMapper.selectList(new LambdaQueryWrapper<OutboundTaskSource>()
             .eq(OutboundTaskSource::getTaskId, taskId).eq(OutboundTaskSource::getEnabled, true)
@@ -544,6 +558,16 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
                 }
             }
         } while (loaded < page.getTotal());
+    }
+
+    private void requireNoTicketCallbacks(Long taskId) {
+        if (callbackPolicies.countAutomaticPolicies(TenantHelper.getTenantId(), taskId) > 0) {
+            throw new ServiceException("该任务已绑定工单自动回访策略，不支持删除、重跑或导入普通名单");
+        }
+        if (memberMapper.selectCount(new LambdaQueryWrapper<OutboundMember>().eq(OutboundMember::getTaskId, taskId)
+            .eq(OutboundMember::getSourceType, TicketCallbackService.SOURCE)) > 0) {
+            throw new ServiceException("该任务包含工单回访记录，请从工单发起补访，不支持批量重跑、删除或导入普通名单");
+        }
     }
 
     private CustomerPhoneResponse selectPhone(CustomerResponse customer, String strategy, String phoneLabel) {
@@ -830,8 +854,14 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     }
 
     private OutboundTask requireTask(Long id) {
-        OutboundTask task = taskMapper.selectOne(new LambdaQueryWrapper<OutboundTask>()
-            .eq(OutboundTask::getId, id).eq(OutboundTask::getTaskType, TASK_TYPE));
+        return requireTask(id, false);
+    }
+
+    private OutboundTask requireTask(Long id, boolean lock) {
+        var query = new LambdaQueryWrapper<OutboundTask>()
+            .eq(OutboundTask::getId, id).eq(OutboundTask::getTaskType, TASK_TYPE);
+        if (lock) query.last("FOR UPDATE");
+        OutboundTask task = taskMapper.selectOne(query);
         if (task == null) {
             throw new ServiceException("自动外呼任务不存在");
         }

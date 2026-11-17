@@ -1,0 +1,11 @@
+ARG INSTALLER_BASE_IMAGE=callnexus-installer-base:2026.11.06
+FROM ${INSTALLER_BASE_IMAGE}
+# Base must already contain Python, OpenSSL CLI and system CA certificates.
+RUN python3 -c "import ssl, argparse, pathlib, subprocess, ipaddress, gzip, xml.etree.ElementTree" \
+    && openssl version && test -s /etc/ssl/certs/ca-certificates.crt
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 LANG=C.UTF-8
+WORKDIR /opt/callnexus-installer
+COPY legacy/ ./legacy/
+COPY installer.py ./installer.py
+ENTRYPOINT ["python3", "-B", "/opt/callnexus-installer/installer.py"]
+CMD ["help"]

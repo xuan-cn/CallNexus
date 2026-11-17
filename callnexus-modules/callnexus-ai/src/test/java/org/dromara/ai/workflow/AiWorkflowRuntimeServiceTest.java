@@ -9,6 +9,7 @@ import org.dromara.ai.domain.AiWorkflowWait;
 import org.dromara.ai.domain.request.AiWorkflowTestInputRequest;
 import org.dromara.ai.domain.request.AiWorkflowTestStartRequest;
 import org.dromara.ai.domain.response.AiWorkflowTestExecutionResponse;
+import org.dromara.ai.domain.response.AiWorkflowTicketPreview;
 import org.dromara.ai.domain.response.AiWorkflowVoiceExecutionResponse;
 import org.dromara.ai.mapper.AiAgentWorkflowBindingMapper;
 import org.dromara.ai.mapper.AiWorkflowExecutionMapper;
@@ -17,28 +18,36 @@ import org.dromara.ai.mapper.AiWorkflowNodeLogMapper;
 import org.dromara.ai.mapper.AiWorkflowVersionMapper;
 import org.dromara.ai.mapper.AiWorkflowWaitMapper;
 import org.dromara.ai.service.impl.AiWorkflowRuntimeServiceImpl;
+import org.dromara.ai.service.model.AiWorkflowTicketDraftEvent;
 import org.dromara.ai.workflow.handler.ConditionNodeHandler;
+import org.dromara.ai.workflow.handler.DtmfCaptureNodeHandler;
 import org.dromara.ai.workflow.handler.FlowControlNodeHandler;
 import org.dromara.ai.workflow.handler.TemplateReplyNodeHandler;
 import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.ArrayList;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @Tag("dev")
 class AiWorkflowRuntimeServiceTest {
 
-    @Test
-    void shouldResumeFromInputWaitAndKeepDuplicateInputIdempotent() {
+    @ParameterizedTest
+    @ValueSource(strings = {"PUBLISHED", "ARCHIVED"})
+    void shouldResumeFromInputWaitAndKeepDuplicateInputIdempotent(String status) {
         AiWorkflowMapper workflowMapper = mock(AiWorkflowMapper.class);
         AiWorkflowVersionMapper versionMapper = mock(AiWorkflowVersionMapper.class);
         AiWorkflowExecutionMapper executionMapper = mock(AiWorkflowExecutionMapper.class);
@@ -50,6 +59,7 @@ class AiWorkflowRuntimeServiceTest {
         workflow.setId(1L);
         workflow.setEnabled(true);
         AiWorkflowVersion version = version();
+        version.setStatus(status);
         AiAgentWorkflowBinding binding = new AiAgentWorkflowBinding();
         binding.setWorkflowId(1L);
         binding.setWorkflowVersionId(11L);
@@ -87,13 +97,27 @@ class AiWorkflowRuntimeServiceTest {
         });
         when(nodeLogMapper.selectList(any())).thenAnswer(invocation -> new ArrayList<>(logs));
 
+        var preview = new AiWorkflowTicketPreview("123", "报修工单",
+            List.of(new AiWorkflowTicketPreview.Field("address", "地址", true, true, "阳光小区")));
+        AiWorkflowNodeHandler ticketHandler = mock(AiWorkflowNodeHandler.class);
+        when(ticketHandler.nodeTypes()).thenReturn(Set.of("TICKET_CREATE", "TICKET_DRAFT_PREPARE"));
+        when(ticketHandler.execute(any())).thenAnswer(invocation -> {
+            AiWorkflowNodeContext node = invocation.getArgument(0);
+            return "TICKET_CREATE".equals(node.node().path("type").asText())
+                ? new AiWorkflowNodeResult("CONTINUE", null, "测试预览", null, Map.of("ticket.created", true), preview)
+                : AiWorkflowNodeResult.continueWith(null);
+        });
         AiWorkflowNodeHandlerRegistry registry = new AiWorkflowNodeHandlerRegistry(List.of(
             new FlowControlNodeHandler(),
             new TemplateReplyNodeHandler(new AiWorkflowTemplateResolver()),
-            new ConditionNodeHandler()
+            new ConditionNodeHandler(),
+            new DtmfCaptureNodeHandler(),
+            ticketHandler
         ));
         AiWorkflowRuntimeServiceImpl service = new AiWorkflowRuntimeServiceImpl(
             workflowMapper, versionMapper, executionMapper, nodeLogMapper, waitMapper, bindingMapper, registry, WorkflowRuleTestSupport.matcher());
+        ApplicationEventPublisher events = mock(ApplicationEventPublisher.class);
+        service.setApplicationEventPublisher(events);
 
         AiWorkflowTestStartRequest startRequest = new AiWorkflowTestStartRequest();
         startRequest.setVariables(Map.of("customer.salutation", "张先生"));
@@ -104,7 +128,7 @@ class AiWorkflowRuntimeServiceTest {
         assertThat(started.getVariables()).containsEntry("workflow.clarifyCount", 0);
         assertThat(started.getOutputMessages()).containsExactly("您好张先生，请问需要了解产品吗？");
         assertThat(started.getTraces()).extracting("nodeType")
-            .containsExactly("START", "TEMPLATE_REPLY", "WAIT_INPUT");
+            .containsExactly("START", "TICKET_DRAFT_PREPARE", "TEMPLATE_REPLY", "WAIT_INPUT");
 
         AiWorkflowTestInputRequest input = new AiWorkflowTestInputRequest();
         input.setInputId("turn-1");
@@ -117,11 +141,15 @@ class AiWorkflowRuntimeServiceTest {
         );
         assertThat(completed.getVariables()).containsEntry("conversation.currentInput", "需要");
         assertThat(completed.getTraces()).extracting("branchValue").contains("TRUE");
+        assertThat(completed.getTraces()).filteredOn(trace -> "TICKET_CREATE".equals(trace.getNodeType()))
+            .singleElement().satisfies(trace -> assertThat(trace.getTicketPreview()).isEqualTo(preview));
 
         int logCount = logs.size();
         AiWorkflowTestExecutionResponse duplicate = service.input(started.getExecutionId(), input);
         assertThat(duplicate.getStatus()).isEqualTo("COMPLETED");
         assertThat(logs).hasSize(logCount);
+        assertThat(duplicate.getTraces()).filteredOn(trace -> "TICKET_CREATE".equals(trace.getNodeType()))
+            .singleElement().satisfies(trace -> assertThat(trace.getTicketPreview()).isEqualTo(preview));
 
         AiWorkflowVoiceExecutionResponse voiceStarted = service.startVoice(9L, "call-1", "VOICE_INBOUND",
             Map.of("customer.salutation", "李先生")).orElseThrow();
@@ -141,10 +169,49 @@ class AiWorkflowRuntimeServiceTest {
             voiceStarted.getExecutionId(), "voice-turn-1", "需要");
         assertThat(secondSpeak.getStatus()).isEqualTo("WAITING_TTS");
         assertThat(secondSpeak.getText()).isEqualTo("好的，我来为您介绍。");
+        assertThat(storedExecution[0].getContextJson()).doesNotContain("阳光小区");
 
         AiWorkflowVoiceExecutionResponse voiceCompleted = service.voiceTtsCompleted(voiceStarted.getExecutionId());
         assertThat(voiceCompleted.getStatus()).isEqualTo("COMPLETED");
         assertThat(voiceCompleted.getActionType()).isEqualTo("COMPLETED");
+        verifyNoInteractions(events);
+
+        var interrupted = service.startVoice(9L, "call-2", "VOICE_INBOUND", Map.of("customer.salutation", "张先生")).orElseThrow();
+        service.terminate(interrupted.getExecutionId(), "CHANNEL_HANGUP");
+        service.terminate(interrupted.getExecutionId(), "CHANNEL_HANGUP");
+        verify(events).publishEvent(new AiWorkflowTicketDraftEvent("call-2", 9L, 7L, Map.of("contact", "张先生")));
+
+        version.setDefinitionJson("""
+            {"nodes":[
+              {"id":"start","type":"START"},
+              {"id":"digits","type":"DTMF_CAPTURE","config":{"digitCount":4,"timeoutSeconds":15,"outputVariable":"workflow.custom_number"}},
+              {"id":"ok","type":"TEMPLATE_REPLY","config":{"text":"编号 {{workflow.custom_number}}"}},
+              {"id":"timeout","type":"TEMPLATE_REPLY","config":{"text":"输入超时"}},
+              {"id":"end","type":"END"}
+            ],"edges":[
+              {"source":"start","target":"digits"},
+              {"source":"digits","target":"ok","condition":"SUCCESS"},
+              {"source":"digits","target":"timeout","condition":"TIMEOUT"},
+              {"source":"ok","target":"end"},
+              {"source":"timeout","target":"end"}
+            ]}
+            """);
+        var collecting = service.startVoice(9L, "call-3", "VOICE_INBOUND", Map.of()).orElseThrow();
+        assertThat(collecting.getActionType()).isEqualTo("DTMF_CAPTURE");
+        assertThat(collecting.getDigitCount()).isEqualTo(4);
+        assertThat(service.voiceInput(collecting.getExecutionId(), "late-asr", "0012").getStatus()).isEqualTo("WAITING_DTMF");
+        assertThat(service.voiceDigits(collecting.getExecutionId(), "stale-token", "9999")).isNull();
+        assertThat(service.voiceDigits(collecting.getExecutionId(), collecting.getWaitingToken(), "0012").getText())
+            .isEqualTo("编号 0012");
+        assertThat(service.voiceDigits(collecting.getExecutionId(), collecting.getWaitingToken(), "9999")).isNull();
+
+        var testCollecting = service.startTest(1L, startRequest);
+        var silence = new AiWorkflowTestInputRequest();
+        silence.setInputId("timeout-1");
+        silence.setSignal("SILENCE");
+        var timedOut = service.input(testCollecting.getExecutionId(), silence);
+        assertThat(timedOut.getOutputMessages()).containsExactly("输入超时");
+        assertThat(timedOut.getVariables()).doesNotContainKey("workflow.custom_number");
     }
 
     private AiWorkflowVersion version() {
@@ -157,18 +224,22 @@ class AiWorkflowRuntimeServiceTest {
             {
               "nodes": [
                 {"id":"start","type":"START","name":"开始"},
+                {"id":"prepare","type":"TICKET_DRAFT_PREPARE","name":"准备草稿","config":{"templateId":"7","fieldMappings":{"contact":"customer.salutation"}}},
                 {"id":"hello","type":"TEMPLATE_REPLY","name":"开场白","config":{"text":"您好{{customer.salutation}}，请问需要了解产品吗？"}},
                 {"id":"wait","type":"WAIT_INPUT","name":"等待回答","config":{"timeoutSeconds":15}},
                 {"id":"condition","type":"CONDITION","name":"判断回答","config":{"variable":"conversation.currentInput","operator":"EQ","compareValue":"需要"}},
+                {"id":"ticket","type":"TICKET_CREATE","name":"工单"},
                 {"id":"yes","type":"TEMPLATE_REPLY","name":"继续介绍","config":{"text":"好的，我来为您介绍。"}},
                 {"id":"no","type":"TEMPLATE_REPLY","name":"礼貌结束","config":{"text":"好的，感谢接听。"}},
                 {"id":"end","type":"END","name":"结束"}
               ],
               "edges": [
-                {"source":"start","target":"hello"},
+                {"source":"start","target":"prepare"},
+                {"source":"prepare","target":"hello"},
                 {"source":"hello","target":"wait"},
                 {"source":"wait","target":"condition"},
-                {"source":"condition","target":"yes","condition":"TRUE"},
+                {"source":"condition","target":"ticket","condition":"TRUE"},
+                {"source":"ticket","target":"yes"},
                 {"source":"condition","target":"no","condition":"FALSE"},
                 {"source":"yes","target":"end"},
                 {"source":"no","target":"end"}

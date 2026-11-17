@@ -18,6 +18,8 @@ import org.dromara.customer.customer.mapper.CustomerImportBatchMapper;
 import org.dromara.customer.customer.mapper.CustomerImportRowMapper;
 import org.dromara.customer.customer.mapper.CustomerImportTaskMapper;
 import org.dromara.customer.customer.service.CustomerImportTaskService;
+import org.dromara.customer.customer.service.CustomerApplicationService;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,6 +36,9 @@ public class CustomerImportTaskServiceImpl implements CustomerImportTaskService 
     private final CustomerImportBatchMapper batchMapper;
     private final CustomerImportRowMapper rowMapper;
     private final CustomerAssignmentMapper assignmentMapper;
+
+    // Customer creation can itself associate a customer with an import task.
+    private final ObjectProvider<CustomerApplicationService> customerApplicationService;
 
     @Override
     public TableDataInfo<CustomerImportTaskResponse> page(CustomerImportTaskQuery query, PageQuery pageQuery) {
@@ -91,11 +96,43 @@ public class CustomerImportTaskServiceImpl implements CustomerImportTaskService 
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void delete(Long taskId) {
-        require(taskId);
-        if (batchMapper.selectCount(new LambdaQueryWrapper<CustomerImportBatch>().eq(CustomerImportBatch::getTaskId, taskId)) > 0) {
-            throw new ServiceException("任务已有导入记录，不能删除，请停用任务");
+        requireForUpdate(taskId);
+        if (batchMapper.selectCount(new LambdaQueryWrapper<CustomerImportBatch>()
+            .eq(CustomerImportBatch::getTaskId, taskId)
+            .in(CustomerImportBatch::getStatus, List.of("PENDING", "PROCESSING"))) > 0) {
+            throw new ServiceException("任务仍有导入批次正在执行，暂不能删除");
         }
+        if (taskMapper.hasOutboundSource(taskId)) {
+            throw new ServiceException("任务仍被自动外呼引用，请先解除资料来源关联");
+        }
+
+        List<Long> customerIds = rowMapper.selectList(new LambdaQueryWrapper<CustomerImportRow>()
+                .select(CustomerImportRow::getCustomerId)
+                .eq(CustomerImportRow::getTaskId, taskId)
+                .isNotNull(CustomerImportRow::getBatchId)
+                .eq(CustomerImportRow::getStatus, "IMPORTED")
+                .eq(CustomerImportRow::getErrorMessage, CustomerImportServiceImpl.NEW_CUSTOMER_RESULT)
+                .isNotNull(CustomerImportRow::getCustomerId))
+            .stream().map(CustomerImportRow::getCustomerId).distinct().sorted().toList();
+        for (int start = 0; start < customerIds.size(); start += 500) {
+            List<Long> part = customerIds.subList(start, Math.min(start + 500, customerIds.size()));
+            Set<Long> shared = new HashSet<>();
+            rowMapper.selectList(new LambdaQueryWrapper<CustomerImportRow>()
+                    .select(CustomerImportRow::getCustomerId)
+                    .ne(CustomerImportRow::getTaskId, taskId)
+                    .eq(CustomerImportRow::getStatus, "IMPORTED")
+                    .in(CustomerImportRow::getCustomerId, part))
+                .forEach(row -> shared.add(row.getCustomerId()));
+            for (Long customerId : part) {
+                if (!shared.contains(customerId)) {
+                    customerApplicationService.getObject().deleteImportedCustomer(customerId);
+                }
+            }
+        }
+        rowMapper.delete(new LambdaQueryWrapper<CustomerImportRow>().eq(CustomerImportRow::getTaskId, taskId));
+        batchMapper.delete(new LambdaQueryWrapper<CustomerImportBatch>().eq(CustomerImportBatch::getTaskId, taskId));
         taskMapper.deleteById(taskId);
     }
 
@@ -125,7 +162,7 @@ public class CustomerImportTaskServiceImpl implements CustomerImportTaskService 
     @Transactional(rollbackFor = Exception.class)
     public void associateManualCustomer(Long taskId, Long customerId, String customerName, String normalizedPhone) {
         if (taskId == null) return;
-        CustomerImportTask task = require(taskId);
+        CustomerImportTask task = requireForUpdate(taskId);
         long existing = rowMapper.selectCount(new LambdaQueryWrapper<CustomerImportRow>()
             .eq(CustomerImportRow::getTaskId, taskId)
             .eq(CustomerImportRow::getCustomerId, customerId)
@@ -157,6 +194,12 @@ public class CustomerImportTaskServiceImpl implements CustomerImportTaskService 
 
     private CustomerImportTask require(Long taskId) {
         CustomerImportTask task = taskMapper.selectById(taskId);
+        if (task == null) throw new ServiceException("资料导入任务不存在");
+        return task;
+    }
+
+    private CustomerImportTask requireForUpdate(Long taskId) {
+        CustomerImportTask task = taskMapper.selectForUpdate(taskId);
         if (task == null) throw new ServiceException("资料导入任务不存在");
         return task;
     }

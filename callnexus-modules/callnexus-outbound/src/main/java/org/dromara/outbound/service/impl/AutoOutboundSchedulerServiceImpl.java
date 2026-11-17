@@ -1,5 +1,7 @@
 package org.dromara.outbound.service.impl;
 
+import org.dromara.outbound.mapper.TicketCallbackPolicyMapper;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
@@ -52,12 +54,26 @@ public class AutoOutboundSchedulerServiceImpl implements AutoOutboundSchedulerSe
     private final AutoOutboundDispatchMapper dispatchMapper;
     private final AutoOutboundDispatchClaimService claimService;
     private final CallCenterConfigService configService;
+    private final TicketCallbackPolicyMapper callbackPolicies;
+    private final TicketCallbackService callbacks;
 
     private final String schedulerOwner = ManagementFactory.getRuntimeMXBean().getName() + "-"
         + UUID.randomUUID().toString().substring(0, 8);
 
     @Override
     public AutoOutboundSchedulerResult execute() {
+        LocalDateTime now = LocalDateTime.now();
+        for (String tenantId : callbackPolicies.automaticTenants()) {
+            TenantHelper.dynamic(tenantId, () -> {
+                for (Long ticketId : callbackPolicies.dueTickets(tenantId, now)) {
+                    try {
+                        callbacks.enqueueAutomatic(ticketId, now);
+                    } catch (RuntimeException exception) {
+                        log.warn("自动工单回访入队失败，tenantId={}，ticketId={}", tenantId, ticketId, exception);
+                    }
+                }
+            });
+        }
         List<String> tenantIds = TenantHelper.ignore(() -> taskMapper.selectList(
                 new LambdaQueryWrapper<OutboundTask>()
                     .select(OutboundTask::getTenantId)
@@ -162,6 +178,10 @@ public class AutoOutboundSchedulerServiceImpl implements AutoOutboundSchedulerSe
             int completed = taskMapper.update(null, new LambdaUpdateWrapper<OutboundTask>()
                 .eq(OutboundTask::getId, task.getId())
                 .eq(OutboundTask::getStatus, "RUNNING")
+                .notExists("""
+                    SELECT 1 FROM cc_outbound_member m WHERE m.tenant_id = cc_outbound_task.tenant_id
+                    AND m.task_id = cc_outbound_task.id AND m.deleted = 0 AND m.status IN ('PENDING', 'RETRY', 'SCHEDULED')
+                    """)
                 .set(OutboundTask::getStatus, "COMPLETED")
                 .set(OutboundTask::getLastScheduledAt, now)
                 .set(OutboundTask::getLastScheduleSummary, "名单已全部处理完成"));
@@ -172,6 +192,8 @@ public class AutoOutboundSchedulerServiceImpl implements AutoOutboundSchedulerSe
     }
 
     private Eligibility eligible(OutboundTask task, OutboundMember member, LocalDateTime now) {
+        String stopReason = callbacks.automaticStopReason(member, now);
+        if (stopReason != null) return Eligibility.blocked(stopReason);
         int attemptCount = value(member.getAttemptCount(), 0);
         if (attemptCount >= value(task.getMaxCallsTotal(), 1)) {
             return Eligibility.blocked("已达到任务最大呼叫次数");

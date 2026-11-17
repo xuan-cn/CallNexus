@@ -1,0 +1,24 @@
+services:
+  installer:
+    image: ${CALLNEXUS_INSTALLER_IMAGE:-callnexus-installer:2026.11.06}
+    profiles: [tools]
+    pull_policy: never
+    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+      - type: bind
+        source: ${CALLNEXUS_DEPLOY_DIR:?Use installer.sh with a deployment directory}
+        target: /workspace
+        bind:
+          create_host_path: false
+    environment:
+      CNX_INSTALLER_SNAPSHOT_READY: ${CNX_INSTALLER_SNAPSHOT_READY:-0}
+      CNX_INSTALLER_CONTAINER_PROJECTS: ${CNX_INSTALLER_CONTAINER_PROJECTS:-}
+      CNX_INSTALLER_VOLUMES: ${CNX_INSTALLER_VOLUMES:-}
+      CNX_INSTALLER_MYSQL_UID: ${CNX_INSTALLER_MYSQL_UID:-}
+      CNX_INSTALLER_MYSQL_GID: ${CNX_INSTALLER_MYSQL_GID:-}

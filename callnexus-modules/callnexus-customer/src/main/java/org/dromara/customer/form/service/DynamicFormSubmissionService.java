@@ -7,6 +7,7 @@ import java.util.Map;
 
 public interface DynamicFormSubmissionService {
     void validateAndSave(Long templateId, FormBusinessType businessType, Long businessId, Map<String, Object> formData);
+    void validate(Long templateId, FormBusinessType businessType, Map<String, Object> formData);
 
     Map<String, Object> getFormData(FormBusinessType businessType, Long businessId);
 

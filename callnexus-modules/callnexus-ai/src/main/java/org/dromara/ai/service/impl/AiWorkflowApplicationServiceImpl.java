@@ -1,6 +1,9 @@
 package org.dromara.ai.service.impl;
 
+import org.dromara.ai.workflow.handler.DtmfCaptureNodeHandler;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -50,10 +53,10 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     private static final Set<String> SCENE_TYPES = Set.of("VOICE_INBOUND", "VOICE_OUTBOUND", "ONLINE_CHAT", "COMMON");
     private static final Set<String> BINDING_SCENES = Set.of("VOICE_INBOUND", "VOICE_OUTBOUND", "ONLINE_CHAT");
     private static final Set<String> NODE_TYPES = Set.of(
-        "START", "END", "WAIT_INPUT", "SET_VARIABLE", "CONDITION", "LOOP_LIMIT", "TEMPLATE_REPLY", "DIALOGUE_STEP",
+        "START", "END", "WAIT_INPUT", DtmfCaptureNodeHandler.TYPE, "SET_VARIABLE", "CONDITION", "LOOP_LIMIT", "TEMPLATE_REPLY", "DIALOGUE_STEP",
         "KNOWLEDGE_QUERY", "MODEL_REPLY", "INTENT_ROUTE", "SLOT_EXTRACT", "CONFIRM",
         "CUSTOMER_QUERY", "CUSTOMER_UPDATE", "FOLLOW_UP_CREATE", "TICKET_DRAFT_CREATE",
-        "TICKET_CREATE", "AUTO_OUTBOUND_WRITEBACK", "DO_NOT_CALL_ADD", "HTTP_REQUEST",
+        "TICKET_CREATE", "TICKET_DRAFT_PREPARE", "AUTO_OUTBOUND_WRITEBACK", "DO_NOT_CALL_ADD", "HTTP_REQUEST",
         "TRANSFER_QUEUE", "TRANSFER_EXTENSION", "TRANSFER_IVR", "PLAY_MEDIA", "HANGUP"
     );
     private static final Set<String> TERMINAL_TYPES = Set.of(
@@ -137,9 +140,10 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void update(Long id, AiWorkflowRequest request) {
         validateRequest(request);
-        AiWorkflow workflow = requireWorkflow(id);
+        AiWorkflow workflow = requireWorkflowForUpdate(id);
         ensureCode(request.getWorkflowCode(), id);
         if (!Objects.equals(workflow.getSceneType(), request.getSceneType()) && bindingCount(id) > 0) {
             throw new ServiceException("AI 编排已绑定助手，不能修改使用场景");
@@ -151,7 +155,7 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
-        AiWorkflow workflow = requireWorkflow(id);
+        AiWorkflow workflow = requireWorkflowForUpdate(id);
         if (bindingCount(id) > 0 || workflow.getCurrentPublishedVersionId() != null) {
             throw new ServiceException("AI 编排已发布或已绑定助手，不能删除，可改为停用");
         }
@@ -160,8 +164,9 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void setEnabled(Long id, boolean enabled) {
-        AiWorkflow workflow = requireWorkflow(id);
+        AiWorkflow workflow = requireWorkflowForUpdate(id);
         workflow.setEnabled(enabled);
         workflowMapper.updateById(workflow);
     }
@@ -173,12 +178,84 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long restoreDraft(Long workflowId, Integer versionNo, Long expectedDraftId, String expectedDraftHash) {
+        requireWorkflowForUpdate(workflowId);
+        AiWorkflowVersion source = publishedSnapshot(workflowId, versionNo);
+        AiWorkflowVersion draft = currentDraft(workflowId);
+        if (!Objects.equals(expectedDraftId, draft == null ? null : draft.getId())
+            || !Objects.equals(expectedDraftHash, draft == null ? null : draft.getDefinitionHash())) {
+            throw new ServiceException("草稿已变更，请刷新版本记录并重新确认");
+        }
+        AiWorkflowDraftRequest request = new AiWorkflowDraftRequest();
+        request.setVersionName("从 v" + versionNo + " 恢复");
+        request.setDefinitionJson(source.getDefinitionJson());
+        return saveDraft(workflowId, request);
+    }
+
+    @Override
+    public List<AiAgentWorkflowBindingResponse> workflowBindings(Long workflowId) {
+        AiWorkflow workflow = requireWorkflow(workflowId);
+        List<AiAgentWorkflowBinding> bindings = bindingMapper.selectList(new LambdaQueryWrapper<AiAgentWorkflowBinding>()
+            .eq(AiAgentWorkflowBinding::getWorkflowId, workflowId).orderByAsc(AiAgentWorkflowBinding::getAiAgentId,
+                AiAgentWorkflowBinding::getSceneType));
+        if (bindings.isEmpty()) return List.of();
+        Map<Long, String> agentNames = agentMapper.selectBatchIds(bindings.stream()
+                .map(AiAgentWorkflowBinding::getAiAgentId).distinct().toList()).stream()
+            .collect(Collectors.toMap(AiAgent::getId, agent -> Objects.toString(agent.getAgentName(), "")));
+        Map<Long, AiWorkflowVersion> versions = workflowVersions(workflowId).stream()
+            .collect(Collectors.toMap(AiWorkflowVersion::getId, item -> item));
+        return bindings.stream().map(binding -> {
+            AiAgentWorkflowBindingResponse result = bindingResponse(binding, workflow, versions.get(binding.getWorkflowVersionId()));
+            result.setAgentName(agentNames.get(binding.getAiAgentId()));
+            return result;
+        }).toList();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AiWorkflowVersionResponse rollback(Long workflowId, Integer versionNo, List<AiAgentWorkflowBindingRequest.Selection> bindings) {
+        AiWorkflow workflow = requireWorkflowForUpdate(workflowId);
+        if (!Boolean.TRUE.equals(workflow.getEnabled())) throw new ServiceException("AI 编排已停用");
+        AiWorkflowVersion source = publishedSnapshot(workflowId, versionNo);
+        if (!"ARCHIVED".equals(source.getStatus())) throw new ServiceException("只能回滚到历史发布版本");
+        validateForPublish(source);
+        for (JsonNode node : parseDefinition(source.getDefinitionJson()).path("nodes")) {
+            if (!"PLAY_MEDIA".equals(node.path("type").asText())) continue;
+            MediaAsset asset = mediaAssetMapper.selectById(node.path("config").path("mediaId").asText());
+            if (asset == null || !Boolean.TRUE.equals(asset.getEnabled()) || asset.getLatestVersionId() == null
+                || !("PUBLISHED".equals(asset.getPublishStatus()) || "PARTIAL".equals(asset.getPublishStatus()))
+                || MediaAssetCategory.CALL_RECORDING.name().equals(asset.getCategory())
+                || MediaAssetCategory.VOICEMAIL_RECORDING.name().equals(asset.getCategory())) {
+                throw new ServiceException("历史节点「" + node.path("name").asText(node.path("id").asText())
+                    + "」引用的声音媒体不可用，请恢复为草稿并修正后发布");
+            }
+        }
+        AiWorkflowVersion version = new AiWorkflowVersion();
+        version.setWorkflowId(workflowId);
+        version.setVersionNo(nextVersionNo(workflowId));
+        version.setVersionName("回滚自 v" + versionNo);
+        version.setDefinitionJson(source.getDefinitionJson());
+        version.setDefinitionHash(KnowledgeTextUtils.sha256(source.getDefinitionJson()));
+        activateVersion(workflow, version);
+        for (AiAgentWorkflowBindingRequest.Selection selection : bindings) {
+            int updated = bindingMapper.update(null, new LambdaUpdateWrapper<AiAgentWorkflowBinding>()
+                .eq(AiAgentWorkflowBinding::getId, selection.id())
+                .eq(AiAgentWorkflowBinding::getWorkflowId, workflowId)
+                .eq(AiAgentWorkflowBinding::getWorkflowVersionId, selection.workflowVersionId())
+                .set(AiAgentWorkflowBinding::getWorkflowVersionId, version.getId()));
+            if (updated != 1) throw new ServiceException("助手绑定已变更，请刷新后重新确认");
+        }
+        return versionResponse(version);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public AiWorkflowVersionResponse draft(Long workflowId) {
-        requireWorkflow(workflowId);
+        AiWorkflow workflow = requireWorkflowForUpdate(workflowId);
         AiWorkflowVersion draft = currentDraft(workflowId);
         if (draft == null) {
             AiWorkflowDraftRequest request = new AiWorkflowDraftRequest();
-            AiWorkflow workflow = requireWorkflow(workflowId);
             AiWorkflowVersion published = workflow.getCurrentPublishedVersionId() == null ? null
                 : versionMapper.selectById(workflow.getCurrentPublishedVersionId());
             request.setVersionName("新草稿");
@@ -191,15 +268,14 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long saveDraft(Long workflowId, AiWorkflowDraftRequest request) {
-        requireWorkflow(workflowId);
+        requireWorkflowForUpdate(workflowId);
         JsonNode definition = parseDefinition(request.getDefinitionJson());
         String normalized = normalizeDefinition(definition);
         AiWorkflowVersion draft = currentDraft(workflowId);
         if (draft == null) {
-            int versionNo = workflowVersions(workflowId).stream().mapToInt(AiWorkflowVersion::getVersionNo).max().orElse(0) + 1;
             draft = new AiWorkflowVersion();
             draft.setWorkflowId(workflowId);
-            draft.setVersionNo(versionNo);
+            draft.setVersionNo(nextVersionNo(workflowId));
             draft.setStatus("DRAFT");
         }
         draft.setVersionName(request.getVersionName());
@@ -220,24 +296,34 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public AiWorkflowVersionResponse publish(Long workflowId) {
-        AiWorkflow workflow = requireWorkflow(workflowId);
+        AiWorkflow workflow = requireWorkflowForUpdate(workflowId);
         AiWorkflowVersion draft = currentDraft(workflowId);
         if (draft == null) throw new ServiceException("AI 编排没有可发布的草稿");
-        AiWorkflowValidationResponse validation = validateDefinition(draft.getDefinitionJson());
+        validateForPublish(draft);
+        int next = nextVersionNo(workflowId);
+        if (draft.getVersionNo() < next - 1) draft.setVersionNo(next);
+        activateVersion(workflow, draft);
+        return versionResponse(draft);
+    }
+
+    private void validateForPublish(AiWorkflowVersion version) {
+        AiWorkflowValidationResponse validation = validateDefinition(version.getDefinitionJson());
         if (!validation.isValid()) throw new ServiceException("AI 编排校验失败：" + String.join("；", validation.getErrors()));
+    }
+
+    private void activateVersion(AiWorkflow workflow, AiWorkflowVersion version) {
         List<AiWorkflowVersion> published = versionMapper.selectList(new LambdaQueryWrapper<AiWorkflowVersion>()
-            .eq(AiWorkflowVersion::getWorkflowId, workflowId).eq(AiWorkflowVersion::getStatus, "PUBLISHED"));
+            .eq(AiWorkflowVersion::getWorkflowId, workflow.getId()).eq(AiWorkflowVersion::getStatus, "PUBLISHED"));
         for (AiWorkflowVersion item : published) {
             item.setStatus("ARCHIVED");
             versionMapper.updateById(item);
         }
-        draft.setStatus("PUBLISHED");
-        draft.setPublishedBy(LoginHelper.getUserId());
-        draft.setPublishedAt(LocalDateTime.now());
-        versionMapper.updateById(draft);
-        workflow.setCurrentPublishedVersionId(draft.getId());
+        version.setStatus("PUBLISHED");
+        version.setPublishedBy(LoginHelper.getUserId());
+        version.setPublishedAt(LocalDateTime.now());
+        if (version.getId() == null) versionMapper.insert(version); else versionMapper.updateById(version);
+        workflow.setCurrentPublishedVersionId(version.getId());
         workflowMapper.updateById(workflow);
-        return versionResponse(draft);
     }
 
     @Override
@@ -336,6 +422,15 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
                 ? effectiveIntentConfig(node.path("config"), commonIntentFallback) : node.path("config");
             int nodeErrorStart = result.getErrors().size();
             validateNodeConfig(id, type, config, customVariableKeys, result);
+            if (DtmfCaptureNodeHandler.TYPE.equals(type)) {
+                try {
+                    if (!customTextVariableKeys.contains(DtmfCaptureNodeHandler.config(config).outputVariable())) {
+                        result.getErrors().add("按键采集输出必须选择已定义的文本变量：" + id);
+                    }
+                } catch (ServiceException exception) {
+                    result.getErrors().add(exception.getMessage() + "：" + id);
+                }
+            }
             if ("DIALOGUE_STEP".equals(type) && config.path("collectedFields").isArray()) {
                 for (var field : config.path("collectedFields")) {
                     if (!customTextVariableKeys.contains(field.path("key").asText(""))) {
@@ -364,6 +459,9 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             outgoing.computeIfAbsent(source, key -> new HashSet<>()).add(target);
             String sourceType = nodes.get(source).path("type").asText();
             String condition = edge.path("condition").asText("").trim();
+            if (DtmfCaptureNodeHandler.TYPE.equals(sourceType) && !DtmfCaptureNodeHandler.BRANCHES.contains(condition)) {
+                result.getErrors().add("按键采集只能连接采集成功或采集超时出口：" + source);
+            }
             if (("CONDITION".equals(sourceType) || "INTENT_ROUTE".equals(sourceType) || "LOOP_LIMIT".equals(sourceType) || "DIALOGUE_STEP".equals(sourceType))
                 && condition.isEmpty()) {
                 result.getErrors().add("判断节点的连线必须配置分支条件：" + source);
@@ -396,6 +494,10 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
         }
         for (Map.Entry<String, JsonNode> entry : nodes.entrySet()) {
             String type = entry.getValue().path("type").asText();
+            if (DtmfCaptureNodeHandler.TYPE.equals(type)
+                && !conditions.getOrDefault(entry.getKey(), Set.of()).containsAll(DtmfCaptureNodeHandler.BRANCHES)) {
+                result.getErrors().add("按键采集需要连接采集成功和采集超时两个出口：" + entry.getKey());
+            }
             if ("DIALOGUE_STEP".equals(type) && !conditions.getOrDefault(entry.getKey(), Set.of()).containsAll(dialogueBranches(entry.getValue().path("config")))) {
                 result.getErrors().add("对话步骤必须配置全部业务选项或确认完成、明确拒绝、澄清上限出口：" + entry.getKey());
             }
@@ -489,7 +591,12 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             var declined = org.dromara.ai.workflow.handler.DialogueStepNodeHandler.answers(config.path("declinedAnswers").asText(""));
             boolean acceptedDefined = "INTENT".equals(config.path("acceptedMatchMode").asText("EXACT"))
                 ? !config.path("acceptedIntentCodes").isEmpty() : !accepted.isEmpty();
-            if (!acceptedDefined && config.path("answerOptions").isEmpty()) result.getErrors().add("对话步骤必须填写明确通过的回答或业务答案选项：" + nodeId);
+            JsonNode collectedFields = config.path("collectedFields");
+            boolean canCompleteByCollection = collectedFields.isArray() && !collectedFields.isEmpty()
+                && config.path("aiUnderstandingEnabled").asBoolean(false) && config.path("aiAutoAdvance").asBoolean(false);
+            if (!acceptedDefined && config.path("answerOptions").isEmpty() && !canCompleteByCollection) {
+                result.getErrors().add("对话步骤必须填写明确通过的回答或业务答案选项；仅采集字段时，请配置必填文本字段并开启 AI 辅助理解和高置信度推进：" + nodeId);
+            }
             if (config.path("answerOptions").isEmpty() && "EXACT".equals(config.path("acceptedMatchMode").asText("EXACT")) && "EXACT".equals(config.path("declinedMatchMode").asText("EXACT")) && accepted.stream().anyMatch(declined::contains)) result.getErrors().add("对话步骤确认与拒绝回答不能重复：" + nodeId);
             if (config.path("maxRetries").asInt(2) < 1 || config.path("maxRetries").asInt(2) > 10) result.getErrors().add("对话步骤澄清次数应为 1 到 10：" + nodeId);
         }
@@ -542,6 +649,15 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
         } else if ("CUSTOMER_UPDATE".equals(type) && config.path("fields").isEmpty()) {
             result.getErrors().add("更新客户节点至少需要选择一个允许更新的字段：" + nodeId);
         }
+        if (Set.of("TICKET_CREATE", "TICKET_DRAFT_PREPARE").contains(type)) {
+            JsonNode mappings = config.path("fieldMappings");
+            if (config.path("templateId").asLong(0) <= 0 || !mappings.isObject()) {
+                result.getErrors().add("工单节点必须选择模板并配置字段映射：" + nodeId);
+            } else if (java.util.stream.StreamSupport.stream(mappings.spliterator(), false)
+                .anyMatch(value -> !value.isTextual() || value.asText().isBlank())) {
+                result.getErrors().add("工单节点字段映射必须选择流程变量：" + nodeId);
+            }
+        }
         if ("TRANSFER_QUEUE".equals(type) && config.path("queueCode").asText("").isBlank()) {
             result.getErrors().add("转技能组节点未选择目标队列：" + nodeId);
         }
@@ -552,7 +668,8 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
             result.getErrors().add("转 IVR 节点未填写有效的 IVR 流程 ID：" + nodeId);
         }
         if ("AUTO_OUTBOUND_WRITEBACK".equals(type)
-            && !OUTBOUND_RESULT_CODES.contains(config.path("resultCode").asText(""))) {
+            && !OUTBOUND_RESULT_CODES.contains(config.path("resultCode").asText(""))
+            && !org.dromara.ai.workflow.AiWorkflowTicketCallbackResults.contains(config.path("resultCode").asText(""))) {
             result.getErrors().add("外呼回写节点未选择有效外呼结果：" + nodeId);
         }
     }
@@ -694,6 +811,25 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
         AiWorkflow workflow = workflowMapper.selectById(id);
         if (workflow == null) throw new ServiceException("AI 编排不存在");
         return workflow;
+    }
+
+    private AiWorkflow requireWorkflowForUpdate(Long id) {
+        AiWorkflow workflow = workflowMapper.selectOne(new LambdaQueryWrapper<AiWorkflow>()
+            .eq(AiWorkflow::getId, id).last("FOR UPDATE"));
+        if (workflow == null) throw new ServiceException("AI 编排不存在");
+        return workflow;
+    }
+
+    private AiWorkflowVersion publishedSnapshot(Long workflowId, Integer versionNo) {
+        AiWorkflowVersion version = versionMapper.selectOne(new LambdaQueryWrapper<AiWorkflowVersion>()
+            .eq(AiWorkflowVersion::getWorkflowId, workflowId).eq(AiWorkflowVersion::getVersionNo, versionNo)
+            .in(AiWorkflowVersion::getStatus, "PUBLISHED", "ARCHIVED"));
+        if (version == null) throw new ServiceException("AI 编排历史发布版本不存在");
+        return version;
+    }
+
+    private int nextVersionNo(Long workflowId) {
+        return workflowVersions(workflowId).stream().mapToInt(AiWorkflowVersion::getVersionNo).max().orElse(0) + 1;
     }
 
     private AiAgent requireAgent(Long id) {

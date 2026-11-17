@@ -6,6 +6,7 @@ import lombok.Data;
 public class AiAgentWorkflowBindingResponse {
     private Long id;
     private Long aiAgentId;
+    private String agentName;
     private String sceneType;
     private Long workflowId;
     private String workflowName;

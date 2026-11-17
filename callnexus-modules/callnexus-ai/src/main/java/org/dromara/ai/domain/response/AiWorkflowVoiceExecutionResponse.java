@@ -14,5 +14,7 @@ public class AiWorkflowVoiceExecutionResponse {
     private String waitingToken;
     private String failureMessage;
     private String playbackNodeId;
+    private Integer digitCount;
+    private Integer digitTimeoutSeconds;
     private java.util.Map<String, Object> playbackConfig;
 }

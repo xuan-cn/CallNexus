@@ -71,6 +71,12 @@ public class FreeSwitchAiRealtimeMrcpGateway implements AiRealtimeTelephonyGatew
     }
 
     @Override
+    public void stopRecognition(Long nodeId, String customerLegUuid) {
+        requireCallId(customerLegUuid);
+        eslCommandGateway.stopSpeechRecognition(endpoint(nodeId), customerLegUuid);
+    }
+
+    @Override
     public void stopPlayback(Long nodeId, String customerLegUuid) {
         requireCallId(customerLegUuid);
         eslCommandGateway.sendRawCommand(endpoint(nodeId), "api uuid_break " + customerLegUuid + " all");

@@ -19,6 +19,9 @@ public class OutboundMember extends TenantEntity {
     private String sourceType;
     private Long importBatchId;
     private Long sourceId;
+    private LocalDateTime callbackResolvedAt;
+    private String callbackPolicyRevision;
+    private String callbackContactRevision;
     private Long sourceImportTaskId;
     private Long sourceImportBatchId;
     private Long customerPhoneId;

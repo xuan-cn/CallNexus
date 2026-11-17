@@ -15,6 +15,7 @@ public class AiWorkflowNodeTraceResponse {
     private String branchValue;
     private String inputSummary;
     private String outputSummary;
+    private AiWorkflowTicketPreview ticketPreview;
     private java.util.Map<String, Object> dialogueDetails;
     private java.util.Map<String, Object> ruleDetails;
     private Long durationMs;

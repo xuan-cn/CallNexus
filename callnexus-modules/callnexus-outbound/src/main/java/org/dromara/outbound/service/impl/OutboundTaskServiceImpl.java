@@ -112,7 +112,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
 
     @Override
     public void update(Long id, OutboundTaskRequest request) {
-        OutboundTask task = requireTask(id);
+        OutboundTask task = requireManualTask(id);
         if ("RUNNING".equals(task.getStatus())) {
             throw new ServiceException("执行中的外呼任务不能修改，请先暂停");
         }
@@ -129,7 +129,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
-        OutboundTask task = requireTask(id);
+        OutboundTask task = requireManualTask(id);
         if ("RUNNING".equals(task.getStatus())) throw new ServiceException("执行中的外呼任务不能删除");
         attemptMapper.delete(new LambdaQueryWrapper<OutboundAttempt>().eq(OutboundAttempt::getTaskId, id));
         memberMapper.delete(new LambdaQueryWrapper<OutboundMember>().eq(OutboundMember::getTaskId, id));
@@ -145,7 +145,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
 
     @Override
     public void start(Long id) {
-        requireTask(id);
+        requireManualTask(id);
         if (memberMapper.selectCount(new LambdaQueryWrapper<OutboundMember>()
             .eq(OutboundMember::getTaskId, id)
             .in(OutboundMember::getStatus, "PENDING", "RETRY", "CLAIMED", "DIALING")) == 0) {
@@ -156,14 +156,14 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
 
     @Override
     public void pause(Long id) {
-        requireTask(id);
+        requireManualTask(id);
         updateTaskStatus(id, "PAUSED");
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public AddOutboundMembersResponse addCustomers(Long id, List<Long> customerIds) {
-        OutboundTask task = requireTask(id);
+        OutboundTask task = requireManualTask(id);
         if ("RUNNING".equals(task.getStatus())) throw new ServiceException("执行中的外呼任务不能添加名单，请先暂停");
         AddOutboundMembersResponse response = new AddOutboundMembersResponse();
         List<Long> distinctCustomerIds = customerIds.stream().distinct().toList();
@@ -182,7 +182,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public AddOutboundMembersResponse generateMembers(Long id, GenerateOutboundMembersRequest request) {
-        OutboundTask task = requireTask(id);
+        OutboundTask task = requireManualTask(id);
         if ("RUNNING".equals(task.getStatus())) {
             throw new ServiceException("执行中的外呼任务不能生成名单，请先暂停");
         }
@@ -253,7 +253,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
 
     @Override
     public List<OutboundMemberResponse> listMembers(Long taskId) {
-        OutboundTask task = requireTask(taskId);
+        OutboundTask task = requireManualTask(taskId);
         assignUnassignedMembers(task);
         blacklistMemberSyncService.restoreExpired();
         recoverExpired(taskId);
@@ -409,7 +409,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     @Transactional(rollbackFor = Exception.class)
     public OutboundMemberResponse claimMember(Long memberId) {
         OutboundMember member = requireMember(memberId);
-        OutboundTask task = requireTask(member.getTaskId());
+        OutboundTask task = requireManualTask(member.getTaskId());
         if (!"RUNNING".equals(task.getStatus())) {
             throw new ServiceException("外呼任务未开始或已暂停");
         }
@@ -460,7 +460,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OutboundMemberResponse claimNext(Long taskId) {
-        OutboundTask task = requireTask(taskId);
+        OutboundTask task = requireManualTask(taskId);
         assignUnassignedMembers(task);
         blacklistMemberSyncService.restoreExpired();
         recoverExpired(taskId);
@@ -714,6 +714,12 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
         return task;
     }
 
+    private OutboundTask requireManualTask(Long id) {
+        OutboundTask task = requireTask(id);
+        if ("AUTO".equals(task.getTaskType())) throw new ServiceException("请使用自动外呼任务操作入口");
+        return task;
+    }
+
     private OutboundMember requireMember(Long id) {
         OutboundMember member = memberMapper.selectById(id);
         if (member == null) throw new ServiceException("外呼名单不存在");
@@ -722,6 +728,7 @@ public class OutboundTaskServiceImpl implements OutboundTaskService {
 
     private OutboundMember requireOwnedMember(Long id) {
         OutboundMember member = requireMember(id);
+        requireManualTask(member.getTaskId());
         if (!LoginHelper.getUserId().equals(member.getClaimedUserId())) {
             throw new ServiceException("该外呼名单未由当前坐席领取");
         }

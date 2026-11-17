@@ -1,5 +1,7 @@
 package org.dromara.ai.service.impl;
 
+import org.dromara.ai.workflow.handler.DtmfCaptureNodeHandler;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -15,6 +17,8 @@ import org.dromara.ai.domain.AiWorkflowWait;
 import org.dromara.ai.domain.request.AiWorkflowTestInputRequest;
 import org.dromara.ai.domain.request.AiWorkflowTestStartRequest;
 import org.dromara.ai.domain.response.AiWorkflowNodeTraceResponse;
+import org.dromara.ai.domain.response.AiWorkflowTicketPreview;
+import org.dromara.ai.service.model.AiWorkflowTicketDraftEvent;
 import org.dromara.ai.domain.response.AiWorkflowTestExecutionResponse;
 import org.dromara.ai.domain.response.AiWorkflowVoiceExecutionResponse;
 import org.dromara.ai.domain.response.AiChatTurnResult;
@@ -47,7 +51,7 @@ import java.util.Set;
 @Service
 @RequiredArgsConstructor
 @Slf4j
-public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
+public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService, org.springframework.context.ApplicationEventPublisherAware {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final int MAX_NODES_PER_RESUME = 50;
     private static final int MAX_NODES_PER_EXECUTION = 500;
@@ -60,6 +64,12 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
     private final AiAgentWorkflowBindingMapper bindingMapper;
     private final AiWorkflowNodeHandlerRegistry handlerRegistry;
     private final org.dromara.ai.workflow.AiConversationRuleMatcher ruleMatcher;
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
+
+    @Override
+    public void setApplicationEventPublisher(org.springframework.context.ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
+    }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -105,6 +115,13 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         AiWorkflowVersion version = requireVersion(execution.getWorkflowVersionId());
         RuntimeContext context = readContext(execution.getContextJson());
         if (request.getInputId().equals(execution.getLastInputId())) return response(execution, version, context);
+        if ("WAITING_DTMF".equals(execution.getStatus()) && "TEST".equals(execution.getChannelType())) {
+            boolean timeout = "SILENCE".equals(request.getSignal());
+            if (!timeout && request.getSignal() != null) throw new ServiceException("当前只等待模拟按键或超时");
+            execution.setLastInputId(request.getInputId());
+            resumeDigits(execution, version, context, timeout ? null : request.getText(), timeout);
+            return response(execution, version, context);
+        }
         if ("PLAYBACK_COMPLETED".equals(request.getSignal()) && "WAITING_TTS".equals(execution.getStatus())) {
             execution.setLastInputId(request.getInputId());
             updateExecution(execution);
@@ -138,7 +155,9 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         AiWorkflow workflow = workflowMapper.selectById(binding.getWorkflowId());
         if (workflow == null || !Boolean.TRUE.equals(workflow.getEnabled())) return Optional.empty();
         AiWorkflowVersion version = requireVersion(binding.getWorkflowVersionId());
-        if (!"PUBLISHED".equals(version.getStatus())) throw new ServiceException("AI 助手绑定的工作流版本未发布");
+        if (!Set.of("PUBLISHED", "ARCHIVED").contains(version.getStatus())) {
+            throw new ServiceException("AI 助手绑定的工作流版本未发布");
+        }
         JsonNode definition = definition(version);
         RuntimeContext context = new RuntimeContext();
         context.variables.putAll(variables == null ? Map.of() : variables);
@@ -174,6 +193,7 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         RuntimeContext context = readContext(execution.getContextJson());
         if (inputId.equals(execution.getLastInputId())) return voiceResponse(execution, context);
         if (isTerminal(execution.getStatus())) return voiceResponse(execution, context);
+        if ("WAITING_DTMF".equals(execution.getStatus())) return voiceResponse(execution, context);
         if (text == null || text.isBlank()) throw new ServiceException("客户输入不能为空");
         if ("WAITING_TTS".equals(execution.getStatus())) {
             if (context.disclosureNodeId != null) {
@@ -208,6 +228,38 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         }
         resumeInput(execution, version, context, inputId, text);
         return voiceResponse(execution, context);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AiWorkflowVoiceExecutionResponse voiceDigits(String executionId, String waitingToken, String digits) {
+        AiWorkflowExecution execution = requireExecution(executionId);
+        if (!"WAITING_DTMF".equals(execution.getStatus())) return null;
+        AiWorkflowWait wait = activeWait(executionId);
+        if (wait == null || !"DTMF".equals(wait.getWaitType()) || !wait.getWaitToken().equals(waitingToken)) return null;
+        AiWorkflowVersion version = requireVersion(execution.getWorkflowVersionId());
+        RuntimeContext context = readContext(execution.getContextJson());
+        resumeDigits(execution, version, context, digits, digits == null);
+        return voiceResponse(execution, context);
+    }
+
+    private void resumeDigits(AiWorkflowExecution execution, AiWorkflowVersion version, RuntimeContext context,
+                              String digits, boolean timeout) {
+        JsonNode definition = definition(version);
+        JsonNode node = findNode(definition, execution.getCurrentNodeId());
+        var config = DtmfCaptureNodeHandler.config(node.path("config"));
+        if (!timeout && !config.accepts(digits)) throw new ServiceException("请输入 " + config.digitCount() + " 位数字");
+        resumeWait(execution.getExecutionId(), "DTMF", timeout ? "EXPIRED" : "RESUMED");
+        clearPendingAction(context);
+        context.digitConfig = null;
+        if (timeout) context.variables.remove(config.outputVariable());
+        else context.variables.put(config.outputVariable(), digits);
+        String branch = timeout ? "TIMEOUT" : "SUCCESS";
+        logNode(execution, node, new AiWorkflowNodeResult("CONTINUE", branch,
+            timeout ? "按键采集超时" : "按键采集成功", null, Map.of()), null, LocalDateTime.now(), null);
+        execution.setCurrentNodeId(nextNodeId(definition, execution.getCurrentNodeId(), branch));
+        execution.setStatus("RUNNING");
+        run(execution, version, definition, context);
     }
 
     @Override
@@ -289,7 +341,7 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         execution.setFailureMessage(trim(reason, 1000));
         execution.setEndedAt(LocalDateTime.now());
         execution.setLastActiveAt(LocalDateTime.now());
-        updateExecution(execution);
+        persist(execution, context);
         AiWorkflowWait wait = activeWait(executionId);
         if (wait != null) {
             wait.setStatus("CANCELLED");
@@ -312,8 +364,15 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
             try {
                 result = handlerRegistry.require(nodeType).execute(new AiWorkflowNodeContext(
                     node, context.variables, context.lastInput, execution.getAiAgentId(), execution.getChannelType(),
-                    workflowSettings(definition)));
+                    workflowSettings(definition), execution.getBusinessCallId()));
                 context.variables.putAll(result.variableUpdates());
+                if (isVoiceChannel(execution.getChannelType())) {
+                    if ("TICKET_DRAFT_PREPARE".equals(nodeType)) context.ticketDraftConfig = node.path("config");
+                    if ("TICKET_CREATE".equals(nodeType)) {
+                        context.ticketDraftConfig = Boolean.TRUE.equals(result.variableUpdates().get("ticket.created"))
+                            ? null : node.path("config");
+                    }
+                }
                 if ("DIALOGUE_STEP".equals(nodeType) && context.lastInput != null) {
                     Object decision = result.variableUpdates().get("workflow.dialogue." + node.path("id").asText() + ".decision");
                     String event = "OUT_OF_SCOPE".equals(decision) ? "OUT_OF_SCOPE" : "UNCLEAR".equals(decision) ? "INVALID" : null;
@@ -330,7 +389,10 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                     context.outputMessages.add(result.output());
                     context.variables.put("workflow.ruleQuestion", result.output());
                 }
-                logNode(execution, node, result, context.lastInput, startedAt, null);
+                Long traceId = logNode(execution, node, result, context.lastInput, startedAt, null);
+                if ("TEST".equals(execution.getChannelType()) && traceId != null && result.ticketPreview() != null) {
+                    context.ticketPreviews.put(traceId.toString(), result.ticketPreview());
+                }
             } catch (Exception exception) {
                 logNode(execution, node, null, context.lastInput, startedAt, exception);
                 fail(execution, "NODE_EXECUTION_FAILED", exception.getMessage());
@@ -391,6 +453,14 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                         ? 3600 : node.path("config").path("timeoutSeconds").asLong(15);
                     createWait(execution, node, "INPUT", timeout);
                 }
+                case DtmfCaptureNodeHandler.TYPE -> {
+                    context.digitConfig = DtmfCaptureNodeHandler.config(node.path("config"));
+                    context.variables.remove(context.digitConfig.outputVariable());
+                    context.pendingActionType = DtmfCaptureNodeHandler.TYPE;
+                    execution.setStatus("WAITING_DTMF");
+                    createWait(execution, node, "DTMF", "TEST".equals(execution.getChannelType())
+                        ? 3600 : context.digitConfig.timeoutSeconds());
+                }
                 case "WAIT_ASYNC" -> {
                     execution.setStatus("WAITING_ASYNC");
                     createWait(execution, node, result.waitType(), 120);
@@ -412,8 +482,7 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
                 default -> fail(execution, "INVALID_NODE_RESULT", "节点返回了无效状态：" + result.status());
             }
         }
-        execution.setContextJson(writeContext(context));
-        updateExecution(execution);
+        persist(execution, context);
     }
 
     @Override
@@ -497,6 +566,21 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         execution.setContextJson(writeContext(context));
         execution.setLastActiveAt(LocalDateTime.now());
         updateExecution(execution);
+        if (!isTerminal(execution.getStatus()) || !isVoiceChannel(execution.getChannelType()) || context.ticketDraftConfig == null
+            || execution.getBusinessCallId() == null || execution.getAiAgentId() == null || eventPublisher == null) return;
+        long templateId = context.ticketDraftConfig.path("templateId").asLong(0);
+        JsonNode mappings = context.ticketDraftConfig.path("fieldMappings");
+        if (templateId <= 0 || !mappings.isObject()) return;
+        Map<String, Object> formData = new LinkedHashMap<>();
+        mappings.fields().forEachRemaining(mapping -> {
+            Object value = context.variables.get(mapping.getValue().asText());
+            if (value != null && !(value instanceof String text && text.isBlank())
+                && !(value instanceof java.util.Collection<?> items && items.isEmpty())) {
+                formData.put(mapping.getKey(), value);
+            }
+        });
+        if (!formData.isEmpty()) eventPublisher.publishEvent(
+            new AiWorkflowTicketDraftEvent(execution.getBusinessCallId(), execution.getAiAgentId(), templateId, formData));
     }
 
     private void replayDisclosure(AiWorkflowExecution execution, JsonNode node, RuntimeContext context, String input) {
@@ -668,7 +752,7 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         waitMapper.insert(wait);
     }
 
-    private void logNode(AiWorkflowExecution execution, JsonNode node, AiWorkflowNodeResult result, String currentInput,
+    private Long logNode(AiWorkflowExecution execution, JsonNode node, AiWorkflowNodeResult result, String currentInput,
                          LocalDateTime startedAt, Exception exception) {
         AiWorkflowNodeLog log = new AiWorkflowNodeLog();
         log.setExecutionId(execution.getExecutionId());
@@ -727,6 +811,7 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         log.setEndedAt(LocalDateTime.now());
         log.setDurationMs(Duration.between(startedAt, log.getEndedAt()).toMillis());
         nodeLogMapper.insert(log);
+        return log.getId();
     }
 
     private String nextNodeId(JsonNode definition, String source, String branch) {
@@ -835,7 +920,13 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         }
         result.setTraces(nodeLogMapper.selectList(new LambdaQueryWrapper<AiWorkflowNodeLog>()
                 .eq(AiWorkflowNodeLog::getExecutionId, execution.getExecutionId()).orderByAsc(AiWorkflowNodeLog::getId))
-            .stream().map(this::traceResponse).toList());
+            .stream().map(log -> {
+                AiWorkflowNodeTraceResponse trace = traceResponse(log);
+                if ("TEST".equals(execution.getChannelType()) && log.getId() != null) {
+                    trace.setTicketPreview(context.ticketPreviews.get(log.getId().toString()));
+                }
+                return trace;
+            }).toList());
         return result;
     }
 
@@ -848,6 +939,10 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
         result.setActionType(context.pendingActionType);
         result.setPlaybackNodeId(context.playbackNodeId);
         result.setPlaybackConfig(context.playbackConfig);
+        if (context.digitConfig != null) {
+            result.setDigitCount(context.digitConfig.digitCount());
+            result.setDigitTimeoutSeconds(context.digitConfig.timeoutSeconds());
+        }
         result.setText(context.pendingActionText);
         result.setTarget(context.pendingActionTarget);
         result.setFailureMessage(execution.getFailureMessage());
@@ -893,7 +988,10 @@ public class AiWorkflowRuntimeServiceImpl implements AiWorkflowRuntimeService {
 
     @Data
     private static class RuntimeContext {
+        public DtmfCaptureNodeHandler.Config digitConfig;
         private Map<String, Object> variables = new LinkedHashMap<>();
+        private Map<String, AiWorkflowTicketPreview> ticketPreviews = new LinkedHashMap<>();
+        private JsonNode ticketDraftConfig;
         private List<String> outputMessages = new ArrayList<>();
         private String lastInput;
         private String playbackNodeId;

@@ -68,6 +68,7 @@ public class AutoOutboundDialerServiceImpl implements AutoOutboundDialerService 
     private final OutboundBlacklistMemberSyncService blacklistMemberSyncService;
     private final CallCenterConfigService configService;
     private final CustomerApplicationService customerService;
+    private final TicketCallbackService callbacks;
 
     private final String owner = ManagementFactory.getRuntimeMXBean().getName() + "-dialer-"
         + UUID.randomUUID().toString().substring(0, 8);
@@ -149,6 +150,11 @@ public class AutoOutboundDialerServiceImpl implements AutoOutboundDialerService 
         var outboundRoute = authorization.outboundRoute();
         String answeredDestination = answeredDestination(task, task.getNodeId());
         Map<String, String> variables = targetVariables(task, authorization.normalizedCallee());
+        String stopReason = callbacks.automaticStopReason(member, LocalDateTime.now());
+        if (stopReason != null) {
+            cancel(dispatch, member, stopReason, true);
+            return false;
+        }
         String businessCallId = UUID.randomUUID().toString();
         OutboundAttempt attempt = createAttempt(task, member, dispatch, businessCallId);
         bindDispatchAndMember(dispatch, member, attempt, businessCallId);
@@ -265,6 +271,10 @@ public class AutoOutboundDialerServiceImpl implements AutoOutboundDialerService 
     }
 
     private void cancel(AutoOutboundDispatch dispatch, OutboundMember member, String reason) {
+        cancel(dispatch, member, reason, false);
+    }
+
+    private void cancel(AutoOutboundDispatch dispatch, OutboundMember member, String reason, boolean terminal) {
         LocalDateTime now = LocalDateTime.now();
         dispatchMapper.update(null, new LambdaUpdateWrapper<AutoOutboundDispatch>()
             .eq(AutoOutboundDispatch::getId, dispatch.getId())
@@ -279,7 +289,9 @@ public class AutoOutboundDialerServiceImpl implements AutoOutboundDialerService 
                 .eq(OutboundMember::getId, member.getId())
                 .eq(OutboundMember::getScheduleKey, dispatch.getDispatchKey())
                 .eq(OutboundMember::getStatus, "SCHEDULED")
-                .set(OutboundMember::getStatus, dispatch.getPreviousMemberStatus())
+                .set(OutboundMember::getStatus, terminal ? "SKIPPED" : dispatch.getPreviousMemberStatus())
+                .set(terminal, OutboundMember::getCompletedAt, now)
+                .set(terminal, OutboundMember::getCompletionReason, reason)
                 .set(OutboundMember::getScheduleKey, null)
                 .set(OutboundMember::getScheduledAt, null)
                 .set(OutboundMember::getLeaseExpiresAt, null));

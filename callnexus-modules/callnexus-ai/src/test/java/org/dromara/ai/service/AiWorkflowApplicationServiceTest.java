@@ -1,7 +1,12 @@
 package org.dromara.ai.service;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.dromara.ai.domain.AiAgentWorkflowBinding;
 import org.dromara.ai.domain.AiWorkflow;
 import org.dromara.ai.domain.AiWorkflowVersion;
+import org.dromara.ai.domain.request.AiAgentWorkflowBindingRequest;
 import org.dromara.ai.domain.response.AiWorkflowValidationResponse;
 import org.dromara.ai.mapper.AiAgentMapper;
 import org.dromara.ai.mapper.AiAgentWorkflowBindingMapper;
@@ -9,12 +14,21 @@ import org.dromara.ai.mapper.AiWorkflowMapper;
 import org.dromara.ai.mapper.AiWorkflowVersionMapper;
 import org.dromara.ai.service.impl.AiWorkflowApplicationServiceImpl;
 import org.dromara.resource.media.mapper.MediaAssetMapper;
+import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.satoken.utils.LoginHelper;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @Tag("dev")
@@ -27,6 +41,67 @@ class AiWorkflowApplicationServiceTest {
     private final MediaAssetMapper mediaAssetMapper = mock(MediaAssetMapper.class);
     private final AiWorkflowApplicationService service = new AiWorkflowApplicationServiceImpl(
         workflowMapper, versionMapper, bindingMapper, agentMapper, mediaAssetMapper);
+
+    @Test
+    void rejectsRestoringOverAChangedDraft() {
+        when(workflowMapper.selectOne(any())).thenReturn(new AiWorkflow());
+        AiWorkflowVersion draft = new AiWorkflowVersion();
+        draft.setId(12L);
+        draft.setDefinitionHash("updated");
+        when(versionMapper.selectOne(any())).thenReturn(historyVersion(), draft);
+
+        assertThatThrownBy(() -> service.restoreDraft(1L, 1, 12L, "stale"))
+            .isInstanceOf(ServiceException.class).hasMessageContaining("草稿已变更");
+        verifyNoInteractions(bindingMapper);
+        assertThat(draft.getDefinitionHash()).isEqualTo("updated");
+    }
+
+    @Test
+    void rollbackCreatesVersionAfterExistingDraftAndUpdatesOnlyRequestedBinding() {
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "workflow-test"),
+            AiAgentWorkflowBinding.class);
+        AiWorkflow workflow = new AiWorkflow();
+        workflow.setId(1L);
+        workflow.setEnabled(true);
+        AiWorkflowVersion source = historyVersion();
+        AiWorkflowVersion live = new AiWorkflowVersion();
+        live.setVersionNo(2);
+        live.setStatus("PUBLISHED");
+        AiWorkflowVersion draft = new AiWorkflowVersion();
+        draft.setVersionNo(3);
+        draft.setStatus("DRAFT");
+        when(workflowMapper.selectOne(any())).thenReturn(workflow);
+        when(versionMapper.selectOne(any())).thenReturn(source);
+        when(versionMapper.selectList(any())).thenReturn(List.of(draft, live, source), List.of(live));
+        when(versionMapper.insert(any(AiWorkflowVersion.class))).thenAnswer(invocation -> {
+            invocation.<AiWorkflowVersion>getArgument(0).setId(40L);
+            return 1;
+        });
+        when(bindingMapper.update(isNull(), any())).thenReturn(1);
+        try (var login = mockStatic(LoginHelper.class)) {
+            login.when(LoginHelper::getUserId).thenReturn(99L);
+            var result = service.rollback(1L, 1, List.of(new AiAgentWorkflowBindingRequest.Selection(15L, 20L)));
+            assertThat(result.getVersionNo()).isEqualTo(4);
+            assertThat(result.getDefinitionJson()).isEqualTo(source.getDefinitionJson());
+        }
+        assertThat(workflow.getCurrentPublishedVersionId()).isEqualTo(40L);
+        assertThat(live.getStatus()).isEqualTo("ARCHIVED");
+        assertThat(draft.getStatus()).isEqualTo("DRAFT");
+        assertThat(source.getStatus()).isEqualTo("ARCHIVED");
+        verify(versionMapper).updateById(live);
+        verify(bindingMapper).update(isNull(), any());
+    }
+
+    private AiWorkflowVersion historyVersion() {
+        AiWorkflowVersion source = new AiWorkflowVersion();
+        source.setVersionNo(1);
+        source.setStatus("ARCHIVED");
+        source.setDefinitionJson("""
+            {"schemaVersion":"1.0","nodes":[{"id":"start","type":"START","config":{}},
+             {"id":"end","type":"END","config":{}}],"edges":[{"source":"start","target":"end"}]}
+            """);
+        return source;
+    }
 
     @Test
     void validatesReachableFiniteWorkflow() {
@@ -67,6 +142,14 @@ class AiWorkflowApplicationServiceTest {
         assertThat(service.validateDraft(1L).getErrors()).anyMatch(item -> item.contains("声明类型必须是文本"));
         mockDraft(graph.formatted("STRING"));
         assertThat(service.validateDraft(1L).getErrors()).isEmpty();
+
+        String collectionOnly = graph.formatted("STRING").replace("\"acceptedAnswers\":\"是的\"", "\"aiAutoAdvance\":true");
+        mockDraft(collectionOnly);
+        assertThat(service.validateDraft(1L).getErrors()).isEmpty();
+        mockDraft(collectionOnly.replace("\"aiAutoAdvance\":true", "\"aiAutoAdvance\":false"));
+        assertThat(service.validateDraft(1L).getErrors()).anyMatch(item -> item.contains("高置信度推进"));
+        mockDraft(collectionOnly.replace("\"aiUnderstandingEnabled\":true", "\"aiUnderstandingEnabled\":false"));
+        assertThat(service.validateDraft(1L).getErrors()).anyMatch(item -> item.contains("明确通过"));
     }
 
     @Test

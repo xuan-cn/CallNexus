@@ -19,6 +19,7 @@ public interface AiRealtimeTelephonyGateway {
                String turnId, int seq, long generation, boolean turnEnd);
 
     void recognize(Long nodeId, String customerLegUuid, boolean bargeInEnabled, String bargeInMode);
+    void stopRecognition(Long nodeId, String customerLegUuid);
 
     void stopPlayback(Long nodeId, String customerLegUuid);
 

@@ -116,15 +116,16 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             publishCallCenterAgentRealtimeEvent(event);
             return;
         }
-        // DTMF 按键事件单独走队列通话按键采集，不进入通话记录/状态机/实时推送流程。
+        // DTMF stays out of the normal call-state pipeline.
         if (EslEventNames.DTMF.equals(event.eventName())) {
             String digit = event.headers().get(EslHeaders.DTMF_DIGIT);
             String source = event.headers().get(EslHeaders.DTMF_SOURCE);
             try {
+                if (aiRealtimeMrcpEventService.handleDtmf(event.nodeId(), event.uuid(), digit, source)) return;
                 queueEventApplicationService.recordQueueDtmfIfApplicable(event.uuid(), digit, source);
             } catch (Exception exception) {
-                log.warn("处理通话 DTMF 按键事件失败，不影响实时通话状态处理，nodeId={}，uuid={}，digit={}",
-                    event.nodeId(), event.uuid(), digit, exception);
+                log.warn("处理通话 DTMF 按键事件失败，nodeId={}，uuid={}",
+                    event.nodeId(), event.uuid(), exception);
             }
             return;
         }
@@ -207,6 +208,12 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             mergeMappedTargets(event, targets);
         }
         AgentRealtimeTargetResponse channelOwner = resolveChannelOwnerTarget(event);
+        if (!dispatchParticipantEvent && channelOwner != null
+            && (EslEventNames.CHANNEL_CREATE.equals(event.eventName())
+                || EslEventNames.CHANNEL_PROGRESS.equals(event.eventName())
+                || EslEventNames.CHANNEL_PROGRESS_MEDIA.equals(event.eventName()))) {
+            targets.putIfAbsent(channelOwner.getAgentId(), channelOwner);
+        }
         removeConsultSourceTarget(event, targets);
         removeTransferredSourceTargets(event, targets);
         boolean transferredSourceLegHangup = isTransferredSourceLegHangup(event);
@@ -898,7 +905,9 @@ public class TelephonyEventHandlerImpl implements TelephonyEventHandler {
             && !eventEndpointMatchesExtension(event.nodeId(), extension, event.callerNumber())
             && (eventEndpointMatchesExtension(event.nodeId(), extension, event.destinationNumber())
                 || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_SIP_TO_USER))
-                || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_SIP_REQ_USER)));
+                || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_SIP_REQ_USER))
+                || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_DIALED_USER))
+                || eventEndpointMatchesExtension(event.nodeId(), extension, event.headers().get(EslHeaders.VARIABLE_DIALLED_USER)));
     }
 
     private void applyRealtimeCallState(CallRealtimeMessage message, TelephonyEvent event,

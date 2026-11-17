@@ -10,6 +10,10 @@ public class AgentActiveCall implements Serializable {
     private String callId;
     private String businessCallId;
     private String agentChannelId;
+    private String heldChannelId;
+    private String heldCustomerChannelId;
+    private String heldMediaPath;
+    private Boolean microphoneMuted;
     private Long agentId;
     private String agentExtension;
     private String destination;

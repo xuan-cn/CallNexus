@@ -230,8 +230,8 @@ public class OutboundMemberImportServiceImpl implements OutboundMemberImportServ
 
     private OutboundTask requireTask(Long taskId) {
         OutboundTask task = taskMapper.selectById(taskId);
-        if (task == null) {
-            throw new ServiceException("外呼任务不存在");
+        if (task == null || "AUTO".equals(task.getTaskType())) {
+            throw new ServiceException("该入口仅支持人工外呼任务导入名单");
         }
         return task;
     }

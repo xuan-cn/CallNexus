@@ -1,5 +1,9 @@
 package org.dromara.call.service.impl;
 
+import org.dromara.resource.media.service.MediaAssetApplicationService;
+import org.dromara.resource.media.service.MediaPublicationService;
+import org.dromara.system.service.ISysConfigService;
+
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -86,6 +90,12 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     private final DispatchCallTaskService dispatchCallTaskService;
     private final CallConferenceApplicationService callConferenceApplicationService;
     private final AiRealtimeTelephonyGateway aiRealtimeTelephonyGateway;
+    private final ISysConfigService sysConfigService;
+    private final MediaAssetApplicationService mediaAssetService;
+    private final MediaPublicationService mediaPublicationService;
+
+    private static final String HOLD_MEDIA_KEY = "callcenter.agent.holdMediaId";
+    private static final String TEMP_HOLD_MUSIC = "temp_hold_music";
 
     @Override
     public CallControlResponse originate(String destination) {
@@ -196,9 +206,30 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
-        telephonyCommandGateway.hold(endpoint, legs.customerLegUuid());
+        if (legs.agentLegUuid().equals(legs.customerLegUuid())
+            || !telephonyCommandGateway.callsAreBridged(endpoint, legs.agentLegUuid(), legs.customerLegUuid())) {
+            throw new ServiceException("当前坐席和客户未建立通话桥接，无法保持");
+        }
+        if (activeCall.getHeldCustomerChannelId() != null) return;
+        String mediaPath = resolveHoldMusic(endpoint, agent.getNodeId(), legs.agentLegUuid());
+        boolean microphoneMuted = Boolean.TRUE.equals(activeCall.getMicrophoneMuted());
+        try {
+            telephonyCommandGateway.setHoldAudioMuted(endpoint, legs.agentLegUuid(), true, microphoneMuted);
+            telephonyCommandGateway.startHoldPlayback(endpoint, legs.customerLegUuid(), mediaPath);
+        } catch (RuntimeException exception) {
+            try {
+                telephonyCommandGateway.setHoldAudioMuted(endpoint, legs.agentLegUuid(), false, microphoneMuted);
+            } catch (RuntimeException rollbackFailure) {
+                exception.addSuppressed(rollbackFailure);
+                log.error("保持失败后无法还原坐席音频，agentLegUuid={}", legs.agentLegUuid(), rollbackFailure);
+            }
+            throw exception;
+        }
+        activeCall.setHeldChannelId(legs.agentLegUuid());
+        activeCall.setHeldCustomerChannelId(legs.customerLegUuid());
+        activeCall.setHeldMediaPath(mediaPath);
         saveActiveCallState(agent, activeCall, AgentCallPhase.HELD, activeCall.getCallOperation());
-        log.info("已保持当前客户腿，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}",
+        log.info("已保持通话，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}",
             TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension());
     }
@@ -214,11 +245,64 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
-        telephonyCommandGateway.unhold(endpoint, legs.customerLegUuid());
+        if (activeCall.getHeldCustomerChannelId() != null) {
+            if (!legs.agentLegUuid().equals(activeCall.getHeldChannelId())
+                || !legs.customerLegUuid().equals(activeCall.getHeldCustomerChannelId())) {
+                throw new ServiceException("通话已切换，不能恢复之前保持的通话");
+            }
+            if (activeCall.getHeldMediaPath() != null) {
+                telephonyCommandGateway.stopHoldPlayback(endpoint, legs.customerLegUuid(), activeCall.getHeldMediaPath());
+                activeCall.setHeldMediaPath(null);
+                saveActiveCallState(agent, activeCall, AgentCallPhase.HELD, activeCall.getCallOperation());
+            }
+            telephonyCommandGateway.setHoldAudioMuted(endpoint, legs.agentLegUuid(), false,
+                Boolean.TRUE.equals(activeCall.getMicrophoneMuted()));
+        } else {
+            boolean heldOnAgent = legs.agentLegUuid().equals(activeCall.getHeldChannelId());
+            telephonyCommandGateway.unhold(endpoint, heldOnAgent ? legs.agentLegUuid() : legs.customerLegUuid());
+            if (heldOnAgent) setHoldMusic(endpoint, legs.agentLegUuid(), "");
+        }
+        activeCall.setHeldChannelId(null);
+        activeCall.setHeldCustomerChannelId(null);
         saveActiveCallState(agent, activeCall, AgentCallPhase.CONNECTED, activeCall.getCallOperation());
-        log.info("已恢复当前客户腿，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}",
+        log.info("已恢复通话，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}",
             TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension());
+    }
+
+    private String resolveHoldMusic(EslEndpoint endpoint, Long nodeId, String agentLegUuid) {
+        String path = "";
+        try {
+            String value = sysConfigService.selectConfigByKey(HOLD_MEDIA_KEY);
+            if (value != null && !value.isBlank() && !"default".equals(value)) {
+                Long mediaId = Long.valueOf(value.trim());
+                var media = mediaAssetService.get(mediaId);
+                if (Boolean.TRUE.equals(media.getEnabled())
+                    && !"CALL_RECORDING".equals(media.getCategory()) && !"VOICEMAIL_RECORDING".equals(media.getCategory())
+                    && ("PUBLISHED".equals(media.getPublishStatus()) || "PARTIAL".equals(media.getPublishStatus()))) {
+                    path = mediaPublicationService.syncs(mediaId).stream()
+                        .filter(sync -> nodeId.equals(sync.getNodeId()) && "SUCCESS".equals(sync.getStatus()))
+                        .filter(sync -> media.getLatestVersionNo() != null && media.getLatestVersionNo().equals(sync.getVersionNo()))
+                        .map(sync -> sync.getTargetPath())
+                        .filter(target -> target != null && !target.isBlank())
+                        .findFirst().orElse("");
+                }
+                if (path.isEmpty()) {
+                    log.warn("保持提示音在当前话务节点不可用，使用默认音，mediaId={}，nodeId={}", mediaId, nodeId);
+                }
+            }
+        } catch (RuntimeException exception) {
+            log.warn("读取保持提示音失败，使用默认音，nodeId={}", nodeId, exception);
+        }
+        return path.isEmpty() ? telephonyCommandGateway.getDefaultHoldMusic(endpoint, agentLegUuid) : path;
+    }
+
+    private void setHoldMusic(EslEndpoint endpoint, String agentLegUuid, String path) {
+        try {
+            telephonyCommandGateway.setCallVariable(endpoint, agentLegUuid, TEMP_HOLD_MUSIC, path);
+        } catch (RuntimeException exception) {
+            log.warn("设置或清理保持提示音失败，agentLegUuid={}", agentLegUuid, exception);
+        }
     }
 
     @Override
@@ -232,7 +316,11 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
-        telephonyCommandGateway.mute(endpoint, legs.agentLegUuid());
+        if (activeCall.getHeldCustomerChannelId() == null) {
+            telephonyCommandGateway.mute(endpoint, legs.agentLegUuid());
+        }
+        activeCall.setMicrophoneMuted(true);
+        saveActiveCallState(agent, activeCall, activeCall.getCallPhase(), activeCall.getCallOperation());
         log.info("已静音当前坐席腿，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}，mute=true",
             TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension());
@@ -249,7 +337,11 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         CurrentCallLegs legs = resolveCurrentCallLegsForAgentControl(endpoint, agent, activeCall, callId);
-        telephonyCommandGateway.unmute(endpoint, legs.agentLegUuid());
+        if (activeCall.getHeldCustomerChannelId() == null) {
+            telephonyCommandGateway.unmute(endpoint, legs.agentLegUuid());
+        }
+        activeCall.setMicrophoneMuted(false);
+        saveActiveCallState(agent, activeCall, activeCall.getCallPhase(), activeCall.getCallOperation());
         log.info("已取消静音当前坐席腿，tenantId={}，nodeId={}，businessCallId={}，requestCallId={}，customerLegUuid={}，sourceAgentLegUuid={}，agentId={}，extension={}，mute=false",
             TenantHelper.getTenantId(), agent.getNodeId(), legs.businessCallId(), callId, legs.customerLegUuid(), legs.agentLegUuid(),
             agent.getAgentId(), agent.getExtension());
@@ -322,6 +414,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     public void blindTransfer(Long agentId, String callId, String targetExtension) {
         CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
+        requireNotMediaHeld(activeCall);
         EslEndpoint endpoint = endpoint(agent.getNodeId());
         String businessCallId = resolveAuthoritativeBusinessCallId(activeCall);
         String customerCallId = resolveCurrentCustomerLegId(endpoint, businessCallId, activeCall, agent);
@@ -397,6 +490,7 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
     public CallControlResponse startConsultTransfer(Long agentId, String callId, String targetExtension, String phoneMode) {
         CurrentAgentResponse agent = requireSignedInAgent(agentId);
         AgentActiveCall activeCall = requireActiveCall(agent, callId);
+        requireNotMediaHeld(activeCall);
         AgentConsultCall existing = RedisUtils.getCacheObject(consultCallKey(agent.getAgentId()));
         if (existing != null) {
             if (telephonyCommandGateway.callExists(endpoint(agent.getNodeId()), existing.getConsultCallId())) {
@@ -664,6 +758,12 @@ public class CallControlApplicationServiceImpl implements CallControlApplication
         } catch (RuntimeException restoreException) {
             log.warn("外呼失败后恢复坐席状态失败，agentId={}，status={}，error={}",
                 agent.getAgentId(), agent.getStatus(), restoreException.getMessage());
+        }
+    }
+
+    private void requireNotMediaHeld(AgentActiveCall activeCall) {
+        if (activeCall.getHeldCustomerChannelId() != null) {
+            throw new ServiceException("请先恢复通话再转接");
         }
     }
 

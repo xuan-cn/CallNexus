@@ -10,8 +10,14 @@ public record AiWorkflowNodeContext(
     String currentInput,
     Long aiAgentId,
     String channelType,
-    Map<String, Object> workflowSettings
+    Map<String, Object> workflowSettings,
+    String businessCallId
 ) {
+    public AiWorkflowNodeContext(JsonNode node, Map<String, Object> variables, String currentInput,
+                                 Long aiAgentId, String channelType, Map<String, Object> workflowSettings) {
+        this(node, variables, currentInput, aiAgentId, channelType, workflowSettings, null);
+    }
+
     public AiWorkflowNodeContext(JsonNode node, Map<String, Object> variables, String currentInput, Long aiAgentId) {
         this(node, variables, currentInput, aiAgentId, null, Map.of());
     }

@@ -12,7 +12,9 @@ import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.utils.file.FileUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.excel.utils.ExcelUtil;
@@ -39,6 +41,7 @@ import org.dromara.customer.customer.service.CustomerImportService;
 import org.dromara.customer.customer.service.CustomerPhoneNormalizer;
 import org.dromara.customer.form.domain.FormBusinessType;
 import org.dromara.customer.form.domain.FormField;
+import org.dromara.customer.form.domain.FormFieldType;
 import org.dromara.customer.form.mapper.FormFieldMapper;
 import org.dromara.customer.form.service.DynamicFormSubmissionService;
 import org.dromara.common.tenant.helper.TenantHelper;
@@ -46,6 +49,8 @@ import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -66,6 +71,7 @@ import java.util.concurrent.Executor;
 public class CustomerImportServiceImpl implements CustomerImportService {
 
     private static final int MAX_IMPORT_ROWS = 20000;
+    static final String NEW_CUSTOMER_RESULT = "导入成功";
     private static final String PHONE_SEPARATOR = "[,，;；\\r\\n]+";
 
     private static final Set<String> NAME_HEADERS = Set.of(
@@ -104,15 +110,72 @@ public class CustomerImportServiceImpl implements CustomerImportService {
     }
 
     @Override
-    public CustomerImportAnalysisResponse analyze(Long taskId, MultipartFile file) {
-        requireTask(taskId, false);
-        if (file == null || file.isEmpty()) {
-            throw new ServiceException("请选择需要分析的 Excel 文件");
+    public void downloadTaskTemplate(Long taskId, HttpServletResponse response) {
+        CustomerImportTask task = requireTask(taskId, false);
+        if (task.getFormTemplateId() == null) {
+            downloadTemplate(response);
+            return;
         }
-        return analyzeWorkbook(file);
+        List<String> headers = new ArrayList<>(List.of("客户姓名", "主号码", "其他号码", "客户类型", "来源渠道", "标签", "备注"));
+        headers.addAll(taskTemplateMapping(task.getFormTemplateId()).keySet());
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("客户资料");
+            Row row = sheet.createRow(0);
+            for (int i = 0; i < headers.size(); i++) {
+                row.createCell(i).setCellValue(headers.get(i));
+            }
+            FileUtils.setAttachmentResponseHeader(response, "任务资料导入模板.xlsx");
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            workbook.write(response.getOutputStream());
+        } catch (IOException exception) {
+            throw new ServiceException("任务导入模板生成失败");
+        }
+    }
+
+    private Map<String, String> taskTemplateMapping(Long templateId) {
+        Map<String, String> mapping = new LinkedHashMap<>();
+        if (templateId == null) return mapping;
+        List<FormField> fields = formFieldMapper.selectList(importableFormFields(templateId)
+            .orderByAsc(FormField::getSortOrder, FormField::getId));
+        Map<String, Integer> nameCounts = new HashMap<>();
+        for (FormField field : fields) {
+            nameCounts.merge(normalizeHeader(field.getFieldName()), 1, Integer::sum);
+        }
+        Set<String> usedHeaders = new HashSet<>();
+        for (FormField field : fields) {
+            String name = field.getFieldName().trim();
+            String header = name;
+            int suffix = 1;
+            if (detectField(normalizeHeader(name)) != null || nameCounts.get(normalizeHeader(name)) > 1) {
+                header = name + "（自定义" + suffix++ + "）";
+            }
+            while (!usedHeaders.add(normalizeHeader(header))) {
+                header = name + "（自定义" + suffix++ + "）";
+            }
+            mapping.put(header, "form:" + field.getFieldCode());
+        }
+        return mapping;
+    }
+
+    private LambdaQueryWrapper<FormField> importableFormFields(Long templateId) {
+        return new LambdaQueryWrapper<FormField>()
+            .eq(FormField::getTemplateId, templateId)
+            .eq(FormField::getEnabled, true)
+            .eq(FormField::getImportEnabled, true)
+            .ne(FormField::getFieldType, FormFieldType.FILE);
     }
 
     @Override
+    public CustomerImportAnalysisResponse analyze(Long taskId, MultipartFile file) {
+        CustomerImportTask task = requireTask(taskId, false);
+        if (file == null || file.isEmpty()) {
+            throw new ServiceException("请选择需要分析的 Excel 文件");
+        }
+        return analyzeWorkbook(file, taskTemplateMapping(task.getFormTemplateId()));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public CustomerImportBatchResponse startImport(Long taskId, MultipartFile file) {
         CustomerImportTask task = requireTask(taskId, true);
         if (file == null || file.isEmpty()) {
@@ -135,13 +198,18 @@ public class CustomerImportServiceImpl implements CustomerImportService {
 
         CustomerImportBatch batch = createBatch(taskId, file, safeRequest, drafts.size(), "PENDING");
         String tenantId = TenantHelper.getTenantId();
-        customerImportExecutor.execute(() -> TenantHelper.dynamic(tenantId, () -> {
-            try {
-                processBatch(batch.getId(), drafts, safeRequest);
-            } catch (Exception exception) {
-                markBatchFailed(batch.getId(), exception);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                customerImportExecutor.execute(() -> TenantHelper.dynamic(tenantId, () -> {
+                    try {
+                        processBatch(batch.getId(), drafts, safeRequest);
+                    } catch (Exception exception) {
+                        markBatchFailed(batch.getId(), exception);
+                    }
+                }));
             }
-        }));
+        });
         return getBatch(taskId, batch.getId());
     }
 
@@ -230,6 +298,9 @@ public class CustomerImportServiceImpl implements CustomerImportService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public CustomerImportBatchResponse retryRows(Long taskId, Long batchId, CustomerImportRetryRequest request) {
+        if (taskMapper.selectForUpdate(taskId) == null) {
+            throw new ServiceException("资料导入任务不存在");
+        }
         CustomerImportBatch batch = requireNotRunning(taskId, batchId);
         List<Long> rowIds = request == null ? List.of() : request.getRowIds();
         LambdaQueryWrapper<CustomerImportRow> wrapper = new LambdaQueryWrapper<CustomerImportRow>()
@@ -321,7 +392,7 @@ public class CustomerImportServiceImpl implements CustomerImportService {
     }
 
     private CustomerImportTask requireTask(Long taskId, boolean enabledRequired) {
-        CustomerImportTask task = taskMapper.selectById(taskId);
+        CustomerImportTask task = enabledRequired ? taskMapper.selectForUpdate(taskId) : taskMapper.selectById(taskId);
         if (task == null) {
             throw new ServiceException("资料导入任务不存在");
         }
@@ -473,7 +544,7 @@ public class CustomerImportServiceImpl implements CustomerImportService {
         saveImportMetadata(row, request.getDefaultRemark());
         saveDynamicForm(row, draft, request);
         row.setStatus("IMPORTED");
-        row.setErrorMessage("导入成功");
+        row.setErrorMessage(NEW_CUSTOMER_RESULT);
     }
 
     private void saveDynamicForm(CustomerImportRow row, ImportDraft draft, CustomerImportRequest request) {
@@ -510,7 +581,7 @@ public class CustomerImportServiceImpl implements CustomerImportService {
         assignmentMapper.insert(assignment);
     }
 
-    private CustomerImportAnalysisResponse analyzeWorkbook(MultipartFile file) {
+    private CustomerImportAnalysisResponse analyzeWorkbook(MultipartFile file, Map<String, String> templateMapping) {
         try (Workbook workbook = WorkbookFactory.create(file.getInputStream())) {
             Sheet sheet = workbook.getNumberOfSheets() == 0 ? null : workbook.getSheetAt(0);
             if (sheet == null || sheet.getPhysicalNumberOfRows() <= 1) {
@@ -519,7 +590,9 @@ public class CustomerImportServiceImpl implements CustomerImportService {
             DataFormatter formatter = new DataFormatter();
             Row headerRow = sheet.getRow(sheet.getFirstRowNum());
             Map<Integer, String> headers = readHeaders(headerRow, formatter);
-            Map<Integer, String> fields = mapFields(headers, Map.of());
+            Map<Integer, String> fields = mapFields(headers, templateMapping);
+            Map<String, Integer> fieldCounts = new HashMap<>();
+            fields.values().forEach(field -> fieldCounts.merge(field, 1, Integer::sum));
 
             CustomerImportAnalysisResponse response = new CustomerImportAnalysisResponse();
             response.setFileName(file.getOriginalFilename());
@@ -527,7 +600,8 @@ public class CustomerImportServiceImpl implements CustomerImportService {
             for (Map.Entry<Integer, String> entry : headers.entrySet()) {
                 CustomerImportAnalysisResponse.Column column = new CustomerImportAnalysisResponse.Column();
                 column.setHeader(entry.getValue());
-                column.setSuggestedField(fields.get(entry.getKey()));
+                String suggestedField = fields.get(entry.getKey());
+                column.setSuggestedField(fieldCounts.getOrDefault(suggestedField, 0) == 1 ? suggestedField : null);
                 response.getColumns().add(column);
             }
             for (int rowIndex = sheet.getFirstRowNum() + 1; rowIndex <= sheet.getLastRowNum() && response.getSampleRows().size() < 5; rowIndex++) {
@@ -652,10 +726,7 @@ public class CustomerImportServiceImpl implements CustomerImportService {
         if (request.getFormTemplateId() == null) {
             throw new ServiceException("自定义字段映射必须选择客户资料模板");
         }
-        Set<String> allowed = formFieldMapper.selectList(new LambdaQueryWrapper<FormField>()
-                .eq(FormField::getTemplateId, request.getFormTemplateId())
-                .eq(FormField::getEnabled, true)
-                .eq(FormField::getImportEnabled, true)
+        Set<String> allowed = formFieldMapper.selectList(importableFormFields(request.getFormTemplateId())
                 .in(FormField::getFieldCode, formFieldCodes))
             .stream().map(FormField::getFieldCode).collect(java.util.stream.Collectors.toSet());
         List<String> invalid = formFieldCodes.stream().filter(code -> !allowed.contains(code)).sorted().toList();

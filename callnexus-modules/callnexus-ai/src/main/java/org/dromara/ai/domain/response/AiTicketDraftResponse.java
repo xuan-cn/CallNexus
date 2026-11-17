@@ -16,6 +16,7 @@ public class AiTicketDraftResponse {
     private String callerNumber;
     private Long ticketTemplateId;
     private String status;
+    private Boolean workflowDraft;
     private BigDecimal confidence;
     private String title;
     private String summary;

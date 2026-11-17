@@ -207,6 +207,14 @@ public class CustomerApplicationServiceImpl implements CustomerApplicationServic
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public void deleteImportedCustomer(Long id) {
+        if (customerMapper.selectById(id) != null) {
+            delete(id);
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public void assign(CustomerAssignmentRequest request) {
         List<Long> customerIds = request.getCustomerIds() == null ? List.of() : request.getCustomerIds().stream()
             .filter(Objects::nonNull)

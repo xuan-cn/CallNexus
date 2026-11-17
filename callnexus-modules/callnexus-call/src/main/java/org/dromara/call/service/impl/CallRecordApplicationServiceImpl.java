@@ -191,7 +191,7 @@ public class CallRecordApplicationServiceImpl implements CallRecordApplicationSe
                 visible.in(CallSession::getAgentId, dataScope.agentIds());
             }
             if (hasQueueScope) {
-                visible.or(hasAgentScope).and(queue -> queue.isNull(CallSession::getAgentId)
+                visible.or(hasAgentScope).nested(queue -> queue.isNull(CallSession::getAgentId)
                     .in(CallSession::getHandlingQueueId, dataScope.queueIds()));
             }
         });

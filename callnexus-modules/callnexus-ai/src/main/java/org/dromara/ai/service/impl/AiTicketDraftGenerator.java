@@ -13,6 +13,7 @@ import org.dromara.ai.service.AiAgentAssistStreamService;
 import org.dromara.ai.domain.response.AiTicketDraftResponse;
 import org.dromara.ai.service.model.AiTicketModelOutput;
 import org.dromara.ai.service.model.AiTicketTemplateContext;
+import org.dromara.ai.service.model.AiWorkflowTicketDraftEvent;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
@@ -61,6 +62,11 @@ public class AiTicketDraftGenerator {
         if (contextProvider == null) throw new ServiceException("工单业务上下文提供器未加载");
         if (contextProvider.hasFormalTicket(task.getBusinessCallId())) {
             throw new SkipGenerationException("本次通话已经存在正式工单");
+        }
+        if (draftMapper.selectCount(new LambdaQueryWrapper<AiTicketDraft>()
+            .eq(AiTicketDraft::getSourceCallId, task.getBusinessCallId())
+            .eq(AiTicketDraft::getPolicyId, AiWorkflowTicketDraftEvent.WORKFLOW_POLICY_ID)) > 0) {
+            throw new SkipGenerationException("本次通话已经保留流程草稿");
         }
         String callerNumber = callerNumber(source);
         AiTicketTemplateContext template = contextProvider.load(policy.getTicketTemplateId(), callerNumber);

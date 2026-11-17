@@ -2,8 +2,10 @@ package org.dromara.ai.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import org.dromara.ai.domain.request.AiAgentWorkflowBindingRequest;
+import org.dromara.ai.domain.request.AiAgentWorkflowBindingRequest.Selection;
 import org.dromara.ai.domain.request.AiWorkflowDraftRequest;
 import org.dromara.ai.domain.request.AiWorkflowRequest;
 import org.dromara.ai.domain.request.AiWorkflowTestInputRequest;
@@ -32,6 +34,9 @@ import java.util.List;
 @RequestMapping("/api/v1/ai-workflows")
 @RequiredArgsConstructor
 public class AiWorkflowController {
+    public record RestoreDraftRequest(Long expectedDraftId, String expectedDraftHash) {}
+    public record RollbackRequest(@NotNull List<@NotNull @Valid Selection> bindings) {}
+
     private final AiWorkflowApplicationService service;
     private final AiWorkflowRuntimeService runtimeService;
 
@@ -84,6 +89,25 @@ public class AiWorkflowController {
     @SaCheckPermission("callcenter:ai-workflow:query")
     public R<List<AiWorkflowVersionResponse>> versions(@PathVariable Long id) {
         return R.ok(service.versions(id));
+    }
+
+    @PostMapping("/{id}/versions/{versionNo}/restore-draft")
+    @SaCheckPermission("callcenter:ai-workflow:edit")
+    public R<Long> restoreDraft(@PathVariable Long id, @PathVariable Integer versionNo, @RequestBody RestoreDraftRequest request) {
+        return R.ok(service.restoreDraft(id, versionNo, request.expectedDraftId(), request.expectedDraftHash()));
+    }
+
+    @GetMapping("/{id}/bindings")
+    @SaCheckPermission({"callcenter:ai-workflow:publish", "callcenter:ai-agent:update"})
+    public R<List<AiAgentWorkflowBindingResponse>> workflowBindings(@PathVariable Long id) {
+        return R.ok(service.workflowBindings(id));
+    }
+
+    @PostMapping("/{id}/versions/{versionNo}/rollback")
+    @SaCheckPermission({"callcenter:ai-workflow:publish", "callcenter:ai-agent:update"})
+    public R<AiWorkflowVersionResponse> rollback(@PathVariable Long id, @PathVariable Integer versionNo,
+                                                 @Valid @RequestBody RollbackRequest request) {
+        return R.ok(service.rollback(id, versionNo, request.bindings()));
     }
 
     @GetMapping("/{id}/draft")

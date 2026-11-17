@@ -18,6 +18,10 @@ public interface TelephonyCommandGateway {
     void unhold(EslEndpoint endpoint, String callId);
     void mute(EslEndpoint endpoint, String callId);
     void unmute(EslEndpoint endpoint, String callId);
+    void setHoldAudioMuted(EslEndpoint endpoint, String callId, boolean muted, boolean microphoneMuted);
+    String getDefaultHoldMusic(EslEndpoint endpoint, String callId);
+    void startHoldPlayback(EslEndpoint endpoint, String callId, String mediaPath);
+    void stopHoldPlayback(EslEndpoint endpoint, String callId, String mediaPath);
     void sendDtmf(EslEndpoint endpoint, String callId, String digits);
     void broadcastPlayback(EslEndpoint endpoint, String callId, String mediaPath, String leg);
     void broadcastSayNumber(EslEndpoint endpoint, String callId, String language, String number, String leg);

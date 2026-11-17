@@ -22,6 +22,7 @@ public interface CustomerApplicationService {
     Long importCustomer(CustomerImportData data);
     void update(Long id, UpdateCustomerRequest request);
     void delete(Long id);
+    void deleteImportedCustomer(Long id);
     void claimCurrentAgent(Long id, String businessCallId);
     List<CustomerPhoneResponse> listPhones(Long customerId);
     Long addPhone(Long customerId, CustomerPhoneRequest request);

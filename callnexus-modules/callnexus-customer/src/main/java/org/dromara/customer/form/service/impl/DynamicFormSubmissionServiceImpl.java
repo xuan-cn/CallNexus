@@ -39,16 +39,8 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
     @Override
     public void validateAndSave(Long templateId, FormBusinessType businessType, Long businessId, Map<String, Object> formData) {
         if (templateId == null) return;
-        FormTemplate template = templateMapper.selectById(templateId);
-        if (template == null || !Boolean.TRUE.equals(template.getEnabled()) || template.getBusinessType() != businessType) {
-            throw new ServiceException("表单模板不存在或已停用");
-        }
         Map<String, Object> values = formData == null ? Map.of() : formData;
-        List<FormField> fields = fieldMapper.selectList(new LambdaQueryWrapper<FormField>()
-            .eq(FormField::getTemplateId, templateId).eq(FormField::getEnabled, true));
-        Set<String> fieldCodes = fields.stream().map(FormField::getFieldCode).collect(Collectors.toSet());
-        if (!fieldCodes.containsAll(values.keySet())) throw new ServiceException("表单提交包含未知字段");
-        for (FormField field : fields) validateField(field, values.get(field.getFieldCode()));
+        validate(templateId, businessType, values);
 
         FormSubmission submission = submissionMapper.selectOne(new LambdaQueryWrapper<FormSubmission>()
             .eq(FormSubmission::getBusinessType, businessType)
@@ -65,6 +57,21 @@ public class DynamicFormSubmissionServiceImpl implements DynamicFormSubmissionSe
         } else {
             submissionMapper.updateById(submission);
         }
+    }
+
+    @Override
+    public void validate(Long templateId, FormBusinessType businessType, Map<String, Object> formData) {
+        FormTemplate template = templateMapper.selectById(templateId);
+        if (template == null || !Boolean.TRUE.equals(template.getEnabled()) || template.getBusinessType() != businessType) {
+            throw new ServiceException("表单模板不存在或已停用");
+        }
+        Map<String, Object> values = formData == null ? Map.of() : formData;
+        List<FormField> fields = fieldMapper.selectList(new LambdaQueryWrapper<FormField>()
+            .eq(FormField::getTemplateId, templateId).eq(FormField::getEnabled, true));
+        Set<String> fieldCodes = fields.stream().map(FormField::getFieldCode).collect(Collectors.toSet());
+        if (!fieldCodes.containsAll(values.keySet())) throw new ServiceException("表单提交包含未知字段");
+        for (FormField field : fields) validateField(field, values.get(field.getFieldCode()));
+
     }
 
     @Override

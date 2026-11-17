@@ -8,6 +8,8 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.customer.customer.domain.CustomerImportTask;
+import org.dromara.customer.customer.domain.CustomerImportRow;
+import org.dromara.customer.customer.domain.CustomerImportBatch;
 import org.dromara.customer.customer.domain.request.CustomerImportTaskQuery;
 import org.dromara.customer.customer.mapper.CustomerAssignmentMapper;
 import org.dromara.customer.customer.mapper.CustomerImportBatchMapper;
@@ -18,9 +20,11 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -32,6 +36,53 @@ class CustomerImportTaskDateFilterTest {
     @BeforeAll
     static void initializeMapping() {
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "test"), CustomerImportTask.class);
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "test"), CustomerImportRow.class);
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "test"), CustomerImportBatch.class);
+    }
+
+    @Test
+    void deletesOnlyUnsharedCustomersCreatedByTheTask() {
+        CustomerImportTaskMapper tasks = mock(CustomerImportTaskMapper.class);
+        CustomerImportBatchMapper batches = mock(CustomerImportBatchMapper.class);
+        CustomerImportRowMapper rows = mock(CustomerImportRowMapper.class);
+        CustomerApplicationService customers = mock(CustomerApplicationService.class);
+        ObjectProvider<CustomerApplicationService> provider = mock(ObjectProvider.class);
+        when(provider.getObject()).thenReturn(customers);
+        when(tasks.selectForUpdate(1L)).thenReturn(new CustomerImportTask());
+        CustomerImportRow owned = new CustomerImportRow();
+        owned.setCustomerId(10L);
+        CustomerImportRow shared = new CustomerImportRow();
+        shared.setCustomerId(11L);
+        when(rows.selectList(any())).thenReturn(List.of(owned, shared), List.of(shared));
+
+        new CustomerImportTaskServiceImpl(tasks, batches, rows, mock(CustomerAssignmentMapper.class), provider).delete(1L);
+
+        verify(customers).deleteImportedCustomer(10L);
+        verifyNoMoreInteractions(customers);
+        ArgumentCaptor<LambdaQueryWrapper<CustomerImportRow>> queries = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(rows, times(2)).selectList(queries.capture());
+        LambdaQueryWrapper<CustomerImportRow> ownership = queries.getAllValues().get(0);
+        assertTrue(ownership.getSqlSegment().contains("batch_id IS NOT NULL"));
+        assertTrue(ownership.getSqlSegment().contains("error_message ="));
+        assertTrue(ownership.getParamNameValuePairs().containsValue("导入成功"));
+        verify(rows).delete(any());
+        verify(batches).delete(any());
+        verify(tasks).deleteById(1L);
+    }
+
+    @Test
+    void blocksDeletionWhileImportRunsOrOutboundSourceExists() {
+        CustomerImportTaskMapper tasks = mock(CustomerImportTaskMapper.class);
+        CustomerImportBatchMapper batches = mock(CustomerImportBatchMapper.class);
+        CustomerImportRowMapper rows = mock(CustomerImportRowMapper.class);
+        when(tasks.selectForUpdate(1L)).thenReturn(new CustomerImportTask());
+        when(batches.selectCount(any())).thenReturn(1L, 0L);
+        when(tasks.hasOutboundSource(1L)).thenReturn(true);
+        var service = new CustomerImportTaskServiceImpl(tasks, batches, rows, mock(CustomerAssignmentMapper.class), mock(ObjectProvider.class));
+        assertThrows(ServiceException.class, () -> service.delete(1L));
+        assertThrows(ServiceException.class, () -> service.delete(1L));
+        verifyNoInteractions(rows);
+        verify(tasks, never()).deleteById(1L);
     }
 
     @Test
@@ -96,6 +147,7 @@ class CustomerImportTaskDateFilterTest {
 
     private CustomerImportTaskServiceImpl service(CustomerImportTaskMapper mapper) {
         return new CustomerImportTaskServiceImpl(mapper, mock(CustomerImportBatchMapper.class),
-            mock(CustomerImportRowMapper.class), mock(CustomerAssignmentMapper.class));
+            mock(CustomerImportRowMapper.class), mock(CustomerAssignmentMapper.class),
+            mock(ObjectProvider.class));
     }
 }

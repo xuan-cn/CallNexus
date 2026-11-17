@@ -277,6 +277,7 @@ public class AiRealtimeMrcpEventService {
             return;
         }
         if (existing != null) {
+            if ("DETECTED_SPEECH".equals(eventName) && existing.digitCollection.get() != null) return;
             businessCallId = firstNonBlank(businessCallId, existing.businessCallId);
             agentId = agentId == null ? existing.agentId : agentId;
             flowId = flowId == null ? existing.entity.getFlowId() : flowId;
@@ -1858,7 +1859,7 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void tryRecognize(RuntimeSession runtime) {
-        if (runtime.closed.get() || !"LISTENING".equals(runtime.entity.getSessionState())) {
+        if (runtime.closed.get() || runtime.digitCollection.get() != null || !"LISTENING".equals(runtime.entity.getSessionState())) {
             return;
         }
         if (!runtime.recognizing.compareAndSet(false, true)) {
@@ -1902,6 +1903,8 @@ public class AiRealtimeMrcpEventService {
             runtime.waitingSpeakComplete.set(false);
         }
         sessions.remove(key(runtime.tenantId, runtime.customerLegUuid), runtime);
+        DigitCollection collection = runtime.digitCollection.getAndSet(null);
+        if (collection != null) collection.cancel();
         releaseOwnership(runtime.customerLegUuid);
         runtime.recognizing.set(false);
         runtime.openingRecognitionActive.set(false);
@@ -1936,7 +1939,6 @@ public class AiRealtimeMrcpEventService {
         runtime.entity.setEndedAt(LocalDateTime.now());
         runtime.entity.setLastActivityAt(LocalDateTime.now());
         sessionMapper.updateById(runtime.entity);
-        finishRealtimeTranscript(runtime);
         if (StringUtils.isNotBlank(runtime.workflowExecutionId)) {
             try {
                 workflowRuntimeService.terminate(runtime.workflowExecutionId, reason);
@@ -1945,6 +1947,7 @@ public class AiRealtimeMrcpEventService {
                     runtime.workflowExecutionId, reason, exception.getMessage());
             }
         }
+        finishRealtimeTranscript(runtime);
         log.info("AI UniMRCP 会话结束，sessionId={}，businessCallId={}，customerLegUuid={}，reason={}，cancelledTtsConnections={}",
             runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, reason, cancelledTtsConnections);
     }
@@ -2498,6 +2501,7 @@ public class AiRealtimeMrcpEventService {
                 runtime.workflowSpeak.set(false);
                 resumeListening(runtime);
             }
+            case "DTMF_CAPTURE" -> startDigitCollection(runtime, result);
             case "TRANSFER_QUEUE", "TRANSFER_EXTENSION", "TRANSFER_IVR" ->
                 executeWorkflowTransfer(runtime, actionType, result.getTarget());
             case "HANGUP" -> {
@@ -2507,6 +2511,89 @@ public class AiRealtimeMrcpEventService {
             case "COMPLETED" -> continueWithDefaultConversation(runtime);
             case "FAILED" -> fail(runtime, "AI 语音工作流执行失败：" + result.getFailureMessage(), null);
             default -> throw new ServiceException("AI 语音工作流返回了无法执行的动作：" + actionType);
+        }
+    }
+
+    private void startDigitCollection(RuntimeSession runtime, AiWorkflowVoiceExecutionResponse action) {
+        runtime.workflowOpeningPending.set(false);
+        runtime.workflowSpeak.set(false);
+        var capture = new DigitCollection(action.getWaitingToken(), action.getDigitCount());
+        if (!runtime.digitCollection.compareAndSet(null, capture)) return;
+        try {
+            boolean recognizing = runtime.recognizing.getAndSet(false);
+            boolean opening = runtime.openingRecognitionActive.getAndSet(false);
+            runtime.clearDeferredRecognition();
+            if (recognizing || opening) gateway().stopRecognition(runtime.nodeId, runtime.customerLegUuid);
+            synchronized (capture) {
+                if (runtime.closed.get() || runtime.digitCollection.get() != capture) return;
+                capture.timer = scheduler.schedule(() -> finishDigitCollection(runtime, capture, null),
+                    Instant.now().plusSeconds(action.getDigitTimeoutSeconds()));
+            }
+        } catch (Exception exception) {
+            runtime.digitCollection.compareAndSet(capture, null);
+            capture.cancel();
+            fail(runtime, "按键采集启动失败", exception);
+        }
+    }
+
+    public boolean handleDtmf(Long nodeId, String uuid, String digit, String source) {
+        if (!Boolean.TRUE.equals(properties.getRealtimeEnabled()) || nodeId == null || StringUtils.isBlank(uuid)) return false;
+        String tenantId = nodeQueryService.findTenantId(nodeId);
+        if (StringUtils.isBlank(tenantId)) return false;
+        RuntimeSession runtime = sessions.get(key(tenantId, uuid));
+        if (runtime == null || !nodeId.equals(runtime.nodeId)) return false;
+        DigitCollection capture = runtime.digitCollection.get();
+        if (capture == null) return false;
+        String digits;
+        synchronized (capture) {
+            if (capture.completed || capture.timer == null || "APP".equalsIgnoreCase(source)
+                || digit == null || digit.length() != 1 || digit.charAt(0) < '0' || digit.charAt(0) > '9') return true;
+            capture.digits.append(digit);
+            if (capture.digits.length() < capture.length) return true;
+            digits = capture.digits.toString();
+            capture.completed = true;
+            capture.timer.cancel(false);
+        }
+        submitDigitResult(runtime, capture, digits);
+        return true;
+    }
+
+    private void finishDigitCollection(RuntimeSession runtime, DigitCollection capture, String digits) {
+        synchronized (capture) {
+            if (capture.completed) return;
+            capture.completed = true;
+        }
+        submitDigitResult(runtime, capture, digits);
+    }
+
+    private void submitDigitResult(RuntimeSession runtime, DigitCollection capture, String digits) {
+        executor.execute(() -> TenantHelper.dynamic(runtime.tenantId, () -> {
+            if (runtime.closed.get() || runtime.digitCollection.get() != capture) return;
+            try {
+                var result = workflowRuntimeService.voiceDigits(runtime.workflowExecutionId, capture.token, digits);
+                if (runtime.digitCollection.compareAndSet(capture, null) && result != null) handleWorkflowAction(runtime, result);
+            } catch (Exception exception) {
+                runtime.digitCollection.compareAndSet(capture, null);
+                if (!runtime.closed.get()) fail(runtime, "按键采集结果处理失败", exception);
+            }
+        }));
+    }
+
+    private static final class DigitCollection {
+        private final String token;
+        private final int length;
+        private final StringBuilder digits = new StringBuilder();
+        private boolean completed;
+        private ScheduledFuture<?> timer;
+
+        private DigitCollection(String token, int length) {
+            this.token = token;
+            this.length = length;
+        }
+
+        private synchronized void cancel() {
+            completed = true;
+            if (timer != null) timer.cancel(false);
         }
     }
 
@@ -3218,6 +3305,7 @@ public class AiRealtimeMrcpEventService {
         private final Set<String> recentRecognitionEventIds = new LinkedHashSet<>();
         private volatile String lastAssistantText;
         private volatile String workflowExecutionId;
+        private final AtomicReference<DigitCollection> digitCollection = new AtomicReference<>();
         private volatile String workflowStreamTurnId;
         private volatile Map<String, Object> templateVariables = Map.of();
         private volatile LocalDateTime lastActivityAt;

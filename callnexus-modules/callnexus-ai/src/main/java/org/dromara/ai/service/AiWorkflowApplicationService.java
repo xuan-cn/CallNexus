@@ -19,6 +19,9 @@ public interface AiWorkflowApplicationService {
     void delete(Long id);
     void setEnabled(Long id, boolean enabled);
     List<AiWorkflowVersionResponse> versions(Long workflowId);
+    Long restoreDraft(Long workflowId, Integer versionNo, Long expectedDraftId, String expectedDraftHash);
+    List<AiAgentWorkflowBindingResponse> workflowBindings(Long workflowId);
+    AiWorkflowVersionResponse rollback(Long workflowId, Integer versionNo, List<AiAgentWorkflowBindingRequest.Selection> bindings);
     AiWorkflowVersionResponse draft(Long workflowId);
     Long saveDraft(Long workflowId, AiWorkflowDraftRequest request);
     AiWorkflowValidationResponse validateDraft(Long workflowId);

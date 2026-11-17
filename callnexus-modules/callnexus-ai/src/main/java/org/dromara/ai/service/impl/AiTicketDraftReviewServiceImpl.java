@@ -12,6 +12,7 @@ import org.dromara.ai.mapper.*;
 import org.dromara.ai.service.*;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.json.utils.JsonUtils;
+import org.dromara.ai.service.model.AiWorkflowTicketDraftEvent;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
@@ -93,6 +94,13 @@ public class AiTicketDraftReviewServiceImpl implements AiTicketDraftReviewServic
     public Long approve(Long id, AiTicketDraftReviewRequest request) {
         AiTicketDraft draft = requireReviewable(id);
         if (!Objects.equals(draft.getVersion(), request.getVersion())) throw conflict();
+        if (Objects.equals(draft.getPolicyId(), AiWorkflowTicketDraftEvent.WORKFLOW_POLICY_ID)) {
+            AiTicketBusinessContextProvider provider = contextProviders.getIfAvailable();
+            if (provider == null) throw new ServiceException("工单业务上下文提供器未加载");
+            if (provider.hasFormalTicket(draft.getSourceCallId())) {
+                throw new ServiceException("本次通话已有关联工单，不能重复建单");
+            }
+        }
         AiTicketConversionService conversion = conversionServices.getIfAvailable();
         if (conversion == null) throw new ServiceException("AI 工单转换服务未加载");
         Long ticketId = conversion.convert(new AiTicketConversionService.Command(draft.getId(), draft.getCustomerId(),
@@ -139,6 +147,9 @@ public class AiTicketDraftReviewServiceImpl implements AiTicketDraftReviewServic
     @Transactional(rollbackFor = Exception.class)
     public void regenerate(Long id, AiTicketDraftReviewRequest request) {
         AiTicketDraft before = require(id);
+        if (Objects.equals(before.getPolicyId(), AiWorkflowTicketDraftEvent.WORKFLOW_POLICY_ID)) {
+            throw new ServiceException("流程留存草稿不支持重新生成，请人工补录");
+        }
         if (!REVIEWABLE.contains(before.getStatus()) && !"FAILED".equals(before.getStatus())) {
             throw new ServiceException("当前草稿状态不能重新生成");
         }
@@ -221,6 +232,7 @@ public class AiTicketDraftReviewServiceImpl implements AiTicketDraftReviewServic
         response.setId(value.getId()); response.setAiAgentId(value.getAiAgentId()); response.setSourceCallId(value.getSourceCallId());
         response.setCustomerId(value.getCustomerId()); response.setCallerNumber(value.getCallerNumber()); response.setTicketTemplateId(value.getTicketTemplateId());
         response.setStatus(value.getStatus()); response.setConfidence(value.getConfidence()); response.setTitle(value.getTitle()); response.setSummary(value.getSummary());
+        response.setWorkflowDraft(Objects.equals(value.getPolicyId(), AiWorkflowTicketDraftEvent.WORKFLOW_POLICY_ID));
         response.setFormData(map(value.getFormDataJson())); response.setMissingFields(list(value.getMissingFieldsJson(), String.class));
         response.setEvidence(list(value.getEvidenceJson(), Map.class)); response.setFailureReason(value.getFailureReason());
         response.setFormalTicketId(value.getFormalTicketId()); response.setVersion(value.getVersion());

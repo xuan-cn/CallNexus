@@ -20,8 +20,9 @@ import java.net.Socket;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -43,23 +44,20 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
     private final EslEventDispatcher eventDispatcher;
     private final FreeSwitchRuntimeReconciler runtimeReconciler;
     private final ExecutorService executor = Executors.newCachedThreadPool();
-    private final Map<Long, Future<?>> listeners = new ConcurrentHashMap<>();
-    private final Map<Long, Socket> sockets = new ConcurrentHashMap<>();
+    private final Map<Long, NodeListener> listeners = new LinkedHashMap<>();
     private volatile boolean running;
 
     @Override
-    public void start() {
+    public synchronized void start() {
         if (running) return;
         running = true;
         executor.submit(this::refreshListeners);
     }
 
     @Override
-    public void stop() {
+    public synchronized void stop() {
         running = false;
-        sockets.values().forEach(this::closeQuietly);
-        sockets.clear();
-        listeners.values().forEach(future -> future.cancel(true));
+        listeners.values().forEach(NodeListener::cancel);
         listeners.clear();
         executor.shutdownNow();
     }
@@ -72,10 +70,7 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
     private void refreshListeners() {
         while (running) {
             try {
-                for (FreeSwitchNodeConnectionResponse node : nodeQueryService.listEnabledConnections()) {
-                    if (!running || executor.isShutdown()) return;
-                    listeners.computeIfAbsent(node.getNodeId(), ignored -> executor.submit(() -> listenWithReconnect(node)));
-                }
+                reconcileListeners(nodeQueryService.listEnabledConnections());
             } catch (RejectedExecutionException exception) {
                 if (running) {
                     log.error("Failed to submit FreeSWITCH ESL listener task", exception);
@@ -88,11 +83,31 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
         }
     }
 
-    private void listenWithReconnect(FreeSwitchNodeConnectionResponse node) {
-        while (running && !Thread.currentThread().isInterrupted()) {
+    synchronized void reconcileListeners(List<FreeSwitchNodeConnectionResponse> nodes) {
+        if (!running || executor.isShutdown()) return;
+        Map<Long, FreeSwitchNodeConnectionResponse> desired = new LinkedHashMap<>();
+        nodes.forEach(node -> desired.put(node.getNodeId(), node));
+        listeners.entrySet().removeIf(entry -> {
+            NodeListener listener = entry.getValue();
+            if (listener.matches(desired.get(entry.getKey())) && !listener.task.isDone()) return false;
+            listener.cancel();
+            return true;
+        });
+        for (FreeSwitchNodeConnectionResponse node : desired.values()) {
+            if (listeners.containsKey(node.getNodeId())) continue;
+            NodeListener listener = new NodeListener(node);
+            listener.task = executor.submit(() -> listenWithReconnect(listener));
+            listeners.put(node.getNodeId(), listener);
+        }
+    }
+
+    private void listenWithReconnect(NodeListener listener) {
+        FreeSwitchNodeConnectionResponse node = listener.node;
+        while (running && !listener.cancelled && !Thread.currentThread().isInterrupted()) {
             try {
-                listen(node);
+                listen(listener);
             } catch (Exception exception) {
+                if (!running || listener.cancelled) return;
                 log.error("FreeSWITCH ESL event listener disconnected, nodeId={}, host={}, port={}",
                     node.getNodeId(), node.getEslHost(), node.getEslPort(), exception);
                 sleep(RECONNECT_DELAY_MILLIS);
@@ -100,9 +115,10 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
         }
     }
 
-    private void listen(FreeSwitchNodeConnectionResponse node) throws IOException {
+    private void listen(NodeListener listener) throws IOException {
+        FreeSwitchNodeConnectionResponse node = listener.node;
         try (Socket socket = new Socket()) {
-            sockets.put(node.getNodeId(), socket);
+            if (!listener.attach(socket)) return;
             socket.connect(new InetSocketAddress(node.getEslHost(), node.getEslPort()), CONNECT_TIMEOUT_MILLIS);
             try (BufferedInputStream input = new BufferedInputStream(socket.getInputStream());
                  BufferedOutputStream output = new BufferedOutputStream(socket.getOutputStream())) {
@@ -113,21 +129,22 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
                 requireAccepted(readFrame(input));
                 write(output, CUSTOM_EVENT_COMMAND);
                 requireAccepted(readFrame(input));
+                if (listener.cancelled) return;
                 log.info("FreeSWITCH ESL event listener connected, nodeId={}, host={}, port={}, customSubclasses={}",
                     node.getNodeId(), node.getEslHost(), node.getEslPort(), EslEventNames.subscribedCustomEventSubclasses());
-                executor.submit(() -> runtimeReconciler.reconcileWithRetry(node.getNodeId()));
-                while (running && !socket.isClosed()) {
+                executor.submit(() -> {
+                    if (!listener.cancelled) runtimeReconciler.reconcileWithRetry(node.getNodeId());
+                });
+                while (running && !listener.cancelled && !socket.isClosed()) {
                     EslFrame frame = readFrame(input);
                     if (frame.headers().isEmpty() && frame.body().isEmpty()) {
                         throw new IOException("FreeSWITCH ESL connection closed");
                     }
-                    if ("text/event-plain".equalsIgnoreCase(frame.header("Content-Type"))) {
+                    if (!listener.cancelled && "text/event-plain".equalsIgnoreCase(frame.header("Content-Type"))) {
                         handleEvent(node.getNodeId(), frame.body());
                     }
                 }
             }
-        } finally {
-            sockets.remove(node.getNodeId());
         }
     }
 
@@ -217,11 +234,40 @@ public class FreeSwitchEslEventListenerManager implements SmartLifecycle {
         }
     }
 
-    private void closeQuietly(Socket socket) {
+    private static void closeQuietly(Socket socket) {
         try {
             socket.close();
         } catch (IOException ignored) {
             // Socket is already closed.
+        }
+    }
+
+    private static final class NodeListener {
+        private final FreeSwitchNodeConnectionResponse node;
+        private volatile boolean cancelled;
+        private Socket socket;
+        private Future<?> task;
+
+        private NodeListener(FreeSwitchNodeConnectionResponse node) {
+            this.node = node;
+        }
+
+        private boolean matches(FreeSwitchNodeConnectionResponse desired) {
+            return desired != null && Objects.equals(node.getEslHost(), desired.getEslHost())
+                && Objects.equals(node.getEslPort(), desired.getEslPort())
+                && Objects.equals(node.getEslPassword(), desired.getEslPassword());
+        }
+
+        private synchronized boolean attach(Socket socket) {
+            if (cancelled) return false;
+            this.socket = socket;
+            return true;
+        }
+
+        private synchronized void cancel() {
+            cancelled = true;
+            if (socket != null) closeQuietly(socket);
+            task.cancel(true);
         }
     }
 

@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.ai.workflow.AiWorkflowOutboundWritebackService;
+import org.dromara.ai.workflow.AiWorkflowTicketCallbackResults;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.customer.customer.service.CustomerApplicationService;
 import org.dromara.outbound.domain.OutboundAttempt;
@@ -40,7 +41,8 @@ public class AiWorkflowOutboundWritebackServiceImpl implements AiWorkflowOutboun
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void writeBack(Long taskId, Long memberId, String businessCallId, String resultCode) {
-        if (!RESULT_CODES.contains(resultCode)) {
+        boolean ticketResult = AiWorkflowTicketCallbackResults.contains(resultCode);
+        if (!RESULT_CODES.contains(resultCode) && !ticketResult) {
             throw new ServiceException("AI 工作流外呼结果无效：" + resultCode);
         }
         OutboundTask task = taskMapper.selectById(taskId);
@@ -50,6 +52,9 @@ public class AiWorkflowOutboundWritebackServiceImpl implements AiWorkflowOutboun
         }
         if (!businessCallId.equals(member.getBusinessCallId())) {
             throw new ServiceException("AI 工作流通话与外呼名单不匹配");
+        }
+        if (ticketResult && !TicketCallbackService.SOURCE.equals(member.getSourceType())) {
+            throw new ServiceException("工单回访结果只能写入工单回访名单");
         }
         if (!"DIALING".equals(member.getStatus())) {
             if (resultCode.equals(member.getResultCode())) {
@@ -155,7 +160,7 @@ public class AiWorkflowOutboundWritebackServiceImpl implements AiWorkflowOutboun
             case "DO_NOT_CALL" -> "拒绝联系";
             case "PENDING_REVIEW" -> "待人工确认";
             case "WORKFLOW_FAILED" -> "编排执行失败";
-            default -> resultCode;
+            default -> AiWorkflowTicketCallbackResults.label(resultCode);
         };
     }
 }
