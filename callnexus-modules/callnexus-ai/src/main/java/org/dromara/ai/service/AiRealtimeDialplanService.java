@@ -2,6 +2,7 @@ package org.dromara.ai.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.dromara.ai.config.AiKnowledgeProperties;
 import org.dromara.ai.domain.AiAgent;
 import org.dromara.ai.domain.AiAgentWorkflowBinding;
@@ -12,18 +13,28 @@ import org.dromara.ai.realtime.AiRealtimeTokenService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.license.LicenseFeatureGate;
 import org.dromara.resource.ai.service.AiAgentDialplanQueryService;
 import org.dromara.resource.freeswitch.xml.FreeSwitchXmlRenderer;
 import org.springframework.stereotype.Service;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AiRealtimeDialplanService implements AiAgentDialplanQueryService {
     private final AiKnowledgeProperties properties;
     private final AiAgentMapper agentMapper;
     private final AiAgentWorkflowBindingMapper workflowBindingMapper;
     private final AiSpeechProviderSelector speechProviderSelector;
     private final AiRealtimeTokenService tokenService;
+    private final LicenseFeatureGate licenseGate;
+
+    public boolean allowVoiceAdmission(Long agentId) {
+        String reason = licenseGate.denialForAiVoice();
+        if (reason == null) return true;
+        log.info("拒绝新的 AI 语音接入，agentId={}，reason={}", agentId, reason);
+        return false;
+    }
 
     public void validate(Long agentId) {
         if (!Boolean.TRUE.equals(properties.getRealtimeEnabled())) {
@@ -85,10 +96,10 @@ public class AiRealtimeDialplanService implements AiAgentDialplanQueryService {
     }
 
     private String renderDirectAgentInTenant(Long agentId, Long nodeId, String destinationNumber, String context) {
+        if (!allowVoiceAdmission(agentId)) {
+            return directDialplan(destinationNumber, context, "      <action application=\"hangup\" data=\"CALL_REJECTED\"/>\n");
+        }
         validate(agentId);
-        String destination = FreeSwitchXmlRenderer.escape(destinationNumber);
-        String dialplanContext = FreeSwitchXmlRenderer.escape(
-            StringUtils.isBlank(context) ? "default" : context);
         StringBuilder actions = new StringBuilder()
             .append("      <action application=\"export\" data=\"callnexus_ai_active=true\"/>\n")
             .append("      <action application=\"export\" data=\"callnexus_ai_agent_id=")
@@ -115,6 +126,12 @@ public class AiRealtimeDialplanService implements AiAgentDialplanQueryService {
                 .append(FreeSwitchXmlRenderer.escape(streamUrl)).append(" mono 16k)}\"/>\n");
         }
         actions.append("      <action application=\"park\"/>\n");
+        return directDialplan(destinationNumber, context, actions.toString());
+    }
+
+    private String directDialplan(String destinationNumber, String context, String actions) {
+        String destination = FreeSwitchXmlRenderer.escape(destinationNumber);
+        String dialplanContext = FreeSwitchXmlRenderer.escape(StringUtils.isBlank(context) ? "default" : context);
         return """
             <document type="freeswitch/xml">
               <section name="dialplan" description="CallNexus Direct AI Dialplan">

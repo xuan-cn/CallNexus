@@ -31,6 +31,8 @@ import org.dromara.resource.media.mapper.MediaAssetMapper;
 import org.dromara.ai.service.AiWorkflowApplicationService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.license.LicenseResourceQuota;
+import org.dromara.license.LicenseResourceQuota.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -81,6 +83,7 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     private final AiAgentWorkflowBindingMapper bindingMapper;
     private final AiAgentMapper agentMapper;
     private final MediaAssetMapper mediaAssetMapper;
+    private final LicenseResourceQuota licenseQuota;
 
     @Override
     public List<AiWorkflowMediaOptionResponse> mediaOptions() {
@@ -127,8 +130,10 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long create(AiWorkflowRequest request) {
+        if (Boolean.TRUE.equals(request.getEnabled())) licenseQuota.lock();
         validateRequest(request);
         ensureCode(request.getWorkflowCode(), null);
+        if (Boolean.TRUE.equals(request.getEnabled())) licenseQuota.requireCapacity(Resource.AI_ROBOTS, 1);
         AiWorkflow workflow = new AiWorkflow();
         fill(workflow, request);
         workflowMapper.insert(workflow);
@@ -142,8 +147,12 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void update(Long id, AiWorkflowRequest request) {
+        if (Boolean.TRUE.equals(request.getEnabled())) licenseQuota.lock();
         validateRequest(request);
         AiWorkflow workflow = requireWorkflowForUpdate(id);
+        if (Boolean.TRUE.equals(request.getEnabled()) && !Boolean.TRUE.equals(workflow.getEnabled())) {
+            licenseQuota.requireCapacity(Resource.AI_ROBOTS, 1);
+        }
         ensureCode(request.getWorkflowCode(), id);
         if (!Objects.equals(workflow.getSceneType(), request.getSceneType()) && bindingCount(id) > 0) {
             throw new ServiceException("AI 编排已绑定助手，不能修改使用场景");
@@ -166,7 +175,11 @@ public class AiWorkflowApplicationServiceImpl implements AiWorkflowApplicationSe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void setEnabled(Long id, boolean enabled) {
+        if (enabled) licenseQuota.lock();
         AiWorkflow workflow = requireWorkflowForUpdate(id);
+        if (enabled && !Boolean.TRUE.equals(workflow.getEnabled())) {
+            licenseQuota.requireCapacity(Resource.AI_ROBOTS, 1);
+        }
         workflow.setEnabled(enabled);
         workflowMapper.updateById(workflow);
     }

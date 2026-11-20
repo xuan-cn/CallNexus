@@ -11,6 +11,7 @@
     <artifactId>callnexus-ai</artifactId>
     <description>CallNexus AI 语音、TTS/ASR 适配能力</description>
     <dependencies>
+        <dependency><groupId>org.dromara</groupId><artifactId>callnexus-license</artifactId></dependency>
         <dependency>
             <groupId>org.dromara</groupId>
             <artifactId>callnexus-resource</artifactId>

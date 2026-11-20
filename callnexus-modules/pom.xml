@@ -27,6 +27,7 @@
         <module>callnexus-openapi</module>
         <module>callnexus-report</module>
         <module>callnexus-quality</module>
+        <module>callnexus-license</module>
     </modules>
 
     <artifactId>callnexus-modules</artifactId>

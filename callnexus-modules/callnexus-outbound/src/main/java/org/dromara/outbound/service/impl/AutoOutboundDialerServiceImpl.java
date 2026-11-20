@@ -12,6 +12,7 @@ import org.dromara.call.service.CallBusinessAssociationService;
 import org.dromara.call.service.TelephonyCommandGateway;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.license.LicenseFeatureGate;
 import org.dromara.outbound.domain.AutoOutboundDispatch;
 import org.dromara.outbound.domain.OutboundAttempt;
 import org.dromara.outbound.domain.OutboundMember;
@@ -69,6 +70,7 @@ public class AutoOutboundDialerServiceImpl implements AutoOutboundDialerService 
     private final CallCenterConfigService configService;
     private final CustomerApplicationService customerService;
     private final TicketCallbackService callbacks;
+    private final LicenseFeatureGate licenseGate;
 
     private final String owner = ManagementFactory.getRuntimeMXBean().getName() + "-dialer-"
         + UUID.randomUUID().toString().substring(0, 8);
@@ -153,6 +155,12 @@ public class AutoOutboundDialerServiceImpl implements AutoOutboundDialerService 
         String stopReason = callbacks.automaticStopReason(member, LocalDateTime.now());
         if (stopReason != null) {
             cancel(dispatch, member, stopReason, true);
+            return false;
+        }
+        String denial = licenseGate.denialForOutbound("AGENTLESS_AI".equals(task.getDialMode()));
+        if (denial != null) {
+            // Restore the member for future scheduling without creating an attempt or consuming a retry.
+            cancel(dispatch, member, denial);
             return false;
         }
         String businessCallId = UUID.randomUUID().toString();

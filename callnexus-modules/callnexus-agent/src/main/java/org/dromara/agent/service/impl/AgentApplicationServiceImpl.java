@@ -23,6 +23,8 @@ import org.dromara.ai.service.AiSpeechApplicationService;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.license.LicenseResourceQuota;
+import org.dromara.license.LicenseResourceQuota.Resource;
 import org.dromara.resource.sip.domain.SipAccount;
 import org.dromara.resource.sip.mapper.SipAccountMapper;
 import org.dromara.resource.sip.service.SipAccountQueryService;
@@ -46,6 +48,7 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
     private final SipAccountMapper sipAccountMapper;
     private final AiSpeechApplicationService aiSpeechApplicationService;
     private final AgentSessionApplicationService agentSessionApplicationService;
+    private final LicenseResourceQuota licenseQuota;
 
     @Override
     public TableDataInfo<AgentResponse> page(AgentPageQuery query, PageQuery pageQuery) {
@@ -75,9 +78,12 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public Long create(CreateAgentRequest request) {
+        licenseQuota.lock();
         ensureAgentCodeUnique(request.getAgentCode(), null);
         ensureUserUnique(request.getUserId(), null);
+        licenseQuota.requireCapacity(Resource.SEATS, 1);
         Agent agent = new Agent();
         agent.setAgentCode(request.getAgentCode());
         agent.setAgentName(request.getAgentName());
@@ -89,11 +95,16 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void update(Long id, UpdateAgentRequest request) {
+        if (Boolean.TRUE.equals(request.getEnabled())) licenseQuota.lock();
         ensureAgentCodeUnique(request.getAgentCode(), id);
         ensureUserUnique(request.getUserId(), id);
         Agent agent = agentMapper.selectById(id);
         if (agent == null) throw new ServiceException("坐席不存在");
+        if (Boolean.TRUE.equals(request.getEnabled()) && !Boolean.TRUE.equals(agent.getEnabled())) {
+            licenseQuota.requireCapacity(Resource.SEATS, 1);
+        }
         boolean disabling = Boolean.TRUE.equals(agent.getEnabled()) && Boolean.FALSE.equals(request.getEnabled());
         if (disabling) ensureCanDisable(id);
         agent.setAgentCode(request.getAgentCode());
@@ -108,13 +119,16 @@ public class AgentApplicationServiceImpl implements AgentApplicationService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void updateEnabled(Long id, UpdateAgentEnabledRequest request) {
+        if (Boolean.TRUE.equals(request.getEnabled())) licenseQuota.lock();
         Agent agent = agentMapper.selectById(id);
         if (agent == null) throw new ServiceException("坐席不存在");
         if (request.getEnabled().equals(agent.getEnabled())) return;
 
         boolean disabling = Boolean.FALSE.equals(request.getEnabled());
         if (disabling) ensureCanDisable(id);
+        else licenseQuota.requireCapacity(Resource.SEATS, 1);
         agent.setEnabled(request.getEnabled());
         agent.setVersion(request.getVersion());
         if (agentMapper.updateById(agent) != 1) {

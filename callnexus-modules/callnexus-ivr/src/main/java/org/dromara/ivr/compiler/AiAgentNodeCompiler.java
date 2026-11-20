@@ -24,6 +24,11 @@ public class AiAgentNodeCompiler implements IvrNodeCompiler {
     public void compile(IvrNodeContext context) {
         Long agentId = agentId(context);
         context.renderSupport().appendNodeStart(context.xml(), context.flow().getId(), context.node());
+        if (!realtimeDialplanService.allowVoiceAdmission(agentId)) {
+            context.renderSupport().appendHangup(context.xml(), "CALL_REJECTED");
+            context.renderSupport().appendNodeEnd(context.xml());
+            return;
+        }
         if (realtimeDialplanService.isUniMrcpTransport()) {
             AiRealtimeDialplanService.UniMrcpOpeningPrompt opening = realtimeDialplanService.buildUniMrcpOpeningPrompt(agentId);
             context.xml().append("      <action application=\"export\" data=\"callnexus_ai_active=true\"/>\n")

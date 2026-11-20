@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.license.LicenseFeatureGate;
 import org.dromara.outbound.domain.AutoOutboundDispatch;
 import org.dromara.outbound.domain.OutboundAttempt;
 import org.dromara.outbound.domain.OutboundMember;
@@ -56,6 +57,7 @@ public class AutoOutboundSchedulerServiceImpl implements AutoOutboundSchedulerSe
     private final CallCenterConfigService configService;
     private final TicketCallbackPolicyMapper callbackPolicies;
     private final TicketCallbackService callbacks;
+    private final LicenseFeatureGate licenseGate;
 
     private final String schedulerOwner = ManagementFactory.getRuntimeMXBean().getName() + "-"
         + UUID.randomUUID().toString().substring(0, 8);
@@ -63,7 +65,8 @@ public class AutoOutboundSchedulerServiceImpl implements AutoOutboundSchedulerSe
     @Override
     public AutoOutboundSchedulerResult execute() {
         LocalDateTime now = LocalDateTime.now();
-        for (String tenantId : callbackPolicies.automaticTenants()) {
+        List<String> callbackTenants = licenseGate.denialForOutbound(false) == null ? callbackPolicies.automaticTenants() : List.of();
+        for (String tenantId : callbackTenants) {
             TenantHelper.dynamic(tenantId, () -> {
                 for (Long ticketId : callbackPolicies.dueTickets(tenantId, now)) {
                     try {
@@ -110,6 +113,11 @@ public class AutoOutboundSchedulerServiceImpl implements AutoOutboundSchedulerSe
     }
 
     private void scheduleTask(OutboundTask task, LocalDateTime now, Counter total) {
+        String denial = licenseGate.denialForOutbound("AGENTLESS_AI".equals(task.getDialMode()));
+        if (denial != null) {
+            updateSummary(task.getId(), now, denial);
+            return;
+        }
         if (!insideCallWindow(task)) {
             updateSummary(task.getId(), now, "当前不在允许呼叫时段");
             return;

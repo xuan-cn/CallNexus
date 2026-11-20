@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.license.LicenseFeatureGate;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -90,6 +91,7 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     private final PhoneNumberApplicationService phoneNumberService;
     private final OutboundLinePolicyService outboundLinePolicyService;
     private final TicketCallbackPolicyMapper callbackPolicies;
+    private final LicenseFeatureGate licenseGate;
 
     @Override
     public List<AutoOutboundTaskResponse> list() {
@@ -193,6 +195,7 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     @Override
     public void start(Long id) {
         OutboundTask task = requireTask(id);
+        licenseGate.requireOutbound("AGENTLESS_AI".equals(task.getDialMode()));
         if (!Set.of("DRAFT", "PAUSED", "STOPPED").contains(task.getStatus())) {
             throw new ServiceException("当前状态不能启动自动外呼任务");
         }
@@ -218,6 +221,7 @@ public class AutoOutboundTaskServiceImpl implements AutoOutboundTaskService {
     @Override
     public void resume(Long id) {
         OutboundTask task = requireTask(id);
+        licenseGate.requireOutbound("AGENTLESS_AI".equals(task.getDialMode()));
         if (!"PAUSED".equals(task.getStatus())) {
             throw new ServiceException("只有已暂停的任务可以继续");
         }

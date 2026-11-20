@@ -48,6 +48,7 @@ import java.io.StringReader;
 import org.dromara.common.redis.utils.RedisUtils;
 import java.time.Duration;
 import java.util.UUID;
+import org.dromara.license.LicenseAiCallQuota;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -134,6 +135,7 @@ public class AiRealtimeMrcpEventService {
     @Qualifier("aiRealtimeScheduler")
     private final ThreadPoolTaskScheduler scheduler;
     private final Map<String, RuntimeSession> sessions = new ConcurrentHashMap<>();
+    private final LicenseAiCallQuota licenseQuota;
     private final String instanceId = UUID.randomUUID().toString();
 
     public AiRealtimeMrcpEventService(AiKnowledgeProperties properties,
@@ -159,7 +161,8 @@ public class AiRealtimeMrcpEventService {
                                       ObjectProvider<AiIntentTicketActionService> ticketActionServiceProvider,
                                       @Qualifier("aiRealtimeExecutor") Executor executor,
                                       @Qualifier("aiRealtimeIntentExecutor") ThreadPoolTaskExecutor intentExecutor,
-                                      @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler scheduler) {
+                                      @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler scheduler,
+                                      LicenseAiCallQuota licenseQuota) {
         this.properties = properties;
         this.nodeQueryService = nodeQueryService;
         this.speechProviderSelector = speechProviderSelector;
@@ -184,6 +187,7 @@ public class AiRealtimeMrcpEventService {
         this.executor = executor;
         this.intentExecutor = intentExecutor;
         this.scheduler = scheduler;
+        this.licenseQuota = licenseQuota;
     }
 
     public void handle(Long nodeId, String eventName, String uuid, Map<String, String> headers) {
@@ -304,15 +308,25 @@ public class AiRealtimeMrcpEventService {
         boolean speakComplete = isSpeakComplete(eventName, application);
         boolean openingParkEntered = isOpeningParkEntered(eventName, application);
         boolean mediaComplete = isMediaPlaybackComplete(eventName, application);
-        RuntimeSession runtime = sessions.computeIfAbsent(key, ignored -> isEndedCall(finalCustomerLegUuid) ? null
-            : createRuntime(tenantId, nodeId, finalFlowId, finalIvrNodeId,
-                finalAgentId, finalBusinessCallId, finalCustomerLegUuid, finalOpeningPreplayed));
+        RuntimeSession runtime;
+        try {
+            runtime = sessions.computeIfAbsent(key, ignored -> isEndedCall(finalCustomerLegUuid) ? null
+                : createLicensedRuntime(tenantId, nodeId, finalFlowId, finalIvrNodeId,
+                    finalAgentId, finalBusinessCallId, finalCustomerLegUuid, finalOpeningPreplayed));
+        } catch (LicenseAiCallQuota.DuplicateCallException e) {
+            log.debug("Ignoring duplicate AI call admission, businessCallId={}", finalBusinessCallId);
+            return;
+        } catch (RuntimeException e) {
+            rejectCall(nodeId, finalCustomerLegUuid, e.getMessage());
+            return;
+        }
         if (runtime == null) return;
         if (runtime.closed.get() || isEndedCall(finalCustomerLegUuid)) {
             if (!runtime.closed.get()) end(runtime, "CHANNEL_ENDED_DURING_INITIALIZATION");
             return;
         }
         runtime.touch();
+        if (!renewAdmission(runtime)) return;
         ensureChannelProbe(runtime);
         String speechType = header(headers, SPEECH_TYPE_HEADER);
         String recognized = recognizedText(headers);
@@ -585,6 +599,39 @@ public class AiRealtimeMrcpEventService {
         }
     }
 
+    private RuntimeSession createLicensedRuntime(String tenantId, Long nodeId, Long flowId, Long ivrNodeId, Long agentId,
+                                                 String businessCallId, String customerLegUuid, boolean openingPreplayed) {
+        var lease = licenseQuota.acquire(tenantId, businessCallId);
+        try {
+            RuntimeSession runtime = createRuntime(tenantId, nodeId, flowId, ivrNodeId, agentId,
+                businessCallId, customerLegUuid, openingPreplayed);
+            runtime.licenseLease = lease;
+            return runtime;
+        } catch (RuntimeException e) {
+            lease.release();
+            throw e;
+        }
+    }
+
+    private void rejectCall(Long nodeId, String customerLegUuid, String reason) {
+        log.warn("AI call admission ended, nodeId={}, customerLegUuid={}, reason={}", nodeId, customerLegUuid, reason);
+        try {
+            gateway().hangup(nodeId, customerLegUuid);
+        } catch (Exception e) {
+            log.warn("Unable to hang up AI channel {}", customerLegUuid, e);
+        }
+    }
+
+    private boolean renewAdmission(RuntimeSession runtime) {
+        if (runtime.closed.get()) return false;
+        if (runtime.licenseLease == null || runtime.licenseLease.renewIfDue()) return true;
+        if (!runtime.closed.get()) {
+            rejectCall(runtime.nodeId, runtime.customerLegUuid, "AI call quota lease lost");
+            end(runtime, "AI_LICENSE_LEASE_LOST");
+        }
+        return false;
+    }
+
     private RuntimeSession createRuntime(String tenantId, Long nodeId, Long flowId, Long ivrNodeId, Long agentId,
                                          String businessCallId, String customerLegUuid, boolean openingPreplayed) {
         long startNanos = System.nanoTime();
@@ -710,7 +757,12 @@ public class AiRealtimeMrcpEventService {
                 runtime.entity.getId(), runtime.businessCallId, runtime.customerLegUuid, runtime.agentId,
                 conversationCostMs, updateCostMs, elapsedMillis(startNanos));
         } catch (Exception exception) {
-            fail(runtime, "AI UniMRCP 会话启动失败：" + exception.getMessage(), exception);
+            try {
+                fail(runtime, "AI UniMRCP 会话启动失败：" + exception.getMessage(), exception);
+            } finally {
+                rejectCall(runtime.nodeId, runtime.customerLegUuid, "AI session startup failed");
+                end(runtime, "AI_START_FAILED");
+            }
         }
     }
 
@@ -1895,13 +1947,14 @@ public class AiRealtimeMrcpEventService {
     }
 
     private void end(RuntimeSession runtime, String reason) {
-        markCallEnded(runtime.customerLegUuid);
         synchronized (runtime.playbackTransitionLock) {
             if (!runtime.closed.compareAndSet(false, true)) return;
             runtime.turnGeneration.incrementAndGet();
             runtime.activeSpeak.set(null);
             runtime.waitingSpeakComplete.set(false);
         }
+        if (runtime.licenseLease != null) runtime.licenseLease.release();
+        markCallEnded(runtime.customerLegUuid);
         sessions.remove(key(runtime.tenantId, runtime.customerLegUuid), runtime);
         DigitCollection collection = runtime.digitCollection.getAndSet(null);
         if (collection != null) collection.cancel();
@@ -1958,8 +2011,9 @@ public class AiRealtimeMrcpEventService {
         }
         long intervalMs = Math.max(500L, properties.getUnimrcp().getChannelProbeIntervalMs());
         ScheduledFuture<?> probe = scheduler.scheduleWithFixedDelay(
-            () -> TenantHelper.dynamic(runtime.tenantId,
-                () -> ensureChannelAlive(runtime, "CHANNEL_GONE_BY_PROBE")),
+            () -> TenantHelper.dynamic(runtime.tenantId, () -> {
+                if (ensureChannelAlive(runtime, "CHANNEL_GONE_BY_PROBE")) renewAdmission(runtime);
+            }),
             Instant.now().plusMillis(intervalMs),
             Duration.ofMillis(intervalMs));
         if (!runtime.channelProbe.compareAndSet(null, probe)) {
@@ -3262,6 +3316,7 @@ public class AiRealtimeMrcpEventService {
         private final int bargeInControlCooldownMs;
         private final AtomicInteger sequence = new AtomicInteger();
         private final AtomicBoolean started = new AtomicBoolean();
+        private LicenseAiCallQuota.Lease licenseLease;
         private final AtomicBoolean conversationReady = new AtomicBoolean();
         private final AtomicBoolean preplayedOpeningCompleted = new AtomicBoolean();
         private final AtomicBoolean preplayedOpeningReleased = new AtomicBoolean();

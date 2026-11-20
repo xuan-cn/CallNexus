@@ -22,7 +22,7 @@ class SipAccountPasswordTest {
         SipAccount account = new SipAccount();
         account.setAuthPassword("test-password-only");
         when(mapper.selectById(1L)).thenReturn(account);
-        SipAccountApplicationServiceImpl service = new SipAccountApplicationServiceImpl(mapper, null, null, null);
+        SipAccountApplicationServiceImpl service = new SipAccountApplicationServiceImpl(mapper, null, null, null, null);
 
         assertEquals("test-password-only", service.getPassword(1L));
         assertThrows(ServiceException.class, () -> service.getPassword(2L));

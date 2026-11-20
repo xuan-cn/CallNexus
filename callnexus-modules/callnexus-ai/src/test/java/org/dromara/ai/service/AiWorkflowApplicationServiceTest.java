@@ -40,7 +40,8 @@ class AiWorkflowApplicationServiceTest {
     private final AiAgentMapper agentMapper = mock(AiAgentMapper.class);
     private final MediaAssetMapper mediaAssetMapper = mock(MediaAssetMapper.class);
     private final AiWorkflowApplicationService service = new AiWorkflowApplicationServiceImpl(
-        workflowMapper, versionMapper, bindingMapper, agentMapper, mediaAssetMapper);
+        workflowMapper, versionMapper, bindingMapper, agentMapper, mediaAssetMapper,
+        mock(org.dromara.license.LicenseResourceQuota.class));
 
     @Test
     void rejectsRestoringOverAChangedDraft() {

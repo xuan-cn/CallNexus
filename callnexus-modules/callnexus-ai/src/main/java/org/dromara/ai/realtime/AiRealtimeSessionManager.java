@@ -13,12 +13,15 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.license.LicenseAiCallQuota;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -26,6 +29,7 @@ import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -41,6 +45,7 @@ public class AiRealtimeSessionManager {
     private final AiRealtimeCallTurnMapper turnMapper;
     private final Executor executor;
     private final ThreadPoolTaskScheduler scheduler;
+    private final LicenseAiCallQuota licenseQuota;
     private final Map<String, RuntimeSession> sessions = new ConcurrentHashMap<>();
 
     public AiRealtimeSessionManager(AiRealtimeTokenService tokenService,
@@ -51,7 +56,8 @@ public class AiRealtimeSessionManager {
                                     AiRealtimeCallSessionMapper sessionMapper,
                                     AiRealtimeCallTurnMapper turnMapper,
                                     @Qualifier("aiRealtimeExecutor") Executor executor,
-                                    @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler scheduler) {
+                                    @Qualifier("aiRealtimeScheduler") ThreadPoolTaskScheduler scheduler,
+                                    LicenseAiCallQuota licenseQuota) {
         this.tokenService = tokenService;
         this.speechProviderSelector = speechProviderSelector;
         this.streamingAsrRegistry = streamingAsrRegistry;
@@ -61,6 +67,7 @@ public class AiRealtimeSessionManager {
         this.turnMapper = turnMapper;
         this.executor = executor;
         this.scheduler = scheduler;
+        this.licenseQuota = licenseQuota;
     }
 
     public void connect(WebSocketSession socket, String token, String businessCallId, String customerLegUuid) {
@@ -68,13 +75,32 @@ public class AiRealtimeSessionManager {
         if (StringUtils.isBlank(businessCallId) || StringUtils.isBlank(customerLegUuid)) {
             throw new ServiceException("AI 实时音频连接缺少业务通话 ID 或客户腿 UUID");
         }
-        RuntimeSession runtime = TenantHelper.dynamic(claims.tenantId(), () -> createRuntime(socket, claims,
-            businessCallId, customerLegUuid));
-        if (sessions.putIfAbsent(socket.getId(), runtime) != null) {
-            runtime.close();
-            throw new ServiceException("AI 实时音频会话重复");
+        var lease = licenseQuota.acquire(claims.tenantId(), businessCallId);
+        RuntimeSession runtime;
+        try {
+            runtime = TenantHelper.dynamic(claims.tenantId(), () -> createRuntime(socket, claims,
+                businessCallId, customerLegUuid));
+            runtime.licenseLease = lease;
+            if (sessions.putIfAbsent(socket.getId(), runtime) != null) {
+                throw new ServiceException("AI 实时音频会话重复");
+            }
+        } catch (RuntimeException e) {
+            lease.release();
+            throw e;
         }
-        executor.execute(() -> TenantHelper.dynamic(claims.tenantId(), () -> start(runtime)));
+        try {
+            var renewPeriod = Duration.ofMillis(LicenseAiCallQuota.RENEW_MS);
+            runtime.licenseHeartbeat = scheduler.scheduleWithFixedDelay(() -> {
+                if (!runtime.closed.get() && !runtime.licenseLease.renewIfDue()) {
+                    closeFailedSession(runtime, "AI 通话授权占位失效");
+                }
+            }, Instant.now().plus(renewPeriod), renewPeriod);
+            if (runtime.closed.get()) runtime.licenseHeartbeat.cancel(false);
+            executor.execute(() -> TenantHelper.dynamic(claims.tenantId(), () -> start(runtime)));
+        } catch (RuntimeException e) {
+            closeFailedSession(runtime, "AI 实时音频会话启动失败");
+            throw e;
+        }
     }
 
     public void audio(String socketId, byte[] audioBytes) {
@@ -99,7 +125,7 @@ public class AiRealtimeSessionManager {
     public void fail(String socketId, String reason) {
         RuntimeSession runtime = sessions.get(socketId);
         if (runtime != null) {
-            TenantHelper.dynamic(runtime.claims.tenantId(), () -> markFailed(runtime, reason));
+            closeFailedSession(runtime, reason);
         }
     }
 
@@ -108,7 +134,12 @@ public class AiRealtimeSessionManager {
         if (runtime == null || !runtime.closed.compareAndSet(false, true)) {
             return;
         }
-        runtime.close();
+        if (runtime.licenseHeartbeat != null) runtime.licenseHeartbeat.cancel(false);
+        try {
+            runtime.close();
+        } finally {
+            runtime.licenseLease.release();
+        }
         TenantHelper.dynamic(runtime.claims.tenantId(), () -> {
             AiRealtimeCallSession entity = runtime.entity;
             entity.setSessionState("FAILED".equals(entity.getSessionState()) ? "FAILED" : "ENDED");
@@ -144,6 +175,7 @@ public class AiRealtimeSessionManager {
     }
 
     private void start(RuntimeSession runtime) {
+        if (runtime.closed.get()) return;
         try {
             runtime.asrSession = streamingAsrRegistry.get(runtime.asrProvider.getProviderType()).open(
                 runtime.asrProvider,
@@ -165,9 +197,13 @@ public class AiRealtimeSessionManager {
 
                     @Override
                     public void onError(String message) {
-                        TenantHelper.dynamic(runtime.claims.tenantId(), () -> markFailed(runtime, message));
+                        closeFailedSession(runtime, message);
                     }
                 });
+            if (runtime.closed.get()) {
+                runtime.close();
+                return;
+            }
             AiConversationStartResponse start = agentService.startRealtimeConversation(runtime.claims.agentId());
             runtime.entity.setConversationId(Long.valueOf(String.valueOf(start.getConversation().getId())));
             sessionMapper.updateById(runtime.entity);
@@ -175,7 +211,24 @@ public class AiRealtimeSessionManager {
             log.info("AI 实时语音会话建立，sessionId={}，businessCallId={}，customerLegUuid={}，agentId={}",
                 runtime.entity.getId(), runtime.entity.getBusinessCallId(), runtime.entity.getCustomerLegUuid(), runtime.claims.agentId());
         } catch (Exception exception) {
-            markFailed(runtime, exception.getMessage());
+            closeFailedSession(runtime, exception.getMessage());
+        }
+    }
+
+    private void closeFailedSession(RuntimeSession runtime, String reason) {
+        if (runtime.closed.get()) return;
+        try {
+            TenantHelper.dynamic(runtime.claims.tenantId(), () -> markFailed(runtime, reason));
+        } finally {
+            try {
+                disconnect(runtime.socket.getId(), reason);
+            } finally {
+                try {
+                    runtime.socket.close(CloseStatus.SERVER_ERROR);
+                } catch (IOException e) {
+                    log.debug("Unable to close failed AI audio socket", e);
+                }
+            }
         }
     }
 
@@ -307,6 +360,8 @@ public class AiRealtimeSessionManager {
         private final AtomicInteger sequence = new AtomicInteger();
         private final AtomicBoolean turnInProgress = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
+        private LicenseAiCallQuota.Lease licenseLease;
+        private volatile ScheduledFuture<?> licenseHeartbeat;
         private volatile StreamingAsrSession asrSession;
 
         private RuntimeSession(WebSocketSession socket, AiRealtimeClaims claims, AiRealtimeCallSession entity,

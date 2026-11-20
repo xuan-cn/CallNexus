@@ -8,6 +8,8 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.license.LicenseResourceQuota;
+import org.dromara.license.LicenseResourceQuota.Resource;
 import org.dromara.resource.event.sip.SipAccountDeletedEvent;
 import org.dromara.resource.node.domain.FreeSwitchNode;
 import org.dromara.resource.node.mapper.FreeSwitchNodeMapper;
@@ -41,6 +43,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     private final FreeSwitchNodeMapper nodeMapper;
     private final ApplicationEventPublisher eventPublisher;
     private final SipRegistrationSecurityService securityService;
+    private final LicenseResourceQuota licenseQuota;
 
     @Override
     public TableDataInfo<SipAccountResponse> page(SipAccountPageQuery query, PageQuery pageQuery) {
@@ -81,6 +84,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long create(CreateSipAccountRequest request) {
+        licenseQuota.lock();
         ensureExtensionUnique(request.getExtension(), null);
         String authUsername = normalizeAuthUsername(request.getAuthUsername());
         if (authUsername == null) {
@@ -89,6 +93,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         ensureAuthUsernameUnique(authUsername, null);
 
         FreeSwitchNode node = requireEnabledNode(request.getNodeId());
+        licenseQuota.requireCapacity(Resource.EXTENSIONS, 1);
         SipAccount account = new SipAccount();
         account.setNodeId(node.getId());
         account.setExtension(request.getExtension());
@@ -104,6 +109,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Integer batchCreate(BatchCreateSipAccountRequest request) {
+        licenseQuota.lock();
         FreeSwitchNode node = requireEnabledNode(request.getNodeId());
         List<String> extensions = buildExtensionRange(request.getStartExtension(), request.getCount());
         List<String> existingExtensions = mapper.selectList(new LambdaQueryWrapper<SipAccount>()
@@ -115,6 +121,7 @@ public class SipAccountApplicationServiceImpl implements SipAccountApplicationSe
         if (!existingExtensions.isEmpty()) {
             throw new ServiceException("以下 SIP 分机号已存在：" + String.join("、", existingExtensions));
         }
+        licenseQuota.requireCapacity(Resource.EXTENSIONS, extensions.size());
 
         for (String extension : extensions) {
             SipAccount account = new SipAccount();
